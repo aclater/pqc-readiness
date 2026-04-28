@@ -420,3 +420,122 @@ def test_overall_verdict_caveat_with_unknown_only_per_algo() -> None:
     verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
     assert code == 0
     assert caveat != ""
+
+
+# ---------------------------------------------------------------------------
+# Section 4: container / package / aggregator parsers
+# ---------------------------------------------------------------------------
+
+def test_parse_cgroup_for_container_kubepods() -> None:
+    cg = "12:cpu,cpuacct:/kubepods.slice/kubepods-pod1234.slice/cri-containerd-abcd.scope\n"
+    assert pr.parse_cgroup_for_container(cg) == "kubepods"
+
+
+def test_parse_cgroup_for_container_docker() -> None:
+    cg = "11:devices:/docker/0123456789ab\n"
+    assert pr.parse_cgroup_for_container(cg) == "/docker/"
+
+
+def test_parse_cgroup_for_container_bare_metal() -> None:
+    cg = "11:devices:/init.scope\n0::/user.slice/user-1000.slice/session-2.scope\n"
+    assert pr.parse_cgroup_for_container(cg) is None
+
+
+def test_parse_rpm_packages() -> None:
+    text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
+    out = pr.parse_rpm_packages(text)
+    assert ("openssl", "3.5.5") in out
+    assert ("java-21-openjdk", "21.0.5") in out
+    assert len(out) == 4
+
+
+def test_classify_bundled_crypto_finds_jdk_and_node_dedupes() -> None:
+    pkgs = [
+        ("openssl", "3.5.5"),
+        ("java-21-openjdk", "21.0.5"),
+        ("java-21-openjdk-headless", "21.0.5"),
+        ("nodejs", "22.10.0"),
+        ("python3", "3.13.5"),
+        ("nss", "3.122.1"),
+    ]
+    out = pr.classify_bundled_crypto(pkgs)
+    names = sorted(p["package"] for p in out)
+    # java-21-openjdk-headless matches via prefix; both jdk packages dedupe by exact name
+    assert "java-21-openjdk" in names
+    assert "java-21-openjdk-headless" in names
+    assert "nodejs" in names
+    assert "python3" in names
+    # openssl + nss are not in the bundled-crypto allowlist (they ARE the
+    # system crypto, not a bundled override)
+    assert "openssl" not in names
+    assert "nss" not in names
+
+
+def test_aggregate_reports_basic_counts() -> None:
+    reports = [
+        {"schema_version": "1.0", "arch": "x86_64", "isa_tier": "excellent",
+         "verdict": "EXCELLENT - software PQC at production speed",
+         "cpu_model": "AMD EPYC", "kernel_info": {"os_release_id": "rhel"},
+         "runtime_environment": {"environment": "host"},
+         "accelerators": [{"kind": "tpm"}],
+         "replace_required": False},
+        {"schema_version": "1.0", "arch": "x86_64", "isa_tier": "good",
+         "verdict": "GOOD - production-capable in software",
+         "cpu_model": "Intel Xeon", "kernel_info": {"os_release_id": "rhel"},
+         "runtime_environment": {"environment": "container"},
+         "accelerators": [{"kind": "hsm"}, {"kind": "tpm"}],
+         "replace_required": False},
+        {"schema_version": "1.0", "arch": "aarch64", "isa_tier": "poor",
+         "verdict": "POOR - not suitable for production PQC",
+         "cpu_model": "Old ARM", "kernel_info": {"os_release_id": "fedora"},
+         "runtime_environment": {"environment": "host"},
+         "accelerators": [],
+         "replace_required": True},
+    ]
+    out = pr.aggregate_reports(reports)
+    assert out["total_hosts"] == 3
+    assert out["by_arch"] == {"x86_64": 2, "aarch64": 1}
+    assert out["by_isa_tier"] == {"excellent": 1, "good": 1, "poor": 1}
+    assert out["by_runtime_environment"] == {"host": 2, "container": 1}
+    assert out["replace_required_count"] == 1
+    assert out["accelerator_kinds_host_count"] == {"tpm": 2, "hsm": 1}
+    assert "AMD EPYC" in out["unique_cpu_models"]
+
+
+def test_aggregate_to_csv_renders_groups() -> None:
+    rollup = {
+        "total_hosts": 2,
+        "replace_required_count": 0,
+        "by_arch": {"x86_64": 2},
+        "by_isa_tier": {"excellent": 2},
+        "unique_cpu_models": ["AMD EPYC"],
+    }
+    csv_text = pr.aggregate_to_csv(rollup)
+    assert "group,key,count" in csv_text
+    assert "total_hosts,,2" in csv_text
+    assert "by_arch,x86_64,2" in csv_text
+    assert "unique_cpu_models,AMD EPYC,1" in csv_text
+
+
+# ---------------------------------------------------------------------------
+# Section 4: host_path prefixing
+# ---------------------------------------------------------------------------
+
+def test_host_path_no_prefix_leaves_path_unchanged() -> None:
+    # HOST_PREFIX is "" by default; host_path returns Path(p) verbatim.
+    assert str(pr.host_path("/proc/cpuinfo")) == "/proc/cpuinfo"
+
+
+def test_host_path_prefix_redirects_kernel_namespaces() -> None:
+    saved = pr.HOST_PREFIX
+    try:
+        pr.HOST_PREFIX = "/host"
+        assert str(pr.host_path("/proc/cpuinfo")) == "/host/proc/cpuinfo"
+        assert str(pr.host_path("/sys/module/tls")) == "/host/sys/module/tls"
+        assert str(pr.host_path("/etc/redhat-release")) == "/host/etc/redhat-release"
+        assert str(pr.host_path("/dev/tpm0")) == "/host/dev/tpm0"
+        # User-space paths are not redirected
+        assert str(pr.host_path("/opt/Chrystoki")) == "/opt/Chrystoki"
+        assert str(pr.host_path("/tmp/foo")) == "/tmp/foo"
+    finally:
+        pr.HOST_PREFIX = saved

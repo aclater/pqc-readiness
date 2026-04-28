@@ -51,6 +51,27 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0"
 
+# Host-filesystem prefix for DaemonSet / containerized invocations.  When
+# the tool runs inside a container with the host's /proc /sys /dev /etc
+# bind-mounted under (e.g.) /host, --host-mount /host sets this prefix
+# so detection still reads from the host rather than the container's
+# own pid 1 namespace.  Empty in normal bare-metal use.
+HOST_PREFIX: str = ""
+
+# Path namespaces that should be redirected through HOST_PREFIX when set.
+# Paths outside these namespaces (binary lookups, /opt/..., /tmp/...) are
+# left alone — they belong to the running container, not the host kernel.
+_HOST_NAMESPACES = ("/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share")
+
+
+def host_path(p: str) -> Path:
+    """Return Path(p) under HOST_PREFIX when --host-mount is in effect
+    and p targets a kernel/state namespace.  Bare-metal callers and
+    user-space paths are unaffected."""
+    if HOST_PREFIX and any(p == ns or p.startswith(ns + "/") for ns in _HOST_NAMESPACES):
+        return Path(HOST_PREFIX + p)
+    return Path(p)
+
 # ---------------------------------------------------------------------------
 # ISA feature catalogs
 # Per-flag tuple = (display name, purpose, weight in tier scoring)
@@ -288,6 +309,9 @@ class Report:
     kernel_info: dict[str, Any] = field(default_factory=dict)
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
+    runtime_environment: dict[str, Any] = field(default_factory=dict)
+    packages: dict[str, Any] = field(default_factory=dict)
+    replace_required: bool = False
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -344,7 +368,7 @@ def parse_cpuinfo_flags(text: str) -> set[str]:
 
 def linux_cpu_flags() -> set[str]:
     try:
-        return parse_cpuinfo_flags(Path("/proc/cpuinfo").read_text())
+        return parse_cpuinfo_flags(host_path("/proc/cpuinfo").read_text())
     except OSError:
         return set()
 
@@ -376,7 +400,7 @@ def cpu_flags(arch: str) -> set[str]:
 def cpu_model() -> str:
     if is_linux():
         try:
-            for line in Path("/proc/cpuinfo").read_text().splitlines():
+            for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if line.startswith(("model name", "Hardware", "cpu model", "machine")):
                     return line.split(":", 1)[1].strip()
         except OSError:
@@ -399,7 +423,7 @@ def cpu_freq_mhz() -> float:
             except (OSError, ValueError):
                 continue
         try:
-            for line in Path("/proc/cpuinfo").read_text().splitlines():
+            for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if "cpu MHz" in line:
                     return float(line.split(":", 1)[1].strip())
         except OSError:
@@ -418,7 +442,7 @@ def core_counts() -> tuple[int, int]:
     physical = 0
     if is_linux():
         try:
-            text = Path("/proc/cpuinfo").read_text()
+            text = host_path("/proc/cpuinfo").read_text()
             seen: set[tuple[str, str]] = set()
             cur_phys = cur_core = None
             for line in text.splitlines():
@@ -445,7 +469,7 @@ def memory_info() -> tuple[float, float]:
     total = avail = 0.0
     if is_linux():
         try:
-            for line in Path("/proc/meminfo").read_text().splitlines():
+            for line in host_path("/proc/meminfo").read_text().splitlines():
                 k, _, v = line.partition(":")
                 v = v.strip().split()[0] if v.strip() else "0"
                 if k == "MemTotal":
@@ -552,7 +576,7 @@ def detect_accelerators() -> list[dict[str, Any]]:
                     if re.search(pat, line, re.IGNORECASE):
                         out.append({"kind": kind, "name": label, "detail": line.strip()})
     for path, label, kind in DEVICE_HINTS:
-        if Path(path).exists():
+        if host_path(path).exists():
             out.append({"kind": kind, "name": label, "detail": path})
     # IBM z: enumerate Crypto Express adapters via lszcrypt.  Only CEX8 in
     # EP11 mode is flagged pqc_capable; CEX5/6/7 surface but do not count
@@ -577,7 +601,7 @@ def detect_pkcs11_modules() -> list[str]:
 
 def detect_tpm_pqc() -> dict[str, Any]:
     if not shutil.which("tpm2_getcap"):
-        return {"present": Path("/dev/tpmrm0").exists() or Path("/dev/tpm0").exists(),
+        return {"present": host_path("/dev/tpmrm0").exists() or host_path("/dev/tpm0").exists(),
                 "tools": False, "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC"}
     rc, out = _run(["tpm2_getcap", "algorithms"], timeout=5)
     if rc != 0:
@@ -593,7 +617,7 @@ def detect_kernel_crypto_hw() -> list[str]:
     if not is_linux():
         return []
     try:
-        text = Path("/proc/crypto").read_text()
+        text = host_path("/proc/crypto").read_text()
     except OSError:
         return []
     hw_suffixes = ("-ni", "-ce", "-ssse3", "-avx2", "-avx512", "-arm64-ce",
@@ -611,12 +635,12 @@ def detect_ktls() -> bool | None:
     if not is_linux():
         return None
     try:
-        mods = Path("/proc/modules").read_text()
+        mods = host_path("/proc/modules").read_text()
         if "tls " in mods:
             return True
     except OSError:
         pass
-    if Path("/sys/module/tls").exists():
+    if host_path("/sys/module/tls").exists():
         return True
     rc, out = _run(["modinfo", "tls"], timeout=3)
     return rc == 0 and "filename" in out
@@ -652,7 +676,7 @@ def detect_fips_mode_from_providers_text(text: str) -> bool:
 def detect_fips_mode() -> dict[str, Any]:
     info: dict[str, Any] = {"kernel": False, "openssl_provider": False}
     try:
-        info["kernel"] = Path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
+        info["kernel"] = host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
     except OSError:
         pass
     if shutil.which("openssl"):
@@ -795,7 +819,7 @@ def detect_network_hsms() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen_labels: set[str] = set()
     for path, label in NETWORK_HSM_HINTS:
-        p = Path(path)
+        p = host_path(path)
         if not p.exists():
             continue
         if label in seen_labels:
@@ -944,13 +968,13 @@ def detect_kernel_info() -> dict[str, Any]:
     }
     if not is_linux():
         return info
-    rh = Path("/etc/redhat-release")
+    rh = host_path("/etc/redhat-release")
     if rh.exists():
         try:
             info["redhat_release"] = parse_redhat_release(rh.read_text())
         except OSError:
             pass
-    osr = Path("/etc/os-release")
+    osr = host_path("/etc/os-release")
     if osr.exists():
         try:
             text = osr.read_text()
@@ -962,7 +986,7 @@ def detect_kernel_info() -> dict[str, Any]:
         except OSError:
             pass
     try:
-        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(Path("/proc/crypto").read_text())
+        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(host_path("/proc/crypto").read_text())
     except OSError:
         info["proc_crypto_pqc"] = []
     return info
@@ -1059,6 +1083,216 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
         "pqc_certs": pqc_certs,
         "hybrid_certs": hybrid_certs,
     }
+
+
+# ---------------------------------------------------------------------------
+# Runtime environment detection (container vs host)
+# ---------------------------------------------------------------------------
+
+def parse_cgroup_for_container(text: str) -> str | None:
+    """Inspect /proc/1/cgroup content for container-runtime hierarchy
+    markers.  Returns a marker string when one is found, else None."""
+    for marker in ("kubepods", "/docker/", "/containerd/", "/podman-",
+                   "/crio-", "/system.slice/docker-", "/lxc/"):
+        if marker in text:
+            return marker
+    return None
+
+
+def detect_runtime_environment() -> dict[str, Any]:
+    """Identify whether we're executing inside a container.  Used by
+    every detection function that may need a `unavailable_in_container`
+    note appended to its result.  Detection is heuristic; combined with
+    --host-mount /host the report still produces accurate host data."""
+    if host_path("/.dockerenv").exists():
+        return {"environment": "container", "evidence": "/.dockerenv present"}
+    if host_path("/run/.containerenv").exists():
+        return {"environment": "container", "evidence": "/run/.containerenv present"}
+    try:
+        cg = Path("/proc/1/cgroup").read_text()
+    except OSError:
+        cg = ""
+    marker = parse_cgroup_for_container(cg)
+    if marker:
+        return {"environment": "container", "evidence": f"cgroup marker {marker}"}
+    return {"environment": "host", "evidence": "no container markers"}
+
+
+# ---------------------------------------------------------------------------
+# Bundled-crypto package inventory (--scan-packages)
+# ---------------------------------------------------------------------------
+
+# Package names whose binaries / runtimes bundle their own crypto
+# implementation rather than relying solely on system OpenSSL.  This is
+# rough but useful when scoping "what would break" for a PQC migration.
+BUNDLED_CRYPTO_PACKAGES: dict[str, str] = {
+    # JVM ships its own SunJCE + may include Bouncy Castle providers
+    "java-21-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-17-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-11-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-1.8.0-openjdk": "Java JCE provider (SunJCE / Bouncy Castle)",
+    # Go static binaries embed crypto/tls; behavior depends on GODEBUG
+    "golang":            "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)",
+    "go":                "Go runtime (crypto/tls embedded)",
+    # Node.js dynamically links system OpenSSL but ships its own version
+    "nodejs":            "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)",
+    "rust":              "Rust toolchain (rustls embeds ring or openssl-sys)",
+    "cargo":             "Rust toolchain (rustls embeds ring or openssl-sys)",
+    # Browsers / mail clients embed NSS or BoringSSL
+    "firefox":           "Firefox (embeds NSS — separate PQC roadmap from system OpenSSL)",
+    "thunderbird":       "Thunderbird (embeds NSS)",
+    "chromium":          "Chromium (embeds BoringSSL)",
+    # Python ships its own ssl module but links system OpenSSL
+    "python3":           "Python ssl module (links system OpenSSL; verify version)",
+}
+
+
+def parse_rpm_packages(text: str) -> list[tuple[str, str]]:
+    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` output."""
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def classify_bundled_crypto(pkgs: list[tuple[str, str]]) -> list[dict[str, str]]:
+    """Filter the package list to known bundled-crypto entries.  Used by
+    --scan-packages to surface 'what would break' beyond system OpenSSL."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for name, ver in pkgs:
+        for needle, hint in BUNDLED_CRYPTO_PACKAGES.items():
+            if name == needle or name.startswith(needle + "-"):
+                if name in seen:
+                    continue
+                seen.add(name)
+                out.append({"package": name, "version": ver, "note": hint})
+                break
+    return out
+
+
+def scan_packages() -> dict[str, Any]:
+    if not shutil.which("rpm"):
+        return {"available": False, "reason": "rpm not on PATH (RHEL/Fedora only today)"}
+    rc, out = _run(
+        ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
+        timeout=30,
+    )
+    if rc != 0:
+        return {"available": False, "reason": f"rpm -qa failed (rc={rc})"}
+    pkgs = parse_rpm_packages(out)
+    return {
+        "available": True,
+        "total_packages": len(pkgs),
+        "bundled_crypto": classify_bundled_crypto(pkgs),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fleet aggregation (--aggregate DIR)
+# ---------------------------------------------------------------------------
+
+def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up many per-host reports into a single fleet view.
+
+    Accepts only reports with matching schema_version; other entries are
+    counted as `skipped_schema_mismatch` and listed by file (caller
+    populates that field externally — pure version below operates on
+    already-validated dicts).
+
+    Output:
+      total_hosts, by_arch, by_os_release_id, by_isa_tier, by_verdict,
+      by_runtime_environment, accelerator_kinds (count of hosts with
+      each kind), unique_cpu_models, replace_required_count.
+    """
+    from collections import Counter
+    out: dict[str, Any] = {
+        "total_hosts": len(reports),
+        "schema_version": SCHEMA_VERSION,
+    }
+    by_arch: Counter[str] = Counter()
+    by_os: Counter[str] = Counter()
+    by_isa: Counter[str] = Counter()
+    by_verdict: Counter[str] = Counter()
+    by_env: Counter[str] = Counter()
+    cpu_models: set[str] = set()
+    accel_kinds: Counter[str] = Counter()
+    replace_required = 0
+    for r in reports:
+        by_arch[r.get("arch", "?")] += 1
+        kinfo = r.get("kernel_info") or {}
+        by_os[kinfo.get("os_release_id") or "?"] += 1
+        by_isa[r.get("isa_tier", "?")] += 1
+        # Strip the trailing "- ..." commentary from the verdict for grouping.
+        verdict = (r.get("verdict") or "?").split(" - ", 1)[0].strip()
+        by_verdict[verdict] += 1
+        runtime = (r.get("runtime_environment") or {}).get("environment", "?")
+        by_env[runtime] += 1
+        cpu_models.add(r.get("cpu_model") or "?")
+        seen_kinds: set[str] = set()
+        for a in r.get("accelerators") or []:
+            k = a.get("kind", "?")
+            if k not in seen_kinds:
+                accel_kinds[k] += 1
+                seen_kinds.add(k)
+        if r.get("replace_required"):
+            replace_required += 1
+    out["by_arch"] = dict(by_arch)
+    out["by_os_release_id"] = dict(by_os)
+    out["by_isa_tier"] = dict(by_isa)
+    out["by_verdict"] = dict(by_verdict)
+    out["by_runtime_environment"] = dict(by_env)
+    out["accelerator_kinds_host_count"] = dict(accel_kinds)
+    out["unique_cpu_models"] = sorted(cpu_models)
+    out["replace_required_count"] = replace_required
+    return out
+
+
+def aggregate_to_csv(rollup: dict[str, Any]) -> str:
+    """Render the rollup to a flat CSV view for ingestion by ops tools.
+    One row per (group, key, count) tuple — easy to load in pandas /
+    spreadsheet without nested-JSON gymnastics."""
+    import io
+    import csv
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["group", "key", "count"])
+    w.writerow(["total_hosts", "", rollup.get("total_hosts", 0)])
+    w.writerow(["replace_required_count", "", rollup.get("replace_required_count", 0)])
+    for group in ("by_arch", "by_os_release_id", "by_isa_tier",
+                  "by_verdict", "by_runtime_environment",
+                  "accelerator_kinds_host_count"):
+        for k, v in (rollup.get(group) or {}).items():
+            w.writerow([group, k, v])
+    for cpu in rollup.get("unique_cpu_models", []):
+        w.writerow(["unique_cpu_models", cpu, 1])
+    return buf.getvalue()
+
+
+def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
+    """Read every *.json under DIR, validate schema, return (output, exit_code).
+    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view)."""
+    reports: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for fp in sorted(dir_path.glob("**/*.json")):
+        try:
+            data = json.loads(fp.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
+            continue
+        sv = data.get("schema_version")
+        if sv != SCHEMA_VERSION:
+            skipped.append({"file": str(fp),
+                            "reason": f"schema mismatch: file={sv!r} expected={SCHEMA_VERSION!r}"})
+            continue
+        reports.append(data)
+    rollup = aggregate_reports(reports)
+    rollup["skipped"] = skipped
+    if output == "csv":
+        return aggregate_to_csv(rollup), 0
+    return json.dumps(rollup, indent=2), 0
 
 
 # ---------------------------------------------------------------------------
@@ -1690,7 +1924,31 @@ def main() -> int:
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
     ap.add_argument("--scan-trust-store", action="store_true",
                     help="walk system trust store dirs and count PQC / hybrid certs (slow)")
+    ap.add_argument("--scan-packages", action="store_true",
+                    help="enumerate installed packages with bundled crypto (RHEL/Fedora)")
+    ap.add_argument("--host-mount", metavar="PATH", default="",
+                    help="prefix for /proc /sys /dev /etc reads (DaemonSet pattern)")
+    ap.add_argument("--ansible", action="store_true",
+                    help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0")
+    ap.add_argument("--aggregate", metavar="DIR",
+                    help="aggregate every *.json in DIR into a fleet rollup; exits when done")
+    ap.add_argument("--aggregate-format", choices=["json", "csv"], default="json",
+                    help="output format for --aggregate (default: json)")
     args = ap.parse_args()
+
+    # --aggregate is a top-level alternate mode; bail before per-host probing.
+    if args.aggregate:
+        d = Path(args.aggregate)
+        if not d.is_dir():
+            print(f"--aggregate: {d} is not a directory", file=sys.stderr)
+            return 2
+        body, code = run_aggregator(d, output=args.aggregate_format)
+        print(body)
+        return code
+
+    global HOST_PREFIX
+    if args.host_mount:
+        HOST_PREFIX = args.host_mount.rstrip("/")
 
     C.configure(sys.stdout.isatty() and not args.no_color and not args.json and not args.markdown)
 
@@ -1701,6 +1959,7 @@ def main() -> int:
     isa_feat, isa_score = detect_isa(arch, flags)
     isa_t, isa_reason = isa_tier(arch, isa_score, flags)
     mem_t, mem_reason = memory_tier(total_gb)
+    runtime_env = detect_runtime_environment()
     accels = detect_accelerators()
     accels.extend(detect_network_hsms())
     pkcs11 = detect_pkcs11_modules()
@@ -1717,6 +1976,9 @@ def main() -> int:
     trust_store_info: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
         trust_store_info = scan_trust_store()
+    packages_info: dict[str, Any] = {}
+    if getattr(args, "scan_packages", False):
+        packages_info = scan_packages()
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
     hsm_pqc_capable = any(a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels)
@@ -1734,6 +1996,12 @@ def main() -> int:
     pest = production_estimate(palg, total_gb) if palg else {}
     verdict, why, code, caveat = overall_verdict(isa_t, mem_t, dedicated, palg)
     why = f"{why} ISA: {isa_reason}. Memory: {mem_reason}."
+
+    # replace_required: poor ISA tier AND no PQC silicon AND no PQC-capable
+    # accelerator.  Used by fleet planners to count hosts that cannot be
+    # made PQC-ready in software regardless of OpenSSL version.
+    accel_pqc_present = any(a.get("pqc_capable") for a in accels)
+    replace_required = (isa_t == "poor") and not dedicated and not accel_pqc_present
 
     r = Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1766,6 +2034,9 @@ def main() -> int:
         kernel_info=kernel_info,
         fips_pqc_conflict=fips_conflict,
         trust_store=trust_store_info,
+        runtime_environment=runtime_env,
+        packages=packages_info,
+        replace_required=replace_required,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,
@@ -1782,6 +2053,12 @@ def main() -> int:
         fp = d / f"{r.hostname}-{ts}.json"
         fp.write_text(json.dumps(asdict(r), indent=2))
 
+    if args.ansible:
+        # Ansible's set_fact / register patterns expect a top-level
+        # ansible_facts wrapper.  The task must always exit 0 or Ansible
+        # will mark the play as failed regardless of the report content.
+        print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
+        return 0
     if args.json:
         print(json.dumps(asdict(r), indent=2))
     elif args.markdown:
