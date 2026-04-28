@@ -3843,22 +3843,18 @@ def _tier_label(tier: str) -> str:
     return C.wrap(TIER_COLOR.get(tier, ""), tier.upper())
 
 
-# CycloneDX 1.6 CBOM rendering ----------------------------------------------
+# Canonical cryptographic-asset model ----------------------------------------
 #
-# A CBOM (Cryptographic Bill of Materials) is a CycloneDX BOM whose
-# `components` are populated with `cryptographic-asset` entries.  NIST IR
-# 8547 references CycloneDX 1.6 as the standard for cryptographic inventory
-# exchange, so emitting this shape lets downstream PQC-migration tooling
-# ingest pqc-readiness output without writing a bespoke translator.
-#
-# The mapping of pqc-readiness Report fields to crypto-asset entries is
-# kept in small declarative tables below so it is auditable: each table
-# row is one `(input field, asset shape)` pair, and the renderer simply
-# iterates the report.
+# Both --cbom (CycloneDX 1.6) and --spdx (SPDX 3.0 JSON-LD) project from
+# the same canonical CryptoAsset list, so detection logic lives in one
+# place and the renderers are pure projections.  A single source of
+# truth means a new detection rule shows up in every output format
+# without a renderer-side patch.
 #
 # Refs:
 #   https://cyclonedx.org/docs/1.6/json/  (specVersion 1.6)
 #   https://csrc.nist.gov/pubs/ir/8547/final  (NIST IR 8547)
+#   https://spdx.github.io/spdx-spec/v3.0.1/  (SPDX 3.0.1)
 
 # Implementation platform mapping for CycloneDX algorithmProperties.
 # CycloneDX enumerates a fixed set of `implementationPlatform` values;
@@ -3918,149 +3914,185 @@ def _pqc_parameter_set(name: str) -> str:
     return name
 
 
-def _cbom_provenance() -> list[dict[str, str]]:
-    """The provenance property required by the issue acceptance criteria.
-    Stamped onto every emitted asset so downstream aggregators can tell
-    which tool detected the entry."""
-    return [{"name": "detectedBy", "value": f"pqc-readiness@{SCRIPT_VERSION}"}]
+@dataclass(frozen=True)
+class CryptoAsset:
+    """Canonical cryptographic asset detected on the host.
+
+    Both --cbom (CycloneDX 1.6 cryptographic-asset components) and
+    --spdx (SPDX 3.0 software_Package elements) project from this list,
+    so each detection rule appears in exactly one place.
+
+    The `category` is the detection-source bucket (e.g. "openssl_kem",
+    "ssh_kex_hybrid") — used to label per-format properties so consumers
+    can correlate findings across CBOM and SPDX outputs.
+
+    `asset_type` matches the CycloneDX 1.6 cryptographic-asset enum:
+    "algorithm" | "protocol" | "related-crypto-material".  Renderers
+    omit fields whose values are empty / None."""
+
+    key: str
+    name: str
+    category: str
+    asset_type: str
+    primitive: str = ""
+    execution_environment: str = ""
+    implementation_platform: str = ""
+    protocol_type: str = ""
+    related_material_type: str = ""
+    parameter_set: str = ""
+    nist_category: int | None = None
+    source: str = ""
+    properties: tuple[tuple[str, str], ...] = ()
 
 
-def _cbom_asset(
-    bom_ref: str,
+def _pqc_algorithm_asset(
+    key: str,
     name: str,
-    crypto_props: dict[str, Any],
-    extra_props: list[dict[str, str]] | None = None,
-) -> dict[str, Any]:
-    """Build a CycloneDX 1.6 cryptographic-asset component.  Every asset
-    carries the `detectedBy` provenance tag and may carry extra free-form
-    properties (e.g. `evidence`, `source`) that downstream consumers can
-    surface to operators."""
-    props = _cbom_provenance()
-    if extra_props:
-        props.extend(extra_props)
-    return {
-        "type": "cryptographic-asset",
-        "bom-ref": bom_ref,
-        "name": name,
-        "cryptoProperties": crypto_props,
-        "properties": props,
-    }
+    category: str,
+    primitive: str,
+    source: str,
+) -> CryptoAsset:
+    """A NIST PQC algorithm exposed by a library.  Carries a derived
+    parameterSetIdentifier and nistQuantumSecurityLevel where the
+    algorithm name is in the published FIPS lookup."""
+    pset = _pqc_parameter_set(name)
+    return CryptoAsset(
+        key=key,
+        name=name,
+        category=category,
+        asset_type="algorithm",
+        primitive=primitive,
+        execution_environment="software-plain-ram",
+        parameter_set=pset if pset != name else "",
+        nist_category=_PQC_NIST_CATEGORY.get(name),
+        source=source,
+    )
 
 
-def _cbom_isa_assets(r: Report) -> list[dict[str, Any]]:
-    """Each detected ISA feature becomes a hardware-execution algorithm
-    asset.  Primitive is `other` because an ISA feature accelerates many
-    primitives (Keccak, lattice mul, AES round) rather than implementing
-    one — the human-readable purpose lives in the `purpose` property."""
+def _canonical_isa_assets(r: Report) -> list[CryptoAsset]:
+    """Each detected ISA feature is a hardware-execution algorithm asset.
+    Primitive is `other` because an ISA feature accelerates many primitives
+    (Keccak, lattice mul, AES round) rather than implementing one — the
+    human-readable purpose lives in the `purpose` property."""
     platform_id = _cbom_platform(r.arch)
-    out: list[dict[str, Any]] = []
+    out: list[CryptoAsset] = []
     for flag, info in sorted(r.isa_features.items()):
         out.append(
-            _cbom_asset(
-                bom_ref=f"isa/{flag}",
+            CryptoAsset(
+                key=f"isa/{flag}",
                 name=info.get("name", flag),
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "other",
-                        "executionEnvironment": "hardware",
-                        "implementationPlatform": platform_id,
-                    },
-                },
-                extra_props=[
-                    {"name": "isa:flag", "value": flag},
-                    {"name": "isa:purpose", "value": info.get("purpose", "")},
-                ],
+                category="isa",
+                asset_type="algorithm",
+                primitive="other",
+                execution_environment="hardware",
+                implementation_platform=platform_id,
+                properties=(
+                    ("isa:flag", flag),
+                    ("isa:purpose", info.get("purpose", "")),
+                ),
             )
         )
     return out
 
 
-def _cbom_accelerator_assets(r: Report) -> list[dict[str, Any]]:
+def _canonical_accelerator_assets(r: Report) -> list[CryptoAsset]:
     """HSMs, TPMs, accelerators, DPUs and network HSMs each become a
     hardware-execution algorithm asset.  The detection layer already
     classifies kind/name/detail/pqc_capable; we surface those verbatim
     in extra properties so consumers can filter on them."""
-    out: list[dict[str, Any]] = []
+    platform_id = _cbom_platform(r.arch)
+    out: list[CryptoAsset] = []
     for idx, a in enumerate(r.accelerators):
         kind = a.get("kind", "accelerator")
         name = a.get("name", "")
-        bom_ref = f"accel/{idx}/{kind}"
-        extra = [{"name": "accelerator:kind", "value": str(kind)}]
+        props: list[tuple[str, str]] = [("accelerator:kind", str(kind))]
         detail = a.get("detail")
         if detail:
-            extra.append({"name": "accelerator:detail", "value": str(detail)})
+            props.append(("accelerator:detail", str(detail)))
         if a.get("pqc_capable"):
-            extra.append({"name": "accelerator:pqc_capable", "value": "true"})
+            props.append(("accelerator:pqc_capable", "true"))
         out.append(
-            _cbom_asset(
-                bom_ref=bom_ref,
+            CryptoAsset(
+                key=f"accel/{idx}/{kind}",
                 name=name or kind,
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "other",
-                        "executionEnvironment": "hardware",
-                        "implementationPlatform": _cbom_platform(r.arch),
-                    },
-                },
-                extra_props=extra,
+                category="accelerator",
+                asset_type="algorithm",
+                primitive="other",
+                execution_environment="hardware",
+                implementation_platform=platform_id,
+                properties=tuple(props),
             )
         )
     return out
 
 
-def _cbom_pqc_algorithm_asset(
-    bom_ref: str,
-    name: str,
-    primitive: str,
-    source: str,
-) -> dict[str, Any]:
-    """A NIST PQC algorithm exposed by a library.  Carries
-    parameterSetIdentifier and nistQuantumSecurityLevel where the
-    algorithm name is in the published FIPS lookup."""
-    algo_props: dict[str, Any] = {
-        "primitive": primitive,
-        "executionEnvironment": "software-plain-ram",
-    }
-    pset = _pqc_parameter_set(name)
-    if pset != name:
-        algo_props["parameterSetIdentifier"] = pset
-    cat = _PQC_NIST_CATEGORY.get(name)
-    if cat is not None:
-        algo_props["nistQuantumSecurityLevel"] = cat
-    return _cbom_asset(
-        bom_ref=bom_ref,
-        name=name,
-        crypto_props={
-            "assetType": "algorithm",
-            "algorithmProperties": algo_props,
-        },
-        extra_props=[{"name": "source", "value": source}],
-    )
+def _canonical_tpm_assets(r: Report) -> list[CryptoAsset]:
+    tpm = r.tpm_pqc or {}
+    if not tpm.get("present"):
+        return []
+    return [
+        CryptoAsset(
+            key="tpm/pqc",
+            name="TPM PQC capability",
+            category="tpm",
+            asset_type="algorithm",
+            primitive="other",
+            execution_environment="hardware",
+            implementation_platform=_cbom_platform(r.arch),
+            properties=(
+                (
+                    "tpm:pqc_advertised",
+                    "true" if tpm.get("pqc_advertised") else "false",
+                ),
+                ("tpm:note", str(tpm.get("note", ""))),
+            ),
+        )
+    ]
 
 
-def _cbom_openssl_assets(r: Report) -> list[dict[str, Any]]:
+def _canonical_pkcs11_assets(r: Report) -> list[CryptoAsset]:
+    """PKCS#11 is a cryptographic-token API; each loadable module is
+    emitted as a protocol asset with the module path captured in a
+    property so an aggregator can deduplicate identical modules across
+    a fleet."""
+    out: list[CryptoAsset] = []
+    for idx, mod in enumerate(r.pkcs11_modules or []):
+        out.append(
+            CryptoAsset(
+                key=f"pkcs11/{idx}",
+                name=Path(mod).name or f"pkcs11-module-{idx}",
+                category="pkcs11",
+                asset_type="protocol",
+                protocol_type="other",
+                properties=(("pkcs11:module_path", mod),),
+            )
+        )
+    return out
+
+
+def _canonical_openssl_assets(r: Report) -> list[CryptoAsset]:
     osinfo = r.openssl or {}
     if not osinfo.get("available"):
         return []
-    out: list[dict[str, Any]] = []
+    out: list[CryptoAsset] = []
     version = osinfo.get("version") or "unknown"
     src = f"openssl@{version}"
     for kem in osinfo.get("kem_algorithms") or []:
         out.append(
-            _cbom_pqc_algorithm_asset(
+            _pqc_algorithm_asset(
                 f"openssl/kem/{kem}",
                 kem,
+                "openssl_kem",
                 "kem",
                 src,
             )
         )
     for sig in osinfo.get("sig_algorithms") or []:
         out.append(
-            _cbom_pqc_algorithm_asset(
+            _pqc_algorithm_asset(
                 f"openssl/sig/{sig}",
                 sig,
+                "openssl_sig",
                 "signature",
                 src,
             )
@@ -4068,93 +4100,74 @@ def _cbom_openssl_assets(r: Report) -> list[dict[str, Any]]:
     tls_groups = osinfo.get("tls_groups") or {}
     for grp in tls_groups.get("hybrid") or []:
         out.append(
-            _cbom_asset(
-                bom_ref=f"openssl/tls-hybrid/{grp}",
+            CryptoAsset(
+                key=f"openssl/tls-hybrid/{grp}",
                 name=grp,
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "combiner",
-                        "executionEnvironment": "software-plain-ram",
-                    },
-                },
-                extra_props=[
-                    {"name": "source", "value": src},
-                    {"name": "tls:role", "value": "hybrid-group"},
-                ],
+                category="openssl_tls_hybrid",
+                asset_type="algorithm",
+                primitive="combiner",
+                execution_environment="software-plain-ram",
+                source=src,
+                properties=(("tls:role", "hybrid-group"),),
             )
         )
     for grp in tls_groups.get("pure_pqc") or []:
         out.append(
-            _cbom_asset(
-                bom_ref=f"openssl/tls-pure-pqc/{grp}",
+            CryptoAsset(
+                key=f"openssl/tls-pure-pqc/{grp}",
                 name=grp,
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "kem",
-                        "executionEnvironment": "software-plain-ram",
-                    },
-                },
-                extra_props=[
-                    {"name": "source", "value": src},
-                    {"name": "tls:role", "value": "pure-pqc-group"},
-                ],
+                category="openssl_tls_pqc",
+                asset_type="algorithm",
+                primitive="kem",
+                execution_environment="software-plain-ram",
+                source=src,
+                properties=(("tls:role", "pure-pqc-group"),),
             )
         )
     return out
 
 
-def _cbom_ssh_assets(r: Report) -> list[dict[str, Any]]:
+def _canonical_ssh_assets(r: Report) -> list[CryptoAsset]:
     """SSH KEX algorithms surface as key-agreement assets.  We only emit
     the PQC subset detected by `ssh -Q kex` — the classical kex set is
     out of scope for a PQC inventory."""
     ssh_info = r.ssh_pqc or {}
     if not ssh_info.get("available"):
         return []
-    out: list[dict[str, Any]] = []
+    out: list[CryptoAsset] = []
     version = ssh_info.get("version") or "unknown"
+    src = f"openssh@{version}"
     kex_groups = ssh_info.get("kex_groups") or {}
     for kex in kex_groups.get("hybrid") or []:
         out.append(
-            _cbom_asset(
-                bom_ref=f"ssh/kex/hybrid/{kex}",
+            CryptoAsset(
+                key=f"ssh/kex/hybrid/{kex}",
                 name=kex,
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "key-agree",
-                        "executionEnvironment": "software-plain-ram",
-                    },
-                },
-                extra_props=[
-                    {"name": "source", "value": f"openssh@{version}"},
-                    {"name": "ssh:role", "value": "hybrid-kex"},
-                ],
+                category="ssh_kex_hybrid",
+                asset_type="algorithm",
+                primitive="key-agree",
+                execution_environment="software-plain-ram",
+                source=src,
+                properties=(("ssh:role", "hybrid-kex"),),
             )
         )
     for kex in kex_groups.get("pure_pqc") or []:
         out.append(
-            _cbom_asset(
-                bom_ref=f"ssh/kex/pure-pqc/{kex}",
+            CryptoAsset(
+                key=f"ssh/kex/pure-pqc/{kex}",
                 name=kex,
-                crypto_props={
-                    "assetType": "algorithm",
-                    "algorithmProperties": {
-                        "primitive": "kem",
-                        "executionEnvironment": "software-plain-ram",
-                    },
-                },
-                extra_props=[
-                    {"name": "source", "value": f"openssh@{version}"},
-                    {"name": "ssh:role", "value": "pure-pqc-kex"},
-                ],
+                category="ssh_kex_pqc",
+                asset_type="algorithm",
+                primitive="kem",
+                execution_environment="software-plain-ram",
+                source=src,
+                properties=(("ssh:role", "pure-pqc-kex"),),
             )
         )
     return out
 
 
-def _cbom_ipsec_assets(r: Report) -> list[dict[str, Any]]:
+def _canonical_ipsec_assets(r: Report) -> list[CryptoAsset]:
     """IPsec stacks expose PQC support as a single boolean today; emit
     one protocol asset describing the implementation found and whether
     it advertises any PQC KE.  When a future strongSwan release ships
@@ -4163,81 +4176,30 @@ def _cbom_ipsec_assets(r: Report) -> list[dict[str, Any]]:
     if not ipsec.get("available"):
         return []
     impl = str(ipsec.get("implementation") or "ipsec")
-    extra = [{"name": "ipsec:implementation", "value": impl}]
+    props: list[tuple[str, str]] = [("ipsec:implementation", impl)]
     if ipsec.get("evidence"):
-        extra.append({"name": "ipsec:evidence", "value": str(ipsec["evidence"])})
+        props.append(("ipsec:evidence", str(ipsec["evidence"])))
     if ipsec.get("version"):
-        extra.append({"name": "ipsec:version", "value": str(ipsec["version"])})
-    extra.append(
-        {
-            "name": "ipsec:pqc_advertised",
-            "value": "true" if ipsec.get("pqc") else "false",
-        }
+        props.append(("ipsec:version", str(ipsec["version"])))
+    props.append(
+        (
+            "ipsec:pqc_advertised",
+            "true" if ipsec.get("pqc") else "false",
+        )
     )
     return [
-        _cbom_asset(
-            bom_ref=f"ipsec/{impl}",
+        CryptoAsset(
+            key=f"ipsec/{impl}",
             name=f"IPsec ({impl})",
-            crypto_props={
-                "assetType": "protocol",
-                "protocolProperties": {"type": "ipsec"},
-            },
-            extra_props=extra,
+            category="ipsec",
+            asset_type="protocol",
+            protocol_type="ipsec",
+            properties=tuple(props),
         )
     ]
 
 
-def _cbom_pkcs11_assets(r: Report) -> list[dict[str, Any]]:
-    """PKCS#11 is a cryptographic-token API; each loadable module is
-    emitted as a protocol asset with the module path captured in a
-    property so an aggregator can deduplicate identical modules across
-    a fleet."""
-    out: list[dict[str, Any]] = []
-    for idx, mod in enumerate(r.pkcs11_modules or []):
-        out.append(
-            _cbom_asset(
-                bom_ref=f"pkcs11/{idx}",
-                name=Path(mod).name or f"pkcs11-module-{idx}",
-                crypto_props={
-                    "assetType": "protocol",
-                    "protocolProperties": {"type": "other"},
-                },
-                extra_props=[
-                    {"name": "pkcs11:module_path", "value": mod},
-                ],
-            )
-        )
-    return out
-
-
-def _cbom_tpm_assets(r: Report) -> list[dict[str, Any]]:
-    tpm = r.tpm_pqc or {}
-    if not tpm.get("present"):
-        return []
-    return [
-        _cbom_asset(
-            bom_ref="tpm/pqc",
-            name="TPM PQC capability",
-            crypto_props={
-                "assetType": "algorithm",
-                "algorithmProperties": {
-                    "primitive": "other",
-                    "executionEnvironment": "hardware",
-                    "implementationPlatform": _cbom_platform(r.arch),
-                },
-            },
-            extra_props=[
-                {
-                    "name": "tpm:pqc_advertised",
-                    "value": "true" if tpm.get("pqc_advertised") else "false",
-                },
-                {"name": "tpm:note", "value": str(tpm.get("note", ""))},
-            ],
-        )
-    ]
-
-
-def _cbom_trust_store_assets(r: Report) -> list[dict[str, Any]]:
+def _canonical_trust_store_assets(r: Report) -> list[CryptoAsset]:
     """Trust-store scan is summary-only (counts by category) — there is
     no per-cert detail in the Report, so we emit a single related-crypto-
     material asset whose properties carry the totals.  When a richer
@@ -4246,49 +4208,116 @@ def _cbom_trust_store_assets(r: Report) -> list[dict[str, Any]]:
     ts = r.trust_store or {}
     if not ts.get("available"):
         return []
-    extra = [
-        {"name": "trust_store:total_certs", "value": str(ts.get("total_certs", 0))},
-        {"name": "trust_store:pqc_certs", "value": str(ts.get("pqc_certs", 0))},
-        {"name": "trust_store:hybrid_certs", "value": str(ts.get("hybrid_certs", 0))},
+    props: list[tuple[str, str]] = [
+        ("trust_store:total_certs", str(ts.get("total_certs", 0))),
+        ("trust_store:pqc_certs", str(ts.get("pqc_certs", 0))),
+        ("trust_store:hybrid_certs", str(ts.get("hybrid_certs", 0))),
     ]
     cats = ts.get("cert_categories") or {}
     for cat in ("classical", "hybrid_composite", "pure_pqc"):
-        extra.append(
-            {
-                "name": f"trust_store:cert_categories:{cat}",
-                "value": str(cats.get(cat, 0)),
-            }
+        props.append(
+            (
+                f"trust_store:cert_categories:{cat}",
+                str(cats.get(cat, 0)),
+            )
         )
     for d in ts.get("scanned_dirs") or []:
-        extra.append({"name": "trust_store:scanned_dir", "value": d})
+        props.append(("trust_store:scanned_dir", d))
     return [
-        _cbom_asset(
-            bom_ref="trust-store/summary",
+        CryptoAsset(
+            key="trust-store/summary",
             name="Trust store certificate inventory",
-            crypto_props={
-                "assetType": "related-crypto-material",
-                "relatedCryptoMaterialProperties": {"type": "other"},
-            },
-            extra_props=extra,
+            category="trust_store",
+            asset_type="related-crypto-material",
+            related_material_type="other",
+            properties=tuple(props),
         )
     ]
+
+
+def canonical_assets(r: Report) -> list[CryptoAsset]:
+    """Walk the Report and return the canonical CryptoAsset list.
+
+    Order is deterministic so that downstream diffs across runs on the
+    same host stay stable: ISA → accelerators → TPM → PKCS#11 →
+    OpenSSL → SSH → IPsec → trust-store summary."""
+    out: list[CryptoAsset] = []
+    out.extend(_canonical_isa_assets(r))
+    out.extend(_canonical_accelerator_assets(r))
+    out.extend(_canonical_tpm_assets(r))
+    out.extend(_canonical_pkcs11_assets(r))
+    out.extend(_canonical_openssl_assets(r))
+    out.extend(_canonical_ssh_assets(r))
+    out.extend(_canonical_ipsec_assets(r))
+    out.extend(_canonical_trust_store_assets(r))
+    return out
+
+
+# CycloneDX 1.6 CBOM rendering ----------------------------------------------
+#
+# A CBOM (Cryptographic Bill of Materials) is a CycloneDX BOM whose
+# `components` are populated with `cryptographic-asset` entries.  NIST IR
+# 8547 references CycloneDX 1.6 as the standard for cryptographic inventory
+# exchange, so emitting this shape lets downstream PQC-migration tooling
+# ingest pqc-readiness output without writing a bespoke translator.
+
+# Provenance tag stamped onto every emitted CBOM asset so downstream
+# aggregators can tell which tool detected the entry.
+def _cbom_provenance() -> list[dict[str, str]]:
+    return [{"name": "detectedBy", "value": f"pqc-readiness@{SCRIPT_VERSION}"}]
+
+
+def _cbom_crypto_properties(asset: CryptoAsset) -> dict[str, Any]:
+    """Project a canonical asset's crypto properties into the CycloneDX
+    1.6 cryptographic-asset shape."""
+    if asset.asset_type == "algorithm":
+        algo: dict[str, Any] = {"primitive": asset.primitive or "other"}
+        if asset.execution_environment:
+            algo["executionEnvironment"] = asset.execution_environment
+        if asset.implementation_platform:
+            algo["implementationPlatform"] = asset.implementation_platform
+        if asset.parameter_set:
+            algo["parameterSetIdentifier"] = asset.parameter_set
+        if asset.nist_category is not None:
+            algo["nistQuantumSecurityLevel"] = asset.nist_category
+        return {"assetType": "algorithm", "algorithmProperties": algo}
+    if asset.asset_type == "protocol":
+        return {
+            "assetType": "protocol",
+            "protocolProperties": {"type": asset.protocol_type or "other"},
+        }
+    if asset.asset_type == "related-crypto-material":
+        return {
+            "assetType": "related-crypto-material",
+            "relatedCryptoMaterialProperties": {
+                "type": asset.related_material_type or "other"
+            },
+        }
+    raise ValueError(f"unsupported CryptoAsset.asset_type: {asset.asset_type!r}")
+
+
+def _cbom_component(asset: CryptoAsset) -> dict[str, Any]:
+    """Project a canonical asset into a CycloneDX 1.6 cryptographic-asset
+    component.  Every emitted asset carries the `detectedBy` provenance
+    tag plus any free-form (k, v) properties from the canonical record."""
+    props = _cbom_provenance()
+    if asset.source:
+        props.append({"name": "source", "value": asset.source})
+    for k, v in asset.properties:
+        props.append({"name": k, "value": v})
+    return {
+        "type": "cryptographic-asset",
+        "bom-ref": asset.key,
+        "name": asset.name,
+        "cryptoProperties": _cbom_crypto_properties(asset),
+        "properties": props,
+    }
 
 
 def render_cbom(r: Report) -> str:
     """Render the report as a CycloneDX 1.6 CBOM (JSON).  The output is
     schema-conformant — see tests/test_cbom.py for the schema check."""
-    components: list[dict[str, Any]] = []
-    for builder in (
-        _cbom_isa_assets,
-        _cbom_accelerator_assets,
-        _cbom_tpm_assets,
-        _cbom_pkcs11_assets,
-        _cbom_openssl_assets,
-        _cbom_ssh_assets,
-        _cbom_ipsec_assets,
-        _cbom_trust_store_assets,
-    ):
-        components.extend(builder(r))
+    components = [_cbom_component(a) for a in canonical_assets(r)]
 
     timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
