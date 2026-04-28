@@ -726,3 +726,67 @@ def test_evaluate_cnsa_2_0_partial_when_only_one_input_available() -> None:
     assert out["symmetric_compliant"] is False
     assert out["hash_compliant"] is False
     assert any("/proc/crypto not available" in n for n in out["notes"])
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §1: parse_os_release across the supported family matrix
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402  (placed after the existing tests for diff locality)
+
+
+@pytest.mark.parametrize("fixture, expected_family, expected_id, has_codename", [
+    ("rhel-9.txt",      "rhel",   "rhel",   False),
+    ("rhel-10.txt",     "rhel",   "rhel",   False),
+    ("fedora-41.txt",   "rhel",   "fedora", False),
+    ("rocky-9.txt",     "rhel",   "rocky",  False),
+    ("ubuntu-2404.txt", "debian", "ubuntu", True),
+    ("ubuntu-2510.txt", "debian", "ubuntu", True),
+    ("debian-12.txt",   "debian", "debian", True),
+    ("debian-13.txt",   "debian", "debian", True),
+    ("sles-15sp6.txt",  "suse",   "sles",   False),
+    ("arch.txt",        "arch",   "arch",   False),
+    ("alpine-321.txt",  "alpine", "alpine", False),
+])
+def test_parse_os_release_matrix(fixture: str, expected_family: str,
+                                 expected_id: str, has_codename: bool) -> None:
+    text = (FIXTURES / "os-release" / fixture).read_text()
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == expected_family, parsed
+    assert parsed["id"] == expected_id, parsed
+    assert parsed["pretty_name"], "pretty_name should be populated"
+    if has_codename:
+        assert parsed["version_codename"], "expected codename for this distro"
+    # package_manager is always None from the pure parser; resolved by detect_os().
+    assert parsed["package_manager"] is None
+
+
+def test_parse_os_release_resolves_family_via_id_like() -> None:
+    """Unknown ID, but ID_LIKE points at a known family — Rocky/Alma-style
+    derivatives that haven't been added to OS_FAMILY_BY_ID still resolve
+    correctly via ID_LIKE fallback."""
+    text = 'ID=somenewdistro\nID_LIKE="rhel fedora"\nPRETTY_NAME="Some New Distro"\n'
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == "rhel"
+    assert parsed["id"] == "somenewdistro"
+
+
+def test_parse_os_release_unknown_distro() -> None:
+    text = 'ID=alienos\nVERSION_ID=1.0\nPRETTY_NAME="AlienOS 1.0"\n'
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == "unknown"
+    assert parsed["id"] == "alienos"
+
+
+def test_parse_os_release_strips_quotes_and_comments() -> None:
+    text = (
+        "# this is a comment\n"
+        'ID="rhel"\n'
+        "VERSION_ID='9.6'\n"
+        "PRETTY_NAME=\"Red Hat Enterprise Linux 9.6 (Plow)\"\n"
+        "\n"
+    )
+    parsed = pr.parse_os_release(text)
+    assert parsed["id"] == "rhel"
+    assert parsed["version_id"] == "9.6"
+    assert parsed["pretty_name"] == "Red Hat Enterprise Linux 9.6 (Plow)"

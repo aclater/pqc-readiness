@@ -321,6 +321,7 @@ class Report:
     runtime_environment: dict[str, Any] = field(default_factory=dict)
     packages: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
+    os_release: dict[str, Any] = field(default_factory=dict)
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -924,6 +925,160 @@ def detect_nss() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# OS identity (single source of truth for distro family / package manager)
+# ---------------------------------------------------------------------------
+#
+# Linux distros vary in tool names, package layout, and FIPS posture.  Rather
+# than peppering checks throughout the codebase (`if "rhel" in ... else if
+# "ubuntu" in ...`), every distro-conditional path resolves through the dict
+# returned by detect_os().  /etc/os-release is the freedesktop standard and
+# is present on every modern Linux distro; we fall back to legacy distro
+# files only when it's missing.
+
+OS_FAMILY_BY_ID: dict[str, str] = {
+    # rhel family
+    "rhel": "rhel", "fedora": "rhel", "centos": "rhel", "rocky": "rhel",
+    "almalinux": "rhel", "ol": "rhel", "amzn": "rhel",
+    # debian family
+    "debian": "debian", "ubuntu": "debian", "linuxmint": "debian",
+    "pop": "debian", "kali": "debian", "raspbian": "debian",
+    "neon": "debian", "elementary": "debian",
+    # suse family
+    "sles": "suse", "opensuse-leap": "suse", "opensuse-tumbleweed": "suse",
+    "sled": "suse",
+    # arch family
+    "arch": "arch", "manjaro": "arch", "endeavouros": "arch", "garuda": "arch",
+    # alpine
+    "alpine": "alpine",
+}
+
+# When `ID` is not in the table above, fall back to checking each token in
+# `ID_LIKE` against the same map.  Ubuntu derivatives, for instance, may
+# self-identify as `ID=foo ID_LIKE="ubuntu debian"` — we resolve to debian.
+
+PKG_MANAGER_ORDER: dict[str, list[str]] = {
+    # First entry that is on PATH wins.  apt-get is preferred over apt for
+    # scripting (apt's CLI is explicitly not stable for scripts per the
+    # apt(8) manpage).  microdnf only when dnf is absent (UBI minimal).
+    "rhel":   ["dnf", "microdnf", "yum"],
+    "debian": ["apt-get", "apt"],
+    "suse":   ["zypper"],
+    "arch":   ["pacman"],
+    "alpine": ["apk"],
+}
+
+
+def parse_os_release(text: str) -> dict[str, Any]:
+    """Parse /etc/os-release content into the canonical os_release dict.
+
+    /etc/os-release is `KEY=value` per line, values optionally wrapped in
+    single or double quotes.  We extract ID, ID_LIKE, VERSION_ID,
+    VERSION_CODENAME, PRETTY_NAME, then resolve family from ID first and
+    fall back to ID_LIKE tokens.  Returns a dict with package_manager=None
+    — the caller (`detect_os`) fills that in by probing PATH because we
+    cannot do I/O from a pure parser used in unit tests.
+    """
+    raw: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        v = v.strip()
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        raw[k.strip()] = v
+    id_ = raw.get("ID", "").lower().strip()
+    id_like = [t.lower() for t in raw.get("ID_LIKE", "").split() if t]
+    family = OS_FAMILY_BY_ID.get(id_, "")
+    if not family:
+        for tok in id_like:
+            if tok in OS_FAMILY_BY_ID:
+                family = OS_FAMILY_BY_ID[tok]
+                break
+    return {
+        "family": family or "unknown",
+        "id": id_ or "unknown",
+        "version_id": raw.get("VERSION_ID") or None,
+        "version_codename": raw.get("VERSION_CODENAME") or None,
+        "pretty_name": raw.get("PRETTY_NAME") or None,
+        "package_manager": None,
+    }
+
+
+def _resolve_package_manager(family: str) -> str | None:
+    for tool in PKG_MANAGER_ORDER.get(family, []):
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def detect_os() -> dict[str, Any]:
+    """Single source of truth for distro identity.  Returns:
+
+        family            rhel / debian / suse / arch / alpine / macos / unknown
+        id                rhel / fedora / ubuntu / debian / sles / ... / macos
+        version_id        e.g. "9.6", "24.04", "44"
+        version_codename  e.g. "jammy", "bookworm", or None
+        pretty_name       full string from os-release / sysctl
+        package_manager   first tool on PATH for this family, or None
+    """
+    if is_macos():
+        ver = _sysctl("kern.osproductversion") or platform.mac_ver()[0]
+        return {
+            "family": "macos",
+            "id": "macos",
+            "version_id": ver or None,
+            "version_codename": None,
+            "pretty_name": f"macOS {ver}".rstrip() if ver else "macOS",
+            "package_manager": "brew" if shutil.which("brew") else None,
+        }
+    osr = host_path("/etc/os-release")
+    if osr.exists():
+        try:
+            out = parse_os_release(osr.read_text())
+            out["package_manager"] = _resolve_package_manager(out["family"])
+            return out
+        except OSError:
+            pass
+    # Legacy fallbacks — only triggered when /etc/os-release is missing.
+    if host_path("/etc/redhat-release").exists():
+        rh = parse_redhat_release(host_path("/etc/redhat-release").read_text())
+        return {
+            "family": "rhel",
+            "id": rh.get("distro", "").lower().split()[0] or "rhel",
+            "version_id": rh.get("version"),
+            "version_codename": None,
+            "pretty_name": rh.get("raw"),
+            "package_manager": _resolve_package_manager("rhel"),
+        }
+    if host_path("/etc/debian_version").exists():
+        try:
+            ver = host_path("/etc/debian_version").read_text().strip()
+        except OSError:
+            ver = None
+        return {
+            "family": "debian", "id": "debian",
+            "version_id": ver, "version_codename": None,
+            "pretty_name": f"Debian {ver}" if ver else "Debian",
+            "package_manager": _resolve_package_manager("debian"),
+        }
+    if host_path("/etc/SuSE-release").exists():
+        return {
+            "family": "suse", "id": "suse",
+            "version_id": None, "version_codename": None,
+            "pretty_name": "SUSE Linux (legacy /etc/SuSE-release)",
+            "package_manager": _resolve_package_manager("suse"),
+        }
+    return {
+        "family": "unknown", "id": "unknown",
+        "version_id": None, "version_codename": None,
+        "pretty_name": f"{platform.system()} {platform.release()}".strip(),
+        "package_manager": None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Kernel + RHEL minor + /proc/crypto PQC awareness
 # ---------------------------------------------------------------------------
 
@@ -970,28 +1125,30 @@ def parse_proc_crypto_pqc(text: str) -> list[str]:
     return out
 
 
-def detect_kernel_info() -> dict[str, Any]:
+def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Kernel-specific facts.  Distro identity (ID, VERSION_ID, pretty
+    name) lives in detect_os() / Report.os_release; this function used to
+    duplicate that and now consumes the precomputed dict for backward
+    compatibility — `os_release_id` and `os_release_version_id` are kept
+    on the kernel_info dict so existing aggregator/CSV consumers don't
+    break when they read either location."""
     info: dict[str, Any] = {
         "release": platform.release(),
         "system": platform.system(),
     }
     if not is_linux():
         return info
+    if os_release:
+        if os_release.get("id") and os_release["id"] != "unknown":
+            info["os_release_id"] = os_release["id"]
+        if os_release.get("version_id"):
+            info["os_release_version_id"] = os_release["version_id"]
+    # /etc/redhat-release is retained as a legacy hint — modern distros
+    # are sourced via os_release above.
     rh = host_path("/etc/redhat-release")
     if rh.exists():
         try:
             info["redhat_release"] = parse_redhat_release(rh.read_text())
-        except OSError:
-            pass
-    osr = host_path("/etc/os-release")
-    if osr.exists():
-        try:
-            text = osr.read_text()
-            for line in text.splitlines():
-                if line.startswith("ID="):
-                    info["os_release_id"] = line.split("=", 1)[1].strip().strip('"')
-                elif line.startswith("VERSION_ID="):
-                    info["os_release_version_id"] = line.split("=", 1)[1].strip().strip('"')
         except OSError:
             pass
     try:
@@ -2179,7 +2336,8 @@ def main() -> int:
     ssh_info = detect_ssh_pqc()
     ipsec_info = detect_ipsec_pqc()
     nss_info = detect_nss()
-    kernel_info = detect_kernel_info()
+    os_release = detect_os()
+    kernel_info = detect_kernel_info(os_release)
     fips_conflict = fips_pqc_conflict_check(fips, osinfo)
     proc_crypto_text: str | None = None
     if is_linux():
@@ -2221,7 +2379,7 @@ def main() -> int:
     r = Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         hostname=socket.gethostname(),
-        os=f"{platform.system()} {platform.release()}",
+        os=os_release.get("pretty_name") or f"{platform.system()} {platform.release()}",
         arch=arch,
         cpu_model=cpu_model(),
         cpu_freq_mhz=round(cpu_freq_mhz(), 1),
@@ -2253,6 +2411,7 @@ def main() -> int:
         runtime_environment=runtime_env,
         packages=packages_info,
         replace_required=replace_required,
+        os_release=os_release,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,

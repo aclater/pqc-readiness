@@ -1,0 +1,14 @@
+NAME="Fedora Linux"
+VERSION="41 (Workstation Edition)"
+ID=fedora
+VERSION_ID=41
+VERSION_CODENAME=""
+PLATFORM_ID="platform:f41"
+PRETTY_NAME="Fedora Linux 41 (Workstation Edition)"
+ANSI_COLOR="0;38;2;60;110;180"
+LOGO=fedora-logo-icon
+CPE_NAME="cpe:/o:fedoraproject:fedora:41"
+HOME_URL="https://fedoraproject.org/"
+SUPPORT_END=2025-12-15
+VARIANT="Workstation Edition"
+VARIANT_ID=workstation
