@@ -45,6 +45,7 @@ DaemonSet on OpenShift.
 ./pqc_readiness.py --bench            # include OpenSSL microbench
 ./pqc_readiness.py --json             # stable JSON for aggregation
 ./pqc_readiness.py --cbom             # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
+./pqc_readiness.py --spdx             # SPDX 3.0 JSON-LD (Security profile)
 ./pqc_readiness.py --sarif            # SARIF 2.1.0 findings (OASIS)
 ./pqc_readiness.py --markdown         # markdown for tickets
 ./pqc_readiness.py --recommend        # policy-aware algorithm recommendation
@@ -66,12 +67,13 @@ authoritative one-line summary.
 | `--json` | Emit the stable JSON schema (see [JSON output](#json-output---json)). |
 | `--markdown` | Emit a markdown report suitable for pasting into a ticket. |
 | `--cbom` | Emit a CycloneDX 1.6 Cryptographic Bill of Materials (see [CBOM output](#cbom-output---cbom)). |
+| `--spdx` | Emit an SPDX 3.0 JSON-LD document with the Security profile (see [SPDX 3.0 output](#spdx-30-output---spdx)). |
 | `--sarif` | Emit SARIF 2.1.0 findings for security pipelines (see [SARIF output](#sarif-output---sarif)). |
 | `--ansible` | Wrap the JSON schema in `{ansible_facts: {pqc_readiness: ...}}` and exit 0. Intended for `ansible.builtin.set_fact`. |
 
-`--json`, `--cbom`, and `--sarif` are mutually exclusive views over the
-same probe run. The default (no flag) is the human-readable text
-report.
+`--json`, `--cbom`, `--spdx`, and `--sarif` are mutually exclusive views
+over the same probe run. The default (no flag) is the human-readable
+text report.
 
 ### Benchmarking
 
@@ -337,6 +339,34 @@ a reason rather than silently merged.
   policy reachable through `--policy`.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party product reference
   policy and the rule that keeps this README in sync with `--help`.
+
+## SPDX 3.0 output (`--spdx`)
+
+`--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
+JSON-LD document with `profileConformance` set to `core`, `software`,
+and `security`. The same canonical asset list that drives `--cbom` is
+projected into:
+
+- one `software_Package` per detected cryptographic asset (algorithm,
+  protocol, related-crypto-material), with `software_primaryPurpose` set
+  to `device` for hardware-execution assets and `library` for software
+  ones,
+- one `software_Package` for the scanned host,
+- one `security_Vulnerability` per finding, plus a
+  `security_VexAffectedVulnAssessmentRelationship` linking each
+  vulnerability to the host package via the VEX `affects` relationship,
+- a top-level `software_Sbom` and `SpdxDocument` that wrap the above.
+
+Detection logic is shared with `--cbom` — both renderers read the same
+`canonical_assets()` pipeline and the same finding rules used by
+`--sarif`, so a new detection rule shows up in every output format
+without per-renderer changes.
+
+The output is JSON-LD: every `type` and property is a term in the
+canonical SPDX 3.0.1 context at
+<https://spdx.org/rdf/3.0.1/spdx-context.jsonld>, and every reference
+(`createdBy`, `element`, `from`, `to`, `security_assessedElement`)
+resolves within the document.
 
 ## License
 
