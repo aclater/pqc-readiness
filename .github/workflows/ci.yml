@@ -47,3 +47,6 @@ jobs:
 
       - name: pytest
         run: pytest tests/ -q
+
+      - name: README documents every --help flag
+        run: bash scripts/check-readme-flags.sh

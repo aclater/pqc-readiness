@@ -58,3 +58,36 @@ Run locally before committing:
 
 Exit codes: 0 clean, 1 forbidden references found, 2 configuration
 error.
+
+## README is part of the feature
+
+`README.md` is the discovery surface for this tool. A flag, top-level
+JSON field, output format, or behavioural change that is not in the
+README does not exist as far as a customer reading the repo is
+concerned. PRs that add or change any of the following must update the
+README in the same PR:
+
+- Any new or renamed flag accepted by `pqc_readiness.py` (anything that
+  appears in `./pqc_readiness.py --help`).
+- Any new or renamed top-level key in the `--json`, `--ansible`,
+  `--cbom`, `--sarif`, `--recommend`, or `--aggregate` outputs.
+- Any new output format (a new `--<something>` that emits a distinct
+  serialization).
+- Any change to the `--help` text that affects the documented behaviour
+  of an existing flag.
+- Any change to exit codes.
+
+The README must, at minimum, name the flag or field and describe its
+purpose in one sentence. Detailed reference may live in a linked file
+under `docs/` (for example `docs/scope.md`,
+`docs/recommendation-policies.md`), but the README must point at it.
+
+Verifying coverage locally:
+
+    ./pqc_readiness.py --help > /tmp/help.txt
+    ./pqc_readiness.py --json > /tmp/sample.json
+    # Each flag in /tmp/help.txt must appear in README.md.
+    # Each top-level key in /tmp/sample.json must appear in README.md
+    # or in a doc the README cross-references.
+
+PR review will reject feature changes whose README delta is empty.
