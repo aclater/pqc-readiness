@@ -173,3 +173,136 @@ def test_has_dedicated_pqc_silicon_accepts_cex8_ep11() -> None:
         "pqc_capable": True,
     }]
     assert pr.has_dedicated_pqc_silicon("s390x", {"msa8", "msa9"}, accels) is True
+
+
+# ---------------------------------------------------------------------------
+# Section 2: detection coverage parsers
+# ---------------------------------------------------------------------------
+
+def test_parse_ssh_kex_finds_pqc() -> None:
+    text = _read(FIXTURES / "ssh-kex-rhel10.txt")
+    out = pr.parse_ssh_kex(text)
+    assert out["available"]
+    assert out["kex_count"] > 5
+    pqc = out["pqc_kex"]
+    assert any("mlkem" in k for k in pqc)
+    assert any("sntrup" in k for k in pqc)
+
+
+def test_parse_ssh_kex_no_pqc() -> None:
+    text = "diffie-hellman-group14-sha256\necdh-sha2-nistp256\ncurve25519-sha256\n"
+    out = pr.parse_ssh_kex(text)
+    assert out["available"]
+    assert out["kex_count"] == 3
+    assert out["pqc_kex"] == []
+
+
+# ---------------------------------------------------------------------------
+# parse_redhat_release
+# ---------------------------------------------------------------------------
+
+def test_parse_redhat_release_rhel() -> None:
+    out = pr.parse_redhat_release("Red Hat Enterprise Linux release 9.4 (Plow)")
+    assert out["distro"] == "Red Hat Enterprise Linux"
+    assert out["version"] == "9.4"
+    assert out["minor"] == "4"
+
+
+def test_parse_redhat_release_rhel10() -> None:
+    out = pr.parse_redhat_release("Red Hat Enterprise Linux release 10.0 (Coughlan)")
+    assert out["distro"] == "Red Hat Enterprise Linux"
+    assert out["version"] == "10.0"
+    assert out["minor"] == "0"
+
+
+def test_parse_redhat_release_centos_no_minor() -> None:
+    out = pr.parse_redhat_release("CentOS Stream release 9")
+    assert out["distro"] == "CentOS Stream"
+    assert out["version"] == "9"
+    assert "minor" not in out
+
+
+# ---------------------------------------------------------------------------
+# parse_proc_crypto_pqc
+# ---------------------------------------------------------------------------
+
+def test_parse_proc_crypto_pqc_finds_kyber() -> None:
+    text = (
+        "name         : kyber768\n"
+        "driver       : kyber768-generic\n"
+        "module       : kernel\n"
+        "priority     : 0\n"
+        "\n"
+        "name         : sha256\n"
+        "driver       : sha256-ssse3\n"
+        "module       : kernel\n"
+        "priority     : 200\n"
+        "\n"
+    )
+    drivers = pr.parse_proc_crypto_pqc(text)
+    assert drivers == ["kyber768-generic"]
+
+
+def test_parse_proc_crypto_pqc_no_pqc() -> None:
+    text = (
+        "name         : sha256\n"
+        "driver       : sha256-ssse3\n"
+        "module       : kernel\n"
+        "priority     : 200\n"
+        "\n"
+    )
+    assert pr.parse_proc_crypto_pqc(text) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_nss_version
+# ---------------------------------------------------------------------------
+
+def test_parse_nss_version_pqc_capable() -> None:
+    assert pr.parse_nss_version("3.108.0") == (3, 108, 0)
+
+
+def test_parse_nss_version_predates_pqc() -> None:
+    assert pr.parse_nss_version("3.79.4") == (3, 79, 4)
+
+
+def test_parse_nss_version_unparseable() -> None:
+    assert pr.parse_nss_version("garbage") is None
+
+
+# ---------------------------------------------------------------------------
+# fips_pqc_conflict_check
+# ---------------------------------------------------------------------------
+
+def test_fips_pqc_conflict_no_fips() -> None:
+    fips = {"kernel": False, "openssl_provider": False}
+    openssl = {"kem_algorithms": ["ML-KEM-768"]}
+    out = pr.fips_pqc_conflict_check(fips, openssl)
+    assert out["in_conflict"] is False
+
+
+def test_fips_pqc_conflict_fips_no_pqc() -> None:
+    fips = {"kernel": True, "openssl_provider": True}
+    openssl = {"kem_algorithms": [], "sig_algorithms": []}
+    out = pr.fips_pqc_conflict_check(fips, openssl)
+    assert out["in_conflict"] is False
+
+
+def test_fips_pqc_conflict_real_conflict() -> None:
+    """Kernel FIPS on, OpenSSL exposing PQC via default provider — the
+    case the spec calls out as the meaningful conflict."""
+    fips = {"kernel": True, "openssl_provider": False}
+    openssl = {"kem_algorithms": ["ML-KEM-768"], "sig_algorithms": ["ML-DSA-65"]}
+    out = pr.fips_pqc_conflict_check(fips, openssl)
+    assert out["in_conflict"] is True
+    assert "FIPS" in out["explanation"]
+
+
+# ---------------------------------------------------------------------------
+# parse_lszcrypt edge case: malformed line
+# ---------------------------------------------------------------------------
+
+def test_parse_lszcrypt_skips_malformed_lines() -> None:
+    text = "garbage line\n00 CEX9X CCA-Coproc online 0\n"
+    # CEX9 + suffix X is not in the allowed mode set; pattern won't match (only C/P/A)
+    assert pr.parse_lszcrypt(text) == []

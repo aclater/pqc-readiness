@@ -148,6 +148,11 @@ ACCEL_PCI_HINTS: list[tuple[str, str, str]] = [
     (r"ARM.*CryptoCell",                               "ARM CryptoCell",                  "accel"),
     (r"Amazon\.com.*Nitro|Amazon Web Services.*Nitro", "AWS Nitro Security Chip",        "accel"),
     (r"Microchip.*CryptoAuth",                         "Microchip CryptoAuthentication",  "accel"),
+    # SmartNICs / DPUs.  These are not PQC silicon today but customers
+    # want them inventoried as part of the broader accelerator picture.
+    (r"Mellanox.*BlueField|NVIDIA.*BlueField",         "NVIDIA BlueField DPU",            "dpu"),
+    (r"Intel.*IPU(\s+E2000)?|Intel.*Mount Evans",      "Intel IPU E2000",                 "dpu"),
+    (r"Pensando|AMD.*Pensando|DSC2|DSC-25",            "AMD Pensando DSC",                "dpu"),
 ]
 
 DEVICE_HINTS: list[tuple[str, str, str]] = [
@@ -249,6 +254,12 @@ class Report:
     tpm_pqc: dict[str, Any] = field(default_factory=dict)
     memory_bandwidth_gb_s: float | None = None
     memory_bandwidth_method: str = ""
+    ssh_pqc: dict[str, Any] = field(default_factory=dict)
+    ipsec_pqc: dict[str, Any] = field(default_factory=dict)
+    nss: dict[str, Any] = field(default_factory=dict)
+    kernel_info: dict[str, Any] = field(default_factory=dict)
+    fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
+    trust_store: dict[str, Any] = field(default_factory=dict)
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -719,6 +730,302 @@ def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str,
 
 
 # ---------------------------------------------------------------------------
+# Network HSM detection (config-file based; not visible via lspci)
+# ---------------------------------------------------------------------------
+
+NETWORK_HSM_HINTS: list[tuple[str, str]] = [
+    # (path, label) — path may be a file or a directory.  We only report
+    # presence; we do NOT read or surface the contents of these files
+    # (Chrystoki.conf especially can contain server hostnames / partition
+    # IDs that customers may consider sensitive).
+    ("/etc/Chrystoki.conf",  "Thales Luna Network/PCIe (Chrystoki client config)"),
+    ("/opt/nfast/kmdata",    "Entrust nShield Connect (kmdata directory)"),
+    ("/opt/nfast/sbin",      "Entrust nShield (sbin tools)"),
+    ("/opt/cloudhsm/etc",    "AWS CloudHSM client"),
+    ("/opt/cloudhsm/bin",    "AWS CloudHSM client tools"),
+    ("/opt/utimaco/Software/cs", "Utimaco CryptoServer client"),
+]
+
+
+def detect_network_hsms() -> list[dict[str, Any]]:
+    """Detect network-attached HSMs by client-config presence.
+
+    Network HSMs are reached over IP and never appear in lspci.  Their
+    client tooling installs into well-known paths; we treat the existence
+    of those paths as evidence the customer has client integration in
+    place.  No file contents are read or reported.  All entries are
+    flagged pqc_capable=False; firmware/version verification on the
+    appliance side is out of scope for a host-level probe."""
+    out: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for path, label in NETWORK_HSM_HINTS:
+        p = Path(path)
+        if not p.exists():
+            continue
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        out.append({
+            "kind": "network_hsm",
+            "name": label,
+            "detail": f"client config present: {path}",
+            "pqc_capable": False,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# OpenSSH / strongSwan / NSS PQC capability
+# ---------------------------------------------------------------------------
+
+def parse_ssh_kex(text: str) -> dict[str, Any]:
+    """Parse `ssh -Q kex` output.  Returns a dict with the full count and
+    the subset of PQC-relevant kex algorithms (ML-KEM hybrids and the
+    older sntrup761 NTRU Prime hybrid)."""
+    kexes = [line.strip() for line in text.splitlines() if line.strip()]
+    pqc = sorted({k for k in kexes if re.search(r"\b(?:mlkem|sntrup)", k, re.IGNORECASE)})
+    return {"available": True, "kex_count": len(kexes), "pqc_kex": pqc}
+
+
+def detect_ssh_pqc() -> dict[str, Any]:
+    if not shutil.which("ssh"):
+        return {"available": False, "reason": "ssh not on PATH"}
+    rc, out = _run(["ssh", "-Q", "kex"], timeout=5)
+    if rc != 0:
+        return {"available": False, "reason": f"ssh -Q kex failed (rc={rc})"}
+    return parse_ssh_kex(out)
+
+
+def detect_ipsec_pqc() -> dict[str, Any]:
+    """Look for ML-KEM / Kyber tokens in `swanctl --list-algs`."""
+    if not shutil.which("swanctl"):
+        return {"available": False, "reason": "swanctl not on PATH"}
+    rc, out = _run(["swanctl", "--list-algs"], timeout=10)
+    if rc != 0:
+        return {"available": False, "reason": f"swanctl --list-algs failed (rc={rc})"}
+    pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", out, re.IGNORECASE)
+    return {
+        "available": True,
+        "pqc": bool(pqc_match),
+        "evidence": pqc_match.group(0) if pqc_match else None,
+    }
+
+
+# Mozilla NSS 3.108 (Aug 2025) added hybrid PQC TLS support; earlier
+# versions cannot negotiate the hybrid groups even when OpenSSL can.
+NSS_PQC_MIN_VERSION = (3, 108)
+
+
+def parse_nss_version(text: str) -> tuple[int, int, int] | None:
+    m = re.search(r"\b(\d+)\.(\d+)(?:\.(\d+))?\b", text)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or "0"))
+
+
+def detect_nss() -> dict[str, Any]:
+    """Probe NSS version via certutil --version (preferred) or
+    `rpm -q nss` as a fallback.  PQC capability is inferred from version
+    >= NSS_PQC_MIN_VERSION (3.108)."""
+    if shutil.which("certutil"):
+        rc, out = _run(["certutil", "--version"], timeout=5)
+        if rc == 0:
+            ver = parse_nss_version(out)
+            return {
+                "available": True,
+                "tool": "certutil --version",
+                "version": "%d.%d.%d" % ver if ver else "unknown",
+                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+            }
+    if shutil.which("rpm"):
+        rc, out = _run(["rpm", "-q", "--qf", "%{VERSION}\\n", "nss"], timeout=5)
+        if rc == 0 and out.strip():
+            # rpm -q can return multiple lines when the package is installed
+            # for several arches (i686 + x86_64); take the first version line.
+            first = out.strip().splitlines()[0].strip()
+            ver = parse_nss_version(first)
+            return {
+                "available": True,
+                "tool": "rpm -q nss",
+                "version": ("%d.%d.%d" % ver) if ver else first,
+                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+                "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
+            }
+    return {"available": False, "reason": "neither certutil nor rpm available"}
+
+
+# ---------------------------------------------------------------------------
+# Kernel + RHEL minor + /proc/crypto PQC awareness
+# ---------------------------------------------------------------------------
+
+def parse_redhat_release(text: str) -> dict[str, Any]:
+    """Parse /etc/redhat-release one-liner.  Examples:
+
+        Red Hat Enterprise Linux release 9.4 (Plow)
+        CentOS Stream release 9
+        Fedora release 44 (Forty Four)
+    """
+    s = text.strip()
+    out: dict[str, Any] = {"raw": s}
+    m = re.search(r"^(.+?)\s+release\s+(\d+(?:\.\d+)?)", s)
+    if m:
+        out["distro"] = m.group(1).strip()
+        out["version"] = m.group(2)
+        if m.group(2).count(".") == 1:
+            out["minor"] = m.group(2).split(".", 1)[1]
+    return out
+
+
+def parse_proc_crypto_pqc(text: str) -> list[str]:
+    """Return /proc/crypto driver names whose `name` line mentions a PQC
+    primitive (ML-KEM, ML-DSA, SLH-DSA, Kyber, Dilithium, SPHINCS).  As
+    of 2026 this almost always returns an empty list — kernel-side PQC
+    primitives are not yet in mainline."""
+    out: list[str] = []
+    pqc_re = re.compile(r"ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs",
+                        re.IGNORECASE)
+    block: list[str] = []
+    for line in text.splitlines() + [""]:
+        if line.strip():
+            block.append(line)
+            continue
+        if not block:
+            continue
+        joined = "\n".join(block)
+        if pqc_re.search(joined):
+            for ln in block:
+                if ln.startswith("driver"):
+                    out.append(ln.split(":", 1)[1].strip())
+                    break
+        block = []
+    return out
+
+
+def detect_kernel_info() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "release": platform.release(),
+        "system": platform.system(),
+    }
+    if not is_linux():
+        return info
+    rh = Path("/etc/redhat-release")
+    if rh.exists():
+        try:
+            info["redhat_release"] = parse_redhat_release(rh.read_text())
+        except OSError:
+            pass
+    osr = Path("/etc/os-release")
+    if osr.exists():
+        try:
+            text = osr.read_text()
+            for line in text.splitlines():
+                if line.startswith("ID="):
+                    info["os_release_id"] = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("VERSION_ID="):
+                    info["os_release_version_id"] = line.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+    try:
+        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(Path("/proc/crypto").read_text())
+    except OSError:
+        info["proc_crypto_pqc"] = []
+    return info
+
+
+# ---------------------------------------------------------------------------
+# FIPS / PQC interaction warning
+# ---------------------------------------------------------------------------
+
+def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> dict[str, Any]:
+    """Detect the case where a host is in kernel FIPS mode AND OpenSSL is
+    advertising PQC algorithms via the non-FIPS default provider.  In this
+    state ML-KEM/ML-DSA appear listed but are NOT usable in a FIPS-validated
+    workflow (RHEL 9 / 10 FIPS provider does not yet include PQC)."""
+    if not fips.get("kernel"):
+        return {"in_conflict": False, "explanation": "Kernel FIPS mode not enabled."}
+    has_pqc = bool((openssl.get("kem_algorithms") or []) or
+                   (openssl.get("sig_algorithms") or []))
+    if not has_pqc:
+        return {"in_conflict": False, "explanation": "FIPS mode active and no PQC algorithms exposed."}
+    if fips.get("openssl_provider"):
+        return {
+            "in_conflict": False,
+            "explanation": ("FIPS provider is active and PQC algorithms are exposed.  "
+                            "Verify they are coming from a FIPS-validated provider before "
+                            "relying on them in regulated workflows."),
+        }
+    return {
+        "in_conflict": True,
+        "explanation": (
+            "Kernel FIPS mode is enabled but OpenSSL is exposing PQC algorithms via "
+            "the default (non-FIPS) provider.  These algorithms are listed but would "
+            "not be usable in a FIPS-validated workflow — RHEL 9/10 FIPS provider "
+            "does not include ML-KEM/ML-DSA as of this writing.  Audit provider "
+            "configuration before claiming PQC support in a FIPS-mandated environment."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Trust store certificate inventory (--scan-trust-store)
+# ---------------------------------------------------------------------------
+
+TRUST_STORE_DIRS: list[str] = [
+    "/etc/pki/tls/certs",
+    "/etc/ssl/certs",
+    "/etc/pki/ca-trust/extracted/pem",
+]
+# NIST PQC OID range 2.16.840.1.101.3.4.3.17 .. .31 covers ML-DSA-44/65/87
+# and the SLH-DSA-SHA2 / SLH-DSA-SHAKE family.
+PQC_OID_RE = re.compile(r"\b2\.16\.840\.1\.101\.3\.4\.3\.(1[7-9]|2\d|3[01])\b")
+HYBRID_OID_RES: list[re.Pattern[str]] = [
+    re.compile(r"\b1\.3\.6\.1\.4\.1\.42235\.1\.7\.\d+\b"),  # Mozilla draft
+    re.compile(r"\b1\.3\.9999\.\d+\.\d+\.\d+\b"),            # liboqs experimental
+]
+
+
+def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
+    if not shutil.which("openssl"):
+        return {"available": False, "reason": "openssl not on PATH"}
+    target_dirs = dirs if dirs is not None else TRUST_STORE_DIRS
+    total = 0
+    pqc_certs = 0
+    hybrid_certs = 0
+    seen: set[str] = set()
+    for d in target_dirs:
+        p = Path(d)
+        if not p.is_dir():
+            continue
+        for cert in list(p.rglob("*.pem")) + list(p.rglob("*.crt")):
+            try:
+                key = str(cert.resolve())
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            rc, dump = _run(
+                ["openssl", "x509", "-in", str(cert), "-noout", "-text",
+                 "-certopt", "no_validity,no_serial,no_pubkey,no_sigdump"],
+                timeout=3,
+            )
+            if rc != 0:
+                continue
+            total += 1
+            if PQC_OID_RE.search(dump):
+                pqc_certs += 1
+            if any(p.search(dump) for p in HYBRID_OID_RES):
+                hybrid_certs += 1
+    return {
+        "available": True,
+        "scanned_dirs": [d for d in target_dirs if Path(d).is_dir()],
+        "total_certs": total,
+        "pqc_certs": pqc_certs,
+        "hybrid_certs": hybrid_certs,
+    }
+
+
+# ---------------------------------------------------------------------------
 # OpenSSL capability inspection
 # ---------------------------------------------------------------------------
 
@@ -1076,16 +1383,35 @@ def render_text(r: Report) -> str:
     L.append("")
 
     L.append(C.wrap(C.BOLD, "3. Operating-system crypto plumbing"))
+    if r.kernel_info:
+        rh = r.kernel_info.get("redhat_release") or {}
+        if rh.get("raw"):
+            L.append(f"   Distribution:  {rh.get('raw')}")
+        L.append(f"   Kernel:        {r.kernel_info.get('release', '?')}")
+        pqc_drivers = r.kernel_info.get("proc_crypto_pqc") or []
+        if pqc_drivers:
+            L.append(f"   /proc/crypto PQC drivers: {', '.join(pqc_drivers)}")
+        else:
+            L.append("   /proc/crypto PQC drivers: none (kernel-side PQC not in mainline)")
     if r.kernel_crypto_hw:
-        L.append(f"   /proc/crypto hw-accelerated drivers: {len(r.kernel_crypto_hw)}")
-        for d in r.kernel_crypto_hw[:8]:
+        L.append(f"   /proc/crypto hw-accel: {len(r.kernel_crypto_hw)} drivers")
+        for d in r.kernel_crypto_hw[:6]:
             L.append(f"     - {d}")
-        if len(r.kernel_crypto_hw) > 8:
-            L.append(f"     ... and {len(r.kernel_crypto_hw) - 8} more")
+        if len(r.kernel_crypto_hw) > 6:
+            L.append(f"     ... and {len(r.kernel_crypto_hw) - 6} more")
     if r.ktls_supported is not None:
-        L.append(f"   Kernel TLS (kTLS): {'yes' if r.ktls_supported else 'no'}")
+        L.append(f"   Kernel TLS:    {'yes' if r.ktls_supported else 'no'}")
     if r.fips:
-        L.append(f"   FIPS mode: kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}")
+        L.append(f"   FIPS mode:     kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}")
+    if r.fips_pqc_conflict.get("in_conflict"):
+        L.append(C.wrap(C.RED, f"   ⚠  FIPS/PQC conflict: {r.fips_pqc_conflict.get('explanation')}"))
+    if r.ssh_pqc.get("available"):
+        pqc = r.ssh_pqc.get("pqc_kex") or []
+        L.append(f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)" + (f": {', '.join(pqc)}" if pqc else ""))
+    if r.ipsec_pqc.get("available"):
+        L.append(f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}")
+    if r.nss.get("available"):
+        L.append(f"   NSS:           {r.nss.get('version')}  (PQC-capable: {r.nss.get('pqc_capable')})")
     L.append("")
 
     L.append(C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)"))
@@ -1160,6 +1486,14 @@ def render_text(r: Report) -> str:
             L.append(f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)")
         if "assumptions" in e:
             L.append(f"   ({e['assumptions']})")
+        L.append("")
+
+    if r.trust_store.get("available"):
+        L.append(C.wrap(C.BOLD, "9. Trust store inventory"))
+        L.append(f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}")
+        L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
+        L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
+        L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
         L.append("")
 
     L.append(sub)
@@ -1246,6 +1580,8 @@ def main() -> int:
     ap.add_argument("--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/")
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
+    ap.add_argument("--scan-trust-store", action="store_true",
+                    help="walk system trust store dirs and count PQC / hybrid certs (slow)")
     args = ap.parse_args()
 
     C.configure(sys.stdout.isatty() and not args.no_color and not args.json and not args.markdown)
@@ -1258,15 +1594,24 @@ def main() -> int:
     isa_t, isa_reason = isa_tier(arch, isa_score, flags)
     mem_t, mem_reason = memory_tier(total_gb)
     accels = detect_accelerators()
+    accels.extend(detect_network_hsms())
     pkcs11 = detect_pkcs11_modules()
     kcrypto = detect_kernel_crypto_hw()
     ktls = detect_ktls()
     fips = detect_fips_mode()
     tpm = detect_tpm_pqc()
     osinfo = openssl_capability()
+    ssh_info = detect_ssh_pqc()
+    ipsec_info = detect_ipsec_pqc()
+    nss_info = detect_nss()
+    kernel_info = detect_kernel_info()
+    fips_conflict = fips_pqc_conflict_check(fips, osinfo)
+    trust_store_info: dict[str, Any] = {}
+    if getattr(args, "scan_trust_store", False):
+        trust_store_info = scan_trust_store()
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
-    hsm_present = any(a.get("kind") == "hsm" for a in accels)
-    hsm_pqc_capable = any(a.get("kind") == "hsm" and a.get("pqc_capable") for a in accels)
+    hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
+    hsm_pqc_capable = any(a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels)
     hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
     bench: dict[str, Any] = {}
@@ -1307,6 +1652,12 @@ def main() -> int:
         tpm_pqc=tpm,
         memory_bandwidth_gb_s=membw,
         memory_bandwidth_method=membw_method,
+        ssh_pqc=ssh_info,
+        ipsec_pqc=ipsec_info,
+        nss=nss_info,
+        kernel_info=kernel_info,
+        fips_pqc_conflict=fips_conflict,
+        trust_store=trust_store_info,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,
