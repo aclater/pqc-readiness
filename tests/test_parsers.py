@@ -306,3 +306,117 @@ def test_parse_lszcrypt_skips_malformed_lines() -> None:
     text = "garbage line\n00 CEX9X CCA-Coproc online 0\n"
     # CEX9 + suffix X is not in the allowed mode set; pattern won't match (only C/P/A)
     assert pr.parse_lszcrypt(text) == []
+
+
+# ---------------------------------------------------------------------------
+# Section 3: ISA detection / tier across reference CPUs
+# ---------------------------------------------------------------------------
+
+def _isa_for(arch: str, fixture: str) -> tuple[set[str], dict[str, dict[str, str]], int, str]:
+    text = (FIXTURES / "cpuinfo" / fixture).read_text()
+    flags = pr.parse_cpuinfo_flags(text)
+    feats, score = pr.detect_isa(arch, flags)
+    tier, _reason = pr.isa_tier(arch, score, flags)
+    return flags, feats, score, tier
+
+
+def test_isa_skylake_x_is_good_not_excellent() -> None:
+    """Skylake-X has AVX-512F but lacks AVX-512 VBMI/IFMA and VAES;
+    the AVX-512 PQC fast paths are not available, so the host must
+    score 'good', not 'excellent'."""
+    flags, feats, score, tier = _isa_for("x86_64", "skylake-x-flags.txt")
+    assert "avx512f" in flags
+    assert "avx512vbmi" not in flags
+    assert "avx512ifma" not in flags
+    assert "vaes" not in flags
+    assert tier == "good"
+
+
+def test_isa_sapphire_rapids_is_excellent() -> None:
+    flags, feats, score, tier = _isa_for("x86_64", "sapphire-rapids-flags.txt")
+    assert {"avx512vbmi", "avx512ifma", "vaes", "vpclmulqdq", "gfni"}.issubset(flags)
+    assert tier == "excellent"
+
+
+def test_isa_zen4_is_excellent() -> None:
+    flags, feats, score, tier = _isa_for("x86_64", "zen4-flags.txt")
+    assert {"avx512vbmi", "avx512ifma", "vaes", "gfni"}.issubset(flags)
+    assert tier == "excellent"
+
+
+def test_isa_graviton3_is_excellent_due_to_sve2_plus_sha3() -> None:
+    """Graviton 3 (Neoverse V1) ships SHA-3 + SVE2 + I8MM; per the spec
+    revision the I8MM weight bump should help push the score over the
+    excellent threshold."""
+    flags, feats, score, tier = _isa_for("aarch64", "graviton3-flags.txt")
+    assert "sha3" in flags and "sve2" in flags and "i8mm" in flags
+    assert tier == "excellent"
+
+
+def test_isa_arm_i8mm_weight_is_two() -> None:
+    """Regression: I8MM was weight 1 in v1; bumped to 2 for Section 3."""
+    assert pr.ARM_FEATURES["i8mm"][2] == 2
+
+
+# ---------------------------------------------------------------------------
+# Section 3: per-algorithm verdict notes + memory-bandwidth gating +
+# overall-verdict caveat for missing benchmark
+# ---------------------------------------------------------------------------
+
+def test_per_algo_verdict_emits_slh_dsa_note() -> None:
+    bench = {"available": True, "pqc": {"SLH-DSA-SHA2-128s": {"sign/s": 6.0}}}
+    out = pr.per_algo_verdict(bench, cores=8)
+    slh = out["SLH-DSA-SHA2-128s"]
+    assert slh["tier"] == "excellent"
+    assert any("hot-path" in n for n in slh["notes"])
+
+
+def test_per_algo_verdict_downgrades_slh_dsa_on_low_memory_bandwidth() -> None:
+    bench = {"available": True, "pqc": {"SLH-DSA-SHA2-128s": {"sign/s": 6.0}}}
+    out = pr.per_algo_verdict(bench, cores=8, mem_bw_gb_s=4.0)
+    slh = out["SLH-DSA-SHA2-128s"]
+    assert slh["tier"] == "good", "tier should drop excellent -> good"
+    assert any("downgraded" in n.lower() for n in slh["notes"])
+
+
+def test_per_algo_verdict_no_downgrade_when_bandwidth_unmeasured() -> None:
+    bench = {"available": True, "pqc": {"SLH-DSA-SHA2-128s": {"sign/s": 6.0}}}
+    out = pr.per_algo_verdict(bench, cores=8, mem_bw_gb_s=None)
+    slh = out["SLH-DSA-SHA2-128s"]
+    assert slh["tier"] == "excellent"
+    assert not any("downgraded" in n.lower() for n in slh["notes"])
+
+
+def test_per_algo_verdict_includes_ml_dsa_verify_threshold() -> None:
+    bench = {"available": True, "pqc": {"ML-DSA-65": {"sign/s": 1700, "verify/s": 9000}}}
+    out = pr.per_algo_verdict(bench, cores=8)
+    assert "ML-DSA-65/verify" in out
+    assert out["ML-DSA-65/verify"]["tier"] == "excellent"
+
+
+def test_overall_verdict_no_caveat_when_bench_present() -> None:
+    palg = {
+        "ML-KEM-768": {"tier": "excellent"},
+        "ML-DSA-65":  {"tier": "excellent"},
+    }
+    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    assert code == 0
+    assert caveat == ""
+
+
+def test_overall_verdict_adds_caveat_when_bench_unavailable() -> None:
+    """No benchmark data must NOT drag a high-ISA / high-mem host to POOR."""
+    palg: dict[str, dict[str, str]] = {}
+    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    assert code == 0
+    assert "no PQC microbenchmark" in caveat
+
+
+def test_overall_verdict_caveat_with_unknown_only_per_algo() -> None:
+    palg = {
+        "ML-KEM-768": {"tier": "unknown"},
+        "ML-DSA-65":  {"tier": "unknown"},
+    }
+    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    assert code == 0
+    assert caveat != ""

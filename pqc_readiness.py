@@ -86,7 +86,7 @@ ARM_FEATURES: dict[str, tuple[str, str, int]] = {
     "pmull":  ("PMULL",   "Polynomial multiply long",              1),
     "sve":    ("SVE",     "Scalable Vector Extension",             2),
     "sve2":   ("SVE2",    "SVE2; lattice arithmetic",              3),
-    "i8mm":   ("I8MM",    "Int8 matrix multiply",                  1),
+    "i8mm":   ("I8MM",    "Int8 matrix multiply (Neoverse V1/V2)", 2),
 }
 
 # IBM z facilities. MSA8 added SHA-3/SHAKE on-chip; MSA9 added EdDSA.
@@ -185,14 +185,42 @@ PQC_SIZES = {
     "SLH-DSA-SHA2-256f": {"role": "high-sec sig",   "pk":   64, "sk":  128, "sig": 49856},
 }
 
-# Per-core ops/sec thresholds for the bottleneck operation of each algorithm.
-# ML-KEM bottleneck = decaps (server-side TLS); ML-DSA = sign (cert/JWT issuance);
-# SLH-DSA = sign (catastrophically slow without an accelerator).
-# Calibrated against published Intel SPR / Zen 4 / Graviton 3 numbers.
+# Per-core ops/sec thresholds for the bottleneck operation of each
+# algorithm.  ML-KEM bottleneck = decaps (server-side TLS).  ML-DSA = sign
+# (cert/JWT issuance) AND verify (clients consuming PQC certs are
+# verify-bound, especially in mTLS hot paths).  SLH-DSA = sign
+# (catastrophically slow without an accelerator).  Calibrated against
+# published Intel SPR / AMD Zen 4 / Graviton 3 numbers (Cloudflare CIRCL
+# benchmarks 2024–2025) and conservative for non-AVX-512 hosts.
+#
+# An algorithm may appear more than once when distinct operations
+# matter — the per-algo verdict picks the worst tier across them.
 ALGO_THRESHOLDS: dict[str, tuple[str, dict[str, float]]] = {
     "ML-KEM-768":        ("decaps/s", {"excellent": 20000, "good":  8000, "marginal": 2000}),
     "ML-DSA-65":         ("sign/s",   {"excellent":  1500, "good":   600, "marginal":  150}),
+    "ML-DSA-65/verify":  ("verify/s", {"excellent":  8000, "good":  3000, "marginal":  500}),
+    "ML-DSA-87":         ("sign/s",   {"excellent":  1000, "good":   400, "marginal":  100}),
+    "ML-DSA-87/verify":  ("verify/s", {"excellent":  5000, "good":  2000, "marginal":  300}),
     "SLH-DSA-SHA2-128s": ("sign/s",   {"excellent":     5, "good":     2, "marginal":  0.5}),
+}
+
+# Memory-bandwidth threshold (GB/s) below which SLH-DSA tier is
+# downgraded one level.  SLH-DSA's hash-tree work is bounded by main-
+# memory bandwidth far more than by ALU throughput — a host with
+# excellent ISA but poor RAM can still bottleneck on it.
+SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S = 10.0
+
+# Per-algorithm operational notes appended to the verdict.  Customer-
+# facing text — be precise about what the tier label does and does not
+# imply.  SLH-DSA's "excellent" tier still warrants the warning.
+ALGO_NOTES: dict[str, list[str]] = {
+    "SLH-DSA-SHA2-128s": [
+        "SLH-DSA is unsuitable for hot-path use in software regardless of "
+        "tier — even at the 'excellent' threshold of 5 sign/s/core it is "
+        "orders of magnitude slower than ML-DSA.  Reserve for offline "
+        "code-signing or rare-use cases; consider hardware offload for "
+        "anything resembling production sign throughput."
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -266,6 +294,7 @@ class Report:
     production_estimate: dict[str, Any] = field(default_factory=dict)
     verdict: str = ""
     verdict_reason: str = ""
+    verdict_caveat: str = ""
     exit_code: int = 0
 
 
@@ -300,17 +329,24 @@ def is_macos() -> bool:
 # CPU / memory inventory
 # ---------------------------------------------------------------------------
 
-def linux_cpu_flags() -> set[str]:
+def parse_cpuinfo_flags(text: str) -> set[str]:
+    """Pure helper: extract the union of feature tokens from any
+    /proc/cpuinfo-style text.  Handles all four label variants seen in
+    the wild (`flags` on x86, `Features` on aarch64, `facilities` on
+    s390x, lower-case `features` on some embedded kernels)."""
     flags: set[str] = set()
-    try:
-        text = Path("/proc/cpuinfo").read_text()
-    except OSError:
-        return flags
     for line in text.splitlines():
         if line.startswith(("flags", "Features", "features", "facilities")):
             _, _, vals = line.partition(":")
             flags.update(vals.split())
     return flags
+
+
+def linux_cpu_flags() -> set[str]:
+    try:
+        return parse_cpuinfo_flags(Path("/proc/cpuinfo").read_text())
+    except OSError:
+        return set()
 
 
 def macos_cpu_flags(arch: str) -> set[str]:
@@ -1234,13 +1270,40 @@ def memory_bandwidth_probe() -> tuple[float | None, str]:
 # Per-algorithm and overall verdicts
 # ---------------------------------------------------------------------------
 
-def per_algo_verdict(bench: dict[str, Any], cores: int) -> dict[str, dict[str, Any]]:
+_TIER_ORDER = ["poor", "marginal", "good", "excellent"]
+
+
+def per_algo_verdict(
+    bench: dict[str, Any],
+    cores: int,
+    mem_bw_gb_s: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Score each entry in ALGO_THRESHOLDS against measured rates.
+
+    ALGO_THRESHOLDS keys may be a bare algorithm name (`ML-DSA-65`) or
+    suffixed with the operation being scored (`ML-DSA-65/verify`).  The
+    bare prefix is the bench lookup key; the trailing token disambiguates
+    multiple thresholds on the same algorithm.
+
+    SLH-DSA tier is downgraded by one step when measured memory
+    bandwidth falls below SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S.  The
+    downgrade is only applied when mem_bw_gb_s is non-None (the probe
+    actually ran); a missing measurement does not trigger it.
+    """
     out: dict[str, dict[str, Any]] = {}
     pqc = bench.get("pqc") if bench.get("available") else None
-    for algo, (op, thresholds) in ALGO_THRESHOLDS.items():
+    for key, (op, thresholds) in ALGO_THRESHOLDS.items():
+        algo = key.split("/", 1)[0]
         bench_algo = (pqc or {}).get(algo)
+        notes = list(ALGO_NOTES.get(algo, []))
         if not bench_algo or op not in bench_algo:
-            out[algo] = {"tier": "unknown", "reason": "no benchmark data", "metric": op}
+            out[key] = {
+                "algorithm": algo,
+                "tier": "unknown",
+                "reason": "no benchmark data",
+                "metric": op,
+                "notes": notes,
+            }
             continue
         rate = float(bench_algo[op])
         if rate >= thresholds["excellent"]:
@@ -1251,13 +1314,30 @@ def per_algo_verdict(bench: dict[str, Any], cores: int) -> dict[str, dict[str, A
             tier = "marginal"
         else:
             tier = "poor"
+        if (
+            algo == "SLH-DSA-SHA2-128s"
+            and mem_bw_gb_s is not None
+            and mem_bw_gb_s < SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S
+        ):
+            old_tier = tier
+            idx = max(0, _TIER_ORDER.index(tier) - 1)
+            tier = _TIER_ORDER[idx]
+            notes.append(
+                f"Tier downgraded from '{old_tier}' to '{tier}': measured "
+                f"memory bandwidth {mem_bw_gb_s:.1f} GB/s is below the "
+                f"{SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S:.0f} GB/s floor for "
+                "SLH-DSA hash-tree throughput."
+            )
         host_rate = rate * cores
-        out[algo] = {
-            "tier": tier, "metric": op,
+        out[key] = {
+            "algorithm": algo,
+            "tier": tier,
+            "metric": op,
             "rate_per_core": round(rate, 2),
             "rate_host_estimate": round(host_rate, 2),
             "thresholds": thresholds,
             "reason": f"{rate:.1f} {op}/core - threshold for '{tier}' is {thresholds.get(tier, '-')}",
+            "notes": notes,
         }
     return out
 
@@ -1298,28 +1378,52 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
 
 def overall_verdict(
     isa: str, mem: str, dedicated: bool, per_algo: dict[str, dict[str, Any]],
-) -> tuple[str, str, int]:
+) -> tuple[str, str, int, str]:
+    """Compose ISA, memory, and (when available) measured per-algorithm
+    tiers into one verdict.  Returns (verdict, why, exit_code, caveat).
+
+    Distinguishes 'tested and bad' from 'could not test':
+      - When per-algo verdicts are present, they participate in min().
+      - When all per-algo verdicts are 'unknown' (bench didn't run, or
+        OpenSSL too old), the verdict is based on ISA + memory only and
+        a caveat string is returned explaining what was not measured.
+        A missing benchmark must not falsely drag an otherwise-capable
+        host to the floor.
+    """
     if dedicated:
         return ("EXCELLENT - dedicated PQC silicon present",
                 "Use the accelerator for keygen/sign/decap; software path covers the rest.",
-                0)
+                0, "")
     rank = {"excellent": 4, "good": 3, "adequate": 2, "marginal": 2, "poor": 1, "unknown": 2}
     bench_tiers = [v["tier"] for v in per_algo.values() if v.get("tier") not in (None, "unknown")]
-    bench_min = min((rank[t] for t in bench_tiers), default=0)
+    has_bench = bool(bench_tiers)
     isa_score = rank.get(isa, 2)
     mem_score = rank.get(mem, 2)
-    composite = min(s for s in (isa_score, mem_score, bench_min or 99) if s)
+    if has_bench:
+        composite = min(isa_score, mem_score, min(rank[t] for t in bench_tiers))
+        caveat = ""
+    else:
+        composite = min(isa_score, mem_score)
+        caveat = (
+            "Verdict reflects CPU instruction-set and memory only; no PQC "
+            "microbenchmark was run on this host.  Re-run with --bench for "
+            "measured per-algorithm rates and tier validation."
+        )
     if composite >= 4:
         return ("EXCELLENT - software PQC at production speed",
-                "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.", 0)
+                "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.",
+                0, caveat)
     if composite == 3:
         return ("GOOD - production-capable in software",
-                "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.", 1)
+                "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.",
+                1, caveat)
     if composite == 2:
         return ("MARGINAL - works, but plan for an accelerator",
-                "Software PQC will be a hot spot under load; consider HSM/QAT offload.", 2)
+                "Software PQC will be a hot spot under load; consider HSM/QAT offload.",
+                2, caveat)
     return ("POOR - not suitable for production PQC",
-            "Add a dedicated accelerator or upgrade the host.", 3)
+            "Add a dedicated accelerator or upgrade the host.",
+            3, caveat)
 
 
 # ---------------------------------------------------------------------------
@@ -1462,13 +1566,15 @@ def render_text(r: Report) -> str:
 
     if r.per_algo:
         L.append(C.wrap(C.BOLD, "7. Per-algorithm production verdict"))
-        for algo, v in r.per_algo.items():
+        for key, v in r.per_algo.items():
             tier_s = _tier_label(v["tier"])
             extra = ""
             if "rate_per_core" in v:
                 extra = f" - {v['rate_per_core']:.1f} {v['metric']}/core, ~{v['rate_host_estimate']:.0f} host"
-            L.append(f"   {algo:<20} {tier_s:<14}{extra}")
+            L.append(f"   {key:<22} {tier_s:<14}{extra}")
             L.append(f"     {v.get('reason','')}")
+            for note in v.get("notes", []):
+                L.append(C.wrap(C.YELLOW, f"     note: {note}"))
         L.append("")
 
     if r.production_estimate:
@@ -1499,6 +1605,8 @@ def render_text(r: Report) -> str:
     L.append(sub)
     L.append(f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}")
     L.append(f"           {r.verdict_reason}")
+    if r.verdict_caveat:
+        L.append(C.wrap(C.YELLOW, f"  CAVEAT:  {r.verdict_caveat}"))
     L.append(sub)
     return "\n".join(L)
 
@@ -1622,9 +1730,9 @@ def main() -> int:
         membw, membw_method = memory_bandwidth_probe()
 
     cores_for_estimate = physical or logical or 1
-    palg = per_algo_verdict(bench, cores_for_estimate) if bench else {}
+    palg = per_algo_verdict(bench, cores_for_estimate, mem_bw_gb_s=membw) if bench else {}
     pest = production_estimate(palg, total_gb) if palg else {}
-    verdict, why, code = overall_verdict(isa_t, mem_t, dedicated, palg)
+    verdict, why, code, caveat = overall_verdict(isa_t, mem_t, dedicated, palg)
     why = f"{why} ISA: {isa_reason}. Memory: {mem_reason}."
 
     r = Report(
@@ -1663,6 +1771,7 @@ def main() -> int:
         production_estimate=pest,
         verdict=verdict,
         verdict_reason=why,
+        verdict_caveat=caveat,
         exit_code=code,
     )
 
