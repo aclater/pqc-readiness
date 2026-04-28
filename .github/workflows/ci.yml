@@ -34,7 +34,10 @@ jobs:
       - name: Install dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest ruff mypy numpy
+          # jsonschema + referencing are dev-only; the runtime stays
+          # stdlib + optional numpy.  jsonschema is needed by the CBOM
+          # tests to validate against the bundled CycloneDX 1.6 schema.
+          pip install pytest ruff mypy numpy jsonschema referencing
 
       - name: ruff check
         run: ruff check pqc_readiness.py tests/

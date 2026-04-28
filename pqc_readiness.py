@@ -16,6 +16,7 @@ Supported platforms:
 Usage:
     pqc-readiness                           human-readable report
     pqc-readiness --json                    machine-readable (stable schema)
+    pqc-readiness --cbom                    CycloneDX 1.6 CBOM JSON (NIST IR 8547)
     pqc-readiness --markdown                markdown report (for tickets)
     pqc-readiness --bench                   run PQC + classical microbench
     pqc-readiness --threads N               include N-way scaling test
@@ -34,6 +35,7 @@ Exit codes:
     3  Poor       - software-only and too slow for production
     4  --check threshold not met (TIER below floor, or cnsa-2.0 not compliant)
 """
+
 from __future__ import annotations
 
 import argparse
@@ -46,6 +48,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,7 +71,12 @@ HOST_PREFIX: str = ""
 # a symlink to it on most modern distros (Fedora, Debian, Ubuntu, Arch);
 # bind-mounting only /etc would dangle the symlink in the container.
 _HOST_NAMESPACES = (
-    "/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/etc",
+    "/var/lib/dpkg",
+    "/usr/share",
     "/usr/lib/os-release",
 )
 
@@ -77,9 +85,12 @@ def host_path(p: str) -> Path:
     """Return Path(p) under HOST_PREFIX when --host-mount is in effect
     and p targets a kernel/state namespace.  Bare-metal callers and
     user-space paths are unaffected."""
-    if HOST_PREFIX and any(p == ns or p.startswith(ns + "/") for ns in _HOST_NAMESPACES):
+    if HOST_PREFIX and any(
+        p == ns or p.startswith(ns + "/") for ns in _HOST_NAMESPACES
+    ):
         return Path(HOST_PREFIX + p)
     return Path(p)
+
 
 # ---------------------------------------------------------------------------
 # ISA feature catalogs
@@ -91,74 +102,94 @@ def host_path(p: str) -> Path:
 # ---------------------------------------------------------------------------
 
 X86_FEATURES: dict[str, tuple[str, str, int]] = {
-    "avx2":             ("AVX2",              "256-bit SIMD; baseline for optimized PQC", 2),
-    "avx512f":          ("AVX-512 F",         "Vector polynomial arithmetic",             3),
-    "avx512bw":         ("AVX-512 BW",        "Byte/word ops for Keccak/SHAKE",           2),
-    "avx512vl":         ("AVX-512 VL",        "VL-aware AVX-512",                         1),
-    "avx512vbmi":       ("AVX-512 VBMI",      "Permute-bytes; major Keccak speedup",      3),
-    "avx512vbmi2":      ("AVX-512 VBMI2",     "Compress/expand; SHAKE/Keccak",            2),
-    "avx512ifma":       ("AVX-512 IFMA",      "52-bit FMA; lattice multiplication",       3),
-    "avx512_vpopcntdq": ("AVX-512 VPOPCNTDQ", "Bitcount; SLH-DSA hash trees",             1),
-    "avx512_bitalg":    ("AVX-512 BITALG",    "Bit algorithms",                           1),
-    "vaes":             ("VAES",              "Vector AES-NI; AES-CTR DRBG",              2),
-    "vpclmulqdq":       ("VPCLMULQDQ",        "Vector carry-less multiply",               2),
-    "gfni":             ("GFNI",              "Galois field; Keccak speedup",             2),
-    "sha_ni":           ("SHA-NI",            "SHA-256 hardware (hybrid TLS)",            2),
-    "aes":              ("AES-NI",            "AES hardware (DRBG, hybrid)",              1),
-    "pclmulqdq":        ("PCLMULQDQ",         "Carry-less multiply",                      1),
+    "avx2": ("AVX2", "256-bit SIMD; baseline for optimized PQC", 2),
+    "avx512f": ("AVX-512 F", "Vector polynomial arithmetic", 3),
+    "avx512bw": ("AVX-512 BW", "Byte/word ops for Keccak/SHAKE", 2),
+    "avx512vl": ("AVX-512 VL", "VL-aware AVX-512", 1),
+    "avx512vbmi": ("AVX-512 VBMI", "Permute-bytes; major Keccak speedup", 3),
+    "avx512vbmi2": ("AVX-512 VBMI2", "Compress/expand; SHAKE/Keccak", 2),
+    "avx512ifma": ("AVX-512 IFMA", "52-bit FMA; lattice multiplication", 3),
+    "avx512_vpopcntdq": ("AVX-512 VPOPCNTDQ", "Bitcount; SLH-DSA hash trees", 1),
+    "avx512_bitalg": ("AVX-512 BITALG", "Bit algorithms", 1),
+    "vaes": ("VAES", "Vector AES-NI; AES-CTR DRBG", 2),
+    "vpclmulqdq": ("VPCLMULQDQ", "Vector carry-less multiply", 2),
+    "gfni": ("GFNI", "Galois field; Keccak speedup", 2),
+    "sha_ni": ("SHA-NI", "SHA-256 hardware (hybrid TLS)", 2),
+    "aes": ("AES-NI", "AES hardware (DRBG, hybrid)", 1),
+    "pclmulqdq": ("PCLMULQDQ", "Carry-less multiply", 1),
 }
 
 ARM_FEATURES: dict[str, tuple[str, str, int]] = {
-    "aes":    ("AES",     "ARMv8 AES instructions",                1),
-    "sha2":   ("SHA-2",   "SHA-256 hardware",                      1),
-    "sha3":   ("SHA-3",   "Keccak/SHAKE hardware - major PQC win", 3),
-    "sha512": ("SHA-512", "SHA-512 hardware",                      1),
-    "pmull":  ("PMULL",   "Polynomial multiply long",              1),
-    "sve":    ("SVE",     "Scalable Vector Extension",             2),
-    "sve2":   ("SVE2",    "SVE2; lattice arithmetic",              3),
-    "i8mm":   ("I8MM",    "Int8 matrix multiply (Neoverse V1/V2)", 2),
+    "aes": ("AES", "ARMv8 AES instructions", 1),
+    "sha2": ("SHA-2", "SHA-256 hardware", 1),
+    "sha3": ("SHA-3", "Keccak/SHAKE hardware - major PQC win", 3),
+    "sha512": ("SHA-512", "SHA-512 hardware", 1),
+    "pmull": ("PMULL", "Polynomial multiply long", 1),
+    "sve": ("SVE", "Scalable Vector Extension", 2),
+    "sve2": ("SVE2", "SVE2; lattice arithmetic", 3),
+    "i8mm": ("I8MM", "Int8 matrix multiply (Neoverse V1/V2)", 2),
 }
 
 # IBM z facilities. MSA8 added SHA-3/SHAKE on-chip; MSA9 added EdDSA.
 # IBM z16 (CEX8) is the first widely-deployed system with on-chip
 # acceleration of NIST PQC algorithms in hardware.
 S390_FEATURES: dict[str, tuple[str, str, int]] = {
-    "msa":  ("MSA",  "Message Security Assist baseline (CPACF)", 1),
-    "msa3": ("MSA3", "SHA-256/512",                              1),
-    "msa4": ("MSA4", "AES-192/256, GHASH",                       1),
-    "msa5": ("MSA5", "PRNG/PPNO",                                1),
-    "msa8": ("MSA8", "AES-GCM, SHA-3, SHAKE - PQC hashing",      3),
-    "msa9": ("MSA9", "EdDSA on-chip; precursor to PQC accel",    2),
-    "vx":   ("VX",   "Vector facility",                          1),
-    "vxe":  ("VXE",  "Vector enhancements",                      1),
-    "vxe2": ("VXE2", "Vector enhancements 2",                    1),
+    "msa": ("MSA", "Message Security Assist baseline (CPACF)", 1),
+    "msa3": ("MSA3", "SHA-256/512", 1),
+    "msa4": ("MSA4", "AES-192/256, GHASH", 1),
+    "msa5": ("MSA5", "PRNG/PPNO", 1),
+    "msa8": ("MSA8", "AES-GCM, SHA-3, SHAKE - PQC hashing", 3),
+    "msa9": ("MSA9", "EdDSA on-chip; precursor to PQC accel", 2),
+    "vx": ("VX", "Vector facility", 1),
+    "vxe": ("VXE", "Vector enhancements", 1),
+    "vxe2": ("VXE2", "Vector enhancements 2", 1),
 }
 
 # macOS sysctl flag prefixes -> normalized flag names matching the catalogs.
 MACOS_X86_SYSCTL = {
-    "machdep.cpu.features":        ["AVX1.0", "AES", "PCLMULQDQ", "SSE4.2"],
-    "machdep.cpu.leaf7_features":  ["AVX2", "AVX512F", "AVX512BW", "AVX512VL",
-                                    "AVX512VBMI", "AVX512VBMI2", "AVX512IFMA",
-                                    "AVX512_VPOPCNTDQ", "AVX512_BITALG",
-                                    "VAES", "VPCLMULQDQ", "GFNI", "SHA"],
+    "machdep.cpu.features": ["AVX1.0", "AES", "PCLMULQDQ", "SSE4.2"],
+    "machdep.cpu.leaf7_features": [
+        "AVX2",
+        "AVX512F",
+        "AVX512BW",
+        "AVX512VL",
+        "AVX512VBMI",
+        "AVX512VBMI2",
+        "AVX512IFMA",
+        "AVX512_VPOPCNTDQ",
+        "AVX512_BITALG",
+        "VAES",
+        "VPCLMULQDQ",
+        "GFNI",
+        "SHA",
+    ],
 }
 MACOS_X86_TO_LINUX = {
-    "AVX2": "avx2", "AVX512F": "avx512f", "AVX512BW": "avx512bw",
-    "AVX512VL": "avx512vl", "AVX512VBMI": "avx512vbmi",
-    "AVX512VBMI2": "avx512vbmi2", "AVX512IFMA": "avx512ifma",
-    "AVX512_VPOPCNTDQ": "avx512_vpopcntdq", "AVX512_BITALG": "avx512_bitalg",
-    "VAES": "vaes", "VPCLMULQDQ": "vpclmulqdq", "GFNI": "gfni",
-    "SHA": "sha_ni", "AES": "aes", "PCLMULQDQ": "pclmulqdq",
+    "AVX2": "avx2",
+    "AVX512F": "avx512f",
+    "AVX512BW": "avx512bw",
+    "AVX512VL": "avx512vl",
+    "AVX512VBMI": "avx512vbmi",
+    "AVX512VBMI2": "avx512vbmi2",
+    "AVX512IFMA": "avx512ifma",
+    "AVX512_VPOPCNTDQ": "avx512_vpopcntdq",
+    "AVX512_BITALG": "avx512_bitalg",
+    "VAES": "vaes",
+    "VPCLMULQDQ": "vpclmulqdq",
+    "GFNI": "gfni",
+    "SHA": "sha_ni",
+    "AES": "aes",
+    "PCLMULQDQ": "pclmulqdq",
 }
 MACOS_ARM_SYSCTLS = {
-    "hw.optional.arm.FEAT_AES":    "aes",
-    "hw.optional.arm.FEAT_SHA1":   "sha1",
+    "hw.optional.arm.FEAT_AES": "aes",
+    "hw.optional.arm.FEAT_SHA1": "sha1",
     "hw.optional.arm.FEAT_SHA256": "sha2",
     "hw.optional.arm.FEAT_SHA512": "sha512",
-    "hw.optional.arm.FEAT_SHA3":   "sha3",
-    "hw.optional.arm.FEAT_PMULL":  "pmull",
-    "hw.optional.arm.FEAT_SVE":    "sve",
-    "hw.optional.arm.FEAT_I8MM":   "i8mm",
+    "hw.optional.arm.FEAT_SHA3": "sha3",
+    "hw.optional.arm.FEAT_PMULL": "pmull",
+    "hw.optional.arm.FEAT_SVE": "sve",
+    "hw.optional.arm.FEAT_I8MM": "i8mm",
 }
 
 # ---------------------------------------------------------------------------
@@ -166,33 +197,37 @@ MACOS_ARM_SYSCTLS = {
 # ---------------------------------------------------------------------------
 
 ACCEL_PCI_HINTS: list[tuple[str, str, str]] = [
-    (r"Marvell.*LiquidSecurity",                       "Marvell LiquidSecurity HSM",      "hsm"),
-    (r"Cavium.*Nitrox|Marvell.*Nitrox",                "Marvell/Cavium Nitrox",           "hsm"),
-    (r"Thales.*Luna|SafeNet.*Luna",                    "Thales Luna PCIe HSM",            "hsm"),
-    (r"Utimaco",                                       "Utimaco SecurityServer",          "hsm"),
-    (r"Atos.*Trustway|Bull.*Trustway|Proteccio",       "Atos Trustway Proteccio",         "hsm"),
-    (r"Yubico",                                        "YubiHSM",                         "hsm"),
-    (r"IBM.*Crypto Express|IBM.*47[67][09]",           "IBM Crypto Express (CEX)",        "hsm"),
-    (r"Intel.*QuickAssist|Intel.*QAT",                 "Intel QuickAssist (QAT)",         "accel"),
-    (r"AMD.*Secure Processor|AMD.*PSP",                "AMD Platform Security Processor", "accel"),
-    (r"ARM.*CryptoCell",                               "ARM CryptoCell",                  "accel"),
-    (r"Amazon\.com.*Nitro|Amazon Web Services.*Nitro", "AWS Nitro Security Chip",        "accel"),
-    (r"Microchip.*CryptoAuth",                         "Microchip CryptoAuthentication",  "accel"),
+    (r"Marvell.*LiquidSecurity", "Marvell LiquidSecurity HSM", "hsm"),
+    (r"Cavium.*Nitrox|Marvell.*Nitrox", "Marvell/Cavium Nitrox", "hsm"),
+    (r"Thales.*Luna|SafeNet.*Luna", "Thales Luna PCIe HSM", "hsm"),
+    (r"Utimaco", "Utimaco SecurityServer", "hsm"),
+    (r"Atos.*Trustway|Bull.*Trustway|Proteccio", "Atos Trustway Proteccio", "hsm"),
+    (r"Yubico", "YubiHSM", "hsm"),
+    (r"IBM.*Crypto Express|IBM.*47[67][09]", "IBM Crypto Express (CEX)", "hsm"),
+    (r"Intel.*QuickAssist|Intel.*QAT", "Intel QuickAssist (QAT)", "accel"),
+    (r"AMD.*Secure Processor|AMD.*PSP", "AMD Platform Security Processor", "accel"),
+    (r"ARM.*CryptoCell", "ARM CryptoCell", "accel"),
+    (
+        r"Amazon\.com.*Nitro|Amazon Web Services.*Nitro",
+        "AWS Nitro Security Chip",
+        "accel",
+    ),
+    (r"Microchip.*CryptoAuth", "Microchip CryptoAuthentication", "accel"),
     # SmartNICs / DPUs.  These are not PQC silicon today but customers
     # want them inventoried as part of the broader accelerator picture.
-    (r"Mellanox.*BlueField|NVIDIA.*BlueField",         "NVIDIA BlueField DPU",            "dpu"),
-    (r"Intel.*IPU(\s+E2000)?|Intel.*Mount Evans",      "Intel IPU E2000",                 "dpu"),
-    (r"Pensando|AMD.*Pensando|DSC2|DSC-25",            "AMD Pensando DSC",                "dpu"),
+    (r"Mellanox.*BlueField|NVIDIA.*BlueField", "NVIDIA BlueField DPU", "dpu"),
+    (r"Intel.*IPU(\s+E2000)?|Intel.*Mount Evans", "Intel IPU E2000", "dpu"),
+    (r"Pensando|AMD.*Pensando|DSC2|DSC-25", "AMD Pensando DSC", "dpu"),
 ]
 
 DEVICE_HINTS: list[tuple[str, str, str]] = [
-    ("/dev/tpm0",           "TPM 2.0 device",            "tpm"),
-    ("/dev/tpmrm0",         "TPM 2.0 resource manager",  "tpm"),
-    ("/dev/qat_adf_ctl",    "Intel QAT control",         "accel"),
-    ("/dev/z90crypt",       "IBM Z crypto express",      "hsm"),
-    ("/dev/nitro_enclaves", "AWS Nitro Enclaves",        "accel"),
-    ("/dev/kfd",            "AMD ROCm compute (general-purpose)", "gpu"),
-    ("/dev/nvidia0",        "NVIDIA GPU (general-purpose)",       "gpu"),
+    ("/dev/tpm0", "TPM 2.0 device", "tpm"),
+    ("/dev/tpmrm0", "TPM 2.0 resource manager", "tpm"),
+    ("/dev/qat_adf_ctl", "Intel QAT control", "accel"),
+    ("/dev/z90crypt", "IBM Z crypto express", "hsm"),
+    ("/dev/nitro_enclaves", "AWS Nitro Enclaves", "accel"),
+    ("/dev/kfd", "AMD ROCm compute (general-purpose)", "gpu"),
+    ("/dev/nvidia0", "NVIDIA GPU (general-purpose)", "gpu"),
 ]
 
 # PKCS#11 module search paths per distro family.  Vendor paths
@@ -203,22 +238,27 @@ DEVICE_HINTS: list[tuple[str, str, str]] = [
 # multiarch and only exist there.
 _PKCS11_PATHS_BY_FAMILY: dict[str, list[str]] = {
     "rhel": [
-        "/usr/lib64/pkcs11", "/usr/lib/pkcs11",
+        "/usr/lib64/pkcs11",
+        "/usr/lib/pkcs11",
         "/usr/local/lib/pkcs11",
     ],
     "debian": [
-        "/usr/lib/x86_64-linux-gnu/pkcs11", "/usr/lib/aarch64-linux-gnu/pkcs11",
-        "/usr/lib/pkcs11", "/usr/lib/softhsm",
+        "/usr/lib/x86_64-linux-gnu/pkcs11",
+        "/usr/lib/aarch64-linux-gnu/pkcs11",
+        "/usr/lib/pkcs11",
+        "/usr/lib/softhsm",
         "/var/lib/softhsm/tokens",
         "/usr/local/lib/pkcs11",
     ],
-    "suse":   ["/usr/lib64/pkcs11", "/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
-    "arch":   ["/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "suse": ["/usr/lib64/pkcs11", "/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "arch": ["/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
     "alpine": ["/usr/lib/pkcs11"],
-    "macos":  ["/opt/homebrew/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "macos": ["/opt/homebrew/lib/pkcs11", "/usr/local/lib/pkcs11"],
 }
 _VENDOR_PKCS11_PATHS: list[str] = [
-    "/opt/cloudhsm/lib", "/opt/Thales/PKCS11", "/opt/utimaco/Software/PKCS11",
+    "/opt/cloudhsm/lib",
+    "/opt/Thales/PKCS11",
+    "/opt/utimaco/Software/PKCS11",
 ]
 
 
@@ -229,17 +269,18 @@ def _pkcs11_search_paths(family: str) -> list[str]:
     versa, and produces tighter output."""
     return _PKCS11_PATHS_BY_FAMILY.get(family, []) + _VENDOR_PKCS11_PATHS
 
+
 # ---------------------------------------------------------------------------
 # NIST PQC parameter sizes (bytes) and per-algorithm production thresholds
 # ---------------------------------------------------------------------------
 
 PQC_SIZES = {
-    "ML-KEM-768":        {"role": "TLS KEM",        "pk": 1184, "sk": 2400, "ct": 1088, "shared": 32},
-    "ML-DSA-65":         {"role": "general sig",    "pk": 1952, "sk": 4032, "sig":  3309},
-    "ML-DSA-87":         {"role": "high-sec sig",   "pk": 2592, "sk": 4896, "sig":  4627},
-    "SLH-DSA-SHA2-128s": {"role": "small/slow sig", "pk":   32, "sk":   64, "sig":  7856},
-    "SLH-DSA-SHA2-128f": {"role": "fast/large sig", "pk":   32, "sk":   64, "sig": 17088},
-    "SLH-DSA-SHA2-256f": {"role": "high-sec sig",   "pk":   64, "sk":  128, "sig": 49856},
+    "ML-KEM-768": {"role": "TLS KEM", "pk": 1184, "sk": 2400, "ct": 1088, "shared": 32},
+    "ML-DSA-65": {"role": "general sig", "pk": 1952, "sk": 4032, "sig": 3309},
+    "ML-DSA-87": {"role": "high-sec sig", "pk": 2592, "sk": 4896, "sig": 4627},
+    "SLH-DSA-SHA2-128s": {"role": "small/slow sig", "pk": 32, "sk": 64, "sig": 7856},
+    "SLH-DSA-SHA2-128f": {"role": "fast/large sig", "pk": 32, "sk": 64, "sig": 17088},
+    "SLH-DSA-SHA2-256f": {"role": "high-sec sig", "pk": 64, "sk": 128, "sig": 49856},
 }
 
 # Per-core ops/sec thresholds for the bottleneck operation of each
@@ -253,12 +294,18 @@ PQC_SIZES = {
 # An algorithm may appear more than once when distinct operations
 # matter — the per-algo verdict picks the worst tier across them.
 ALGO_THRESHOLDS: dict[str, tuple[str, dict[str, float]]] = {
-    "ML-KEM-768":        ("decaps/s", {"excellent": 20000, "good":  8000, "marginal": 2000}),
-    "ML-DSA-65":         ("sign/s",   {"excellent":  1500, "good":   600, "marginal":  150}),
-    "ML-DSA-65/verify":  ("verify/s", {"excellent":  8000, "good":  3000, "marginal":  500}),
-    "ML-DSA-87":         ("sign/s",   {"excellent":  1000, "good":   400, "marginal":  100}),
-    "ML-DSA-87/verify":  ("verify/s", {"excellent":  5000, "good":  2000, "marginal":  300}),
-    "SLH-DSA-SHA2-128s": ("sign/s",   {"excellent":     5, "good":     2, "marginal":  0.5}),
+    "ML-KEM-768": ("decaps/s", {"excellent": 20000, "good": 8000, "marginal": 2000}),
+    "ML-DSA-65": ("sign/s", {"excellent": 1500, "good": 600, "marginal": 150}),
+    "ML-DSA-65/verify": (
+        "verify/s",
+        {"excellent": 8000, "good": 3000, "marginal": 500},
+    ),
+    "ML-DSA-87": ("sign/s", {"excellent": 1000, "good": 400, "marginal": 100}),
+    "ML-DSA-87/verify": (
+        "verify/s",
+        {"excellent": 5000, "good": 2000, "marginal": 300},
+    ),
+    "SLH-DSA-SHA2-128s": ("sign/s", {"excellent": 5, "good": 2, "marginal": 0.5}),
 }
 
 # Memory-bandwidth threshold (GB/s) below which SLH-DSA tier is
@@ -284,6 +331,7 @@ ALGO_NOTES: dict[str, list[str]] = {
 # Output helpers
 # ---------------------------------------------------------------------------
 
+
 class C:
     BOLD = "\033[1m"
     DIM = "\033[2m"
@@ -306,16 +354,17 @@ class C:
 
 TIER_COLOR = {
     "excellent": C.GREEN,
-    "good":      C.GREEN,
-    "adequate":  C.YELLOW,
-    "marginal":  C.YELLOW,
-    "poor":      C.RED,
-    "unknown":   C.DIM,
+    "good": C.GREEN,
+    "adequate": C.YELLOW,
+    "marginal": C.YELLOW,
+    "poor": C.RED,
+    "unknown": C.DIM,
 }
 
 # ---------------------------------------------------------------------------
 # Dataclass
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Report:
@@ -369,6 +418,7 @@ class Report:
 # Platform shims
 # ---------------------------------------------------------------------------
 
+
 def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -395,6 +445,7 @@ def is_macos() -> bool:
 # ---------------------------------------------------------------------------
 # CPU / memory inventory
 # ---------------------------------------------------------------------------
+
 
 def parse_cpuinfo_flags(text: str) -> set[str]:
     """Pure helper: extract the union of feature tokens from any
@@ -547,6 +598,7 @@ def memory_info() -> tuple[float, float]:
 # ISA classification
 # ---------------------------------------------------------------------------
 
+
 def detect_isa(arch: str, flags: set[str]) -> tuple[dict[str, dict[str, str]], int]:
     if arch in ("x86_64", "amd64", "i686", "i386"):
         catalog = X86_FEATURES
@@ -567,28 +619,44 @@ def detect_isa(arch: str, flags: set[str]) -> tuple[dict[str, dict[str, str]], i
 
 def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
     if arch in ("x86_64", "amd64"):
-        avx512_pqc = (
-            {"avx512f", "avx512vbmi", "avx512ifma"}.issubset(flags)
-            or {"avx512f", "vaes", "vpclmulqdq"}.issubset(flags)
-        )
+        avx512_pqc = {"avx512f", "avx512vbmi", "avx512ifma"}.issubset(flags) or {
+            "avx512f",
+            "vaes",
+            "vpclmulqdq",
+        }.issubset(flags)
         if avx512_pqc and score >= 18:
-            return ("excellent", "AVX-512 with VBMI/IFMA/VAES family - full SIMD PQC at line rate")
+            return (
+                "excellent",
+                "AVX-512 with VBMI/IFMA/VAES family - full SIMD PQC at line rate",
+            )
         if "avx2" in flags and {"aes", "pclmulqdq"}.issubset(flags) and score >= 6:
-            return ("good", "AVX2 + AES-NI + PCLMULQDQ - production-capable in software")
+            return (
+                "good",
+                "AVX2 + AES-NI + PCLMULQDQ - production-capable in software",
+            )
         if "avx2" in flags:
             return ("adequate", "AVX2 only - workable but slower than peers")
         return ("poor", "Pre-AVX2 x86 - software PQC will be slow")
     if arch in ("aarch64", "arm64"):
         if {"sha3", "aes"}.issubset(flags) and ("sve2" in flags or score >= 8):
-            return ("excellent", "ARMv8 with SHA-3 + SVE2 / wide crypto - strong PQC profile")
+            return (
+                "excellent",
+                "ARMv8 with SHA-3 + SVE2 / wide crypto - strong PQC profile",
+            )
         if {"sha3", "aes"}.issubset(flags):
-            return ("good", "ARMv8 with SHA-3 + AES - production-capable (Apple M-series, Graviton 3)")
+            return (
+                "good",
+                "ARMv8 with SHA-3 + AES - production-capable (Apple M-series, Graviton 3)",
+            )
         if {"aes", "sha2", "pmull"}.issubset(flags):
             return ("good", "ARMv8 crypto extensions - production-capable")
         return ("adequate", "Limited ARM crypto extensions")
     if arch == "s390x":
         if {"msa8", "msa9"}.issubset(flags):
-            return ("excellent", "MSA8+MSA9 (z15+/z16) - on-chip SHA-3 / EdDSA, PQC accel possible")
+            return (
+                "excellent",
+                "MSA8+MSA9 (z15+/z16) - on-chip SHA-3 / EdDSA, PQC accel possible",
+            )
         if "msa" in flags:
             return ("adequate", "Older z hardware without SHA-3 on-chip")
         return ("poor", "No CPACF detected")
@@ -597,7 +665,10 @@ def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
 
 def memory_tier(gb: float) -> tuple[str, str]:
     if gb >= 64:
-        return ("excellent", f"{gb:.1f} GiB - comfortable for high-throughput TLS/PQC at scale")
+        return (
+            "excellent",
+            f"{gb:.1f} GiB - comfortable for high-throughput TLS/PQC at scale",
+        )
     if gb >= 16:
         return ("good", f"{gb:.1f} GiB - adequate for medium production load")
     if gb >= 4:
@@ -609,6 +680,7 @@ def memory_tier(gb: float) -> tuple[str, str]:
 # Accelerator detection
 # ---------------------------------------------------------------------------
 
+
 def detect_accelerators() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if shutil.which("lspci"):
@@ -617,7 +689,9 @@ def detect_accelerators() -> list[dict[str, Any]]:
             for line in data.splitlines():
                 for pat, label, kind in ACCEL_PCI_HINTS:
                     if re.search(pat, line, re.IGNORECASE):
-                        out.append({"kind": kind, "name": label, "detail": line.strip()})
+                        out.append(
+                            {"kind": kind, "name": label, "detail": line.strip()}
+                        )
     for path, label, kind in DEVICE_HINTS:
         if host_path(path).exists():
             out.append({"kind": kind, "name": label, "detail": path})
@@ -647,14 +721,31 @@ def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
 
 def detect_tpm_pqc() -> dict[str, Any]:
     if not shutil.which("tpm2_getcap"):
-        return {"present": host_path("/dev/tpmrm0").exists() or host_path("/dev/tpm0").exists(),
-                "tools": False, "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC"}
+        return {
+            "present": host_path("/dev/tpmrm0").exists()
+            or host_path("/dev/tpm0").exists(),
+            "tools": False,
+            "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC",
+        }
     rc, out = _run(["tpm2_getcap", "algorithms"], timeout=5)
     if rc != 0:
-        return {"present": True, "tools": True, "note": "tpm2_getcap failed", "raw": out[:200]}
-    has_pqc = bool(re.search(r"ml[-_ ]?kem|ml[-_ ]?dsa|kyber|dilithium|sphincs", out, re.IGNORECASE))
-    return {"present": True, "tools": True, "pqc_advertised": has_pqc,
-            "note": "TPM 2.0 specs do not yet mandate PQC; almost all shipped TPMs answer 'no'"}
+        return {
+            "present": True,
+            "tools": True,
+            "note": "tpm2_getcap failed",
+            "raw": out[:200],
+        }
+    has_pqc = bool(
+        re.search(
+            r"ml[-_ ]?kem|ml[-_ ]?dsa|kyber|dilithium|sphincs", out, re.IGNORECASE
+        )
+    )
+    return {
+        "present": True,
+        "tools": True,
+        "pqc_advertised": has_pqc,
+        "note": "TPM 2.0 specs do not yet mandate PQC; almost all shipped TPMs answer 'no'",
+    }
 
 
 def detect_kernel_crypto_hw() -> list[str]:
@@ -666,8 +757,20 @@ def detect_kernel_crypto_hw() -> list[str]:
         text = host_path("/proc/crypto").read_text()
     except OSError:
         return []
-    hw_suffixes = ("-ni", "-ce", "-ssse3", "-avx2", "-avx512", "-arm64-ce",
-                   "-aesni", "-pclmul", "-sha-ce", "-sha-ni", "_asm", "-paes")
+    hw_suffixes = (
+        "-ni",
+        "-ce",
+        "-ssse3",
+        "-avx2",
+        "-avx512",
+        "-arm64-ce",
+        "-aesni",
+        "-pclmul",
+        "-sha-ce",
+        "-sha-ni",
+        "_asm",
+        "-paes",
+    )
     out: set[str] = set()
     for line in text.splitlines():
         if line.startswith("driver"):
@@ -722,7 +825,9 @@ def detect_fips_mode_from_providers_text(text: str) -> bool:
 def detect_fips_mode() -> dict[str, Any]:
     info: dict[str, Any] = {"kernel": False, "openssl_provider": False}
     try:
-        info["kernel"] = host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
+        info["kernel"] = (
+            host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
+        )
     except OSError:
         pass
     if shutil.which("openssl"):
@@ -753,9 +858,7 @@ def parse_lszcrypt(text: str) -> list[dict[str, Any]]:
     qualify regardless of MSA8/MSA9 CPACF facility bits.
     """
     out: list[dict[str, Any]] = []
-    pat = re.compile(
-        r"^\s*(\S+)\s+(CEX(\d+)([CPA]))\s+(\S+)\s+(\S+)"
-    )
+    pat = re.compile(r"^\s*(\S+)\s+(CEX(\d+)([CPA]))\s+(\S+)\s+(\S+)")
     for line in text.splitlines():
         if "CARD" in line.upper() and "TYPE" in line.upper():
             continue
@@ -775,15 +878,17 @@ def parse_lszcrypt(text: str) -> list[dict[str, Any]]:
         mode_token = m.group(5)
         status = m.group(6)
         mode = {"C": "CCA", "P": "EP11", "A": "Accelerator"}.get(suffix, mode_token)
-        out.append({
-            "card": card,
-            "domain": domain,
-            "type_str": type_str,
-            "level": level,
-            "mode": mode,
-            "status": status,
-            "pqc_eligible": (level >= 8 and mode == "EP11"),
-        })
+        out.append(
+            {
+                "card": card,
+                "domain": domain,
+                "type_str": type_str,
+                "level": level,
+                "mode": mode,
+                "status": status,
+                "pqc_eligible": (level >= 8 and mode == "EP11"),
+            }
+        )
     return out
 
 
@@ -798,16 +903,20 @@ def detect_s390x_crypto() -> list[dict[str, Any]]:
         return []
     accels: list[dict[str, Any]] = []
     for adapter in parse_lszcrypt(out):
-        accels.append({
-            "kind": "hsm",
-            "name": f"IBM Crypto Express {adapter['level']} ({adapter['mode']})",
-            "detail": (f"card={adapter['card']}"
-                       + (f" domain={adapter['domain']}" if adapter["domain"] else "")
-                       + f" mode={adapter['mode']} status={adapter['status']}"),
-            "pqc_capable": adapter["pqc_eligible"],
-            "cex_level": adapter["level"],
-            "cex_mode": adapter["mode"],
-        })
+        accels.append(
+            {
+                "kind": "hsm",
+                "name": f"IBM Crypto Express {adapter['level']} ({adapter['mode']})",
+                "detail": (
+                    f"card={adapter['card']}"
+                    + (f" domain={adapter['domain']}" if adapter["domain"] else "")
+                    + f" mode={adapter['mode']} status={adapter['status']}"
+                ),
+                "pqc_capable": adapter["pqc_eligible"],
+                "cex_level": adapter["level"],
+                "cex_mode": adapter["mode"],
+            }
+        )
     return accels
 
 
@@ -826,7 +935,9 @@ def detect_s390x_crypto() -> list[dict[str, Any]]:
 #   - Thales Luna Network/PCIe 7+ with PQC FM (Functionality Module)
 #   - Utimaco SecurityServer Se-Series with PQC algorithm pack
 #   - AWS CloudHSM (currently not PQC-capable as of last verification)
-def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str, Any]]) -> bool:
+def has_dedicated_pqc_silicon(
+    arch: str, flags: set[str], accels: list[dict[str, Any]]
+) -> bool:
     """Return True iff at least one detected accelerator is on the
     explicit PQC allow-list.  The detector that adds the device sets
     `pqc_capable=True` only when it has affirmative evidence (e.g.
@@ -844,11 +955,11 @@ NETWORK_HSM_HINTS: list[tuple[str, str]] = [
     # presence; we do NOT read or surface the contents of these files
     # (Chrystoki.conf especially can contain server hostnames / partition
     # IDs that customers may consider sensitive).
-    ("/etc/Chrystoki.conf",  "Thales Luna Network/PCIe (Chrystoki client config)"),
-    ("/opt/nfast/kmdata",    "Entrust nShield Connect (kmdata directory)"),
-    ("/opt/nfast/sbin",      "Entrust nShield (sbin tools)"),
-    ("/opt/cloudhsm/etc",    "AWS CloudHSM client"),
-    ("/opt/cloudhsm/bin",    "AWS CloudHSM client tools"),
+    ("/etc/Chrystoki.conf", "Thales Luna Network/PCIe (Chrystoki client config)"),
+    ("/opt/nfast/kmdata", "Entrust nShield Connect (kmdata directory)"),
+    ("/opt/nfast/sbin", "Entrust nShield (sbin tools)"),
+    ("/opt/cloudhsm/etc", "AWS CloudHSM client"),
+    ("/opt/cloudhsm/bin", "AWS CloudHSM client tools"),
     ("/opt/utimaco/Software/cs", "Utimaco CryptoServer client"),
 ]
 
@@ -871,12 +982,14 @@ def detect_network_hsms() -> list[dict[str, Any]]:
         if label in seen_labels:
             continue
         seen_labels.add(label)
-        out.append({
-            "kind": "network_hsm",
-            "name": label,
-            "detail": f"client config present: {path}",
-            "pqc_capable": False,
-        })
+        out.append(
+            {
+                "kind": "network_hsm",
+                "name": label,
+                "detail": f"client config present: {path}",
+                "pqc_capable": False,
+            }
+        )
     return out
 
 
@@ -894,7 +1007,8 @@ def detect_network_hsms() -> list[dict[str, Any]]:
 # because the boundary between two word characters does not exist.
 _PQC_SSH_TOKEN_RE = re.compile(r"(?:mlkem\d+|kyber\d+|sntrup\d+)", re.IGNORECASE)
 _CLASSICAL_SSH_TOKEN_RE = re.compile(
-    r"(?:nistp\d+|x25519|x448|secp\d+r1)", re.IGNORECASE,
+    r"(?:nistp\d+|x25519|x448|secp\d+r1)",
+    re.IGNORECASE,
 )
 
 
@@ -935,22 +1049,27 @@ def parse_ssh_kex(text: str) -> dict[str, Any]:
 
 def parse_ssh_version(text: str) -> str | None:
     """Parse `ssh -V` (printed to stderr).  Format:
-        OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026"""
+    OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026"""
     m = re.search(r"OpenSSH_([^\s,]+)", text)
     return m.group(1) if m else None
 
 
 def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
     if not shutil.which("ssh"):
-        return {"available": False,
-                "reason": f"ssh not on PATH ({_install_hint('ssh', family)})"}
+        return {
+            "available": False,
+            "reason": f"ssh not on PATH ({_install_hint('ssh', family)})",
+        }
     # ssh -V writes to stderr, captured via _run's stderr merge.
     _, ver_out = _run(["ssh", "-V"], timeout=3)
     version = parse_ssh_version(ver_out)
     rc, out = _run(["ssh", "-Q", "kex"], timeout=5)
     if rc != 0:
-        return {"available": False, "version": version,
-                "reason": f"ssh -Q kex failed (rc={rc})"}
+        return {
+            "available": False,
+            "version": version,
+            "reason": f"ssh -Q kex failed (rc={rc})",
+        }
     parsed = parse_ssh_kex(out)
     parsed["version"] = version
     return parsed
@@ -958,7 +1077,7 @@ def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
 
 def parse_libreswan_version(text: str) -> str | None:
     """Parse `ipsec --version` for the Libreswan release string.  Format:
-        Linux Libreswan 4.15 (netkey) on 5.14.0-..."""
+    Linux Libreswan 4.15 (netkey) on 5.14.0-..."""
     m = re.search(r"Libreswan\s+(\S+)", text)
     return m.group(1) if m else None
 
@@ -976,30 +1095,37 @@ def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
     if shutil.which("swanctl"):
         rc, sw_out = _run(["swanctl", "--list-algs"], timeout=10)
         if rc == 0:
-            pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", sw_out, re.IGNORECASE)
-            out.update({
-                "available": True,
-                "implementation": "strongswan",
-                "pqc": bool(pqc_match),
-                "evidence": pqc_match.group(0) if pqc_match else None,
-            })
+            pqc_match = re.search(
+                r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", sw_out, re.IGNORECASE
+            )
+            out.update(
+                {
+                    "available": True,
+                    "implementation": "strongswan",
+                    "pqc": bool(pqc_match),
+                    "evidence": pqc_match.group(0) if pqc_match else None,
+                }
+            )
             return out
         out["reason"] = f"swanctl --list-algs failed (rc={rc})"
     if shutil.which("ipsec"):
         rc, ip_out = _run(["ipsec", "--version"], timeout=5)
         if rc == 0 and "Libreswan" in ip_out:
-            out.update({
-                "available": True,
-                "implementation": "libreswan",
-                "version": parse_libreswan_version(ip_out),
-                "pqc": False,
-                "note": "Libreswan PQC support is pre-release as of 2026; "
-                        "verify against upstream release notes.",
-            })
+            out.update(
+                {
+                    "available": True,
+                    "implementation": "libreswan",
+                    "version": parse_libreswan_version(ip_out),
+                    "pqc": False,
+                    "note": "Libreswan PQC support is pre-release as of 2026; "
+                    "verify against upstream release notes.",
+                }
+            )
             return out
     if not out.get("reason"):
-        out["reason"] = (f"neither swanctl nor ipsec on PATH "
-                         f"({_install_hint('swanctl', family)})")
+        out["reason"] = (
+            f"neither swanctl nor ipsec on PATH ({_install_hint('swanctl', family)})"
+        )
     return out
 
 
@@ -1043,8 +1169,10 @@ def detect_nss() -> dict[str, Any]:
                 "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
                 "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
             }
-    return {"available": False,
-            "reason": "neither certutil nor a package manager that can query nss is on PATH"}
+    return {
+        "available": False,
+        "reason": "neither certutil nor a package manager that can query nss is on PATH",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1060,17 +1188,32 @@ def detect_nss() -> dict[str, Any]:
 
 OS_FAMILY_BY_ID: dict[str, str] = {
     # rhel family
-    "rhel": "rhel", "fedora": "rhel", "centos": "rhel", "rocky": "rhel",
-    "almalinux": "rhel", "ol": "rhel", "amzn": "rhel",
+    "rhel": "rhel",
+    "fedora": "rhel",
+    "centos": "rhel",
+    "rocky": "rhel",
+    "almalinux": "rhel",
+    "ol": "rhel",
+    "amzn": "rhel",
     # debian family
-    "debian": "debian", "ubuntu": "debian", "linuxmint": "debian",
-    "pop": "debian", "kali": "debian", "raspbian": "debian",
-    "neon": "debian", "elementary": "debian",
+    "debian": "debian",
+    "ubuntu": "debian",
+    "linuxmint": "debian",
+    "pop": "debian",
+    "kali": "debian",
+    "raspbian": "debian",
+    "neon": "debian",
+    "elementary": "debian",
     # suse family
-    "sles": "suse", "opensuse-leap": "suse", "opensuse-tumbleweed": "suse",
+    "sles": "suse",
+    "opensuse-leap": "suse",
+    "opensuse-tumbleweed": "suse",
     "sled": "suse",
     # arch family
-    "arch": "arch", "manjaro": "arch", "endeavouros": "arch", "garuda": "arch",
+    "arch": "arch",
+    "manjaro": "arch",
+    "endeavouros": "arch",
+    "garuda": "arch",
     # alpine
     "alpine": "alpine",
 }
@@ -1083,10 +1226,10 @@ PKG_MANAGER_ORDER: dict[str, list[str]] = {
     # First entry that is on PATH wins.  apt-get is preferred over apt for
     # scripting (apt's CLI is explicitly not stable for scripts per the
     # apt(8) manpage).  microdnf only when dnf is absent (UBI minimal).
-    "rhel":   ["dnf", "microdnf", "yum"],
+    "rhel": ["dnf", "microdnf", "yum"],
     "debian": ["apt-get", "apt"],
-    "suse":   ["zypper"],
-    "arch":   ["pacman"],
+    "suse": ["zypper"],
+    "arch": ["pacman"],
     "alpine": ["apk"],
 }
 
@@ -1108,7 +1251,9 @@ def parse_os_release(text: str) -> dict[str, Any]:
             continue
         k, _, v = line.partition("=")
         v = v.strip()
-        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        if (v.startswith('"') and v.endswith('"')) or (
+            v.startswith("'") and v.endswith("'")
+        ):
             v = v[1:-1]
         raw[k.strip()] = v
     id_ = raw.get("ID", "").lower().strip()
@@ -1139,12 +1284,12 @@ def _resolve_package_manager(family: str) -> str | None:
 def detect_os() -> dict[str, Any]:
     """Single source of truth for distro identity.  Returns:
 
-        family            rhel / debian / suse / arch / alpine / macos / unknown
-        id                rhel / fedora / ubuntu / debian / sles / ... / macos
-        version_id        e.g. "9.6", "24.04", "44"
-        version_codename  e.g. "jammy", "bookworm", or None
-        pretty_name       full string from os-release / sysctl
-        package_manager   first tool on PATH for this family, or None
+    family            rhel / debian / suse / arch / alpine / macos / unknown
+    id                rhel / fedora / ubuntu / debian / sles / ... / macos
+    version_id        e.g. "9.6", "24.04", "44"
+    version_codename  e.g. "jammy", "bookworm", or None
+    pretty_name       full string from os-release / sysctl
+    package_manager   first tool on PATH for this family, or None
     """
     if is_macos():
         ver = _sysctl("kern.osproductversion") or platform.mac_ver()[0]
@@ -1186,21 +1331,27 @@ def detect_os() -> dict[str, Any]:
         except OSError:
             deb_ver = None
         return {
-            "family": "debian", "id": "debian",
-            "version_id": deb_ver, "version_codename": None,
+            "family": "debian",
+            "id": "debian",
+            "version_id": deb_ver,
+            "version_codename": None,
             "pretty_name": f"Debian {deb_ver}" if deb_ver else "Debian",
             "package_manager": _resolve_package_manager("debian"),
         }
     if host_path("/etc/SuSE-release").exists():
         return {
-            "family": "suse", "id": "suse",
-            "version_id": None, "version_codename": None,
+            "family": "suse",
+            "id": "suse",
+            "version_id": None,
+            "version_codename": None,
             "pretty_name": "SUSE Linux (legacy /etc/SuSE-release)",
             "package_manager": _resolve_package_manager("suse"),
         }
     return {
-        "family": "unknown", "id": "unknown",
-        "version_id": None, "version_codename": None,
+        "family": "unknown",
+        "id": "unknown",
+        "version_id": None,
+        "version_codename": None,
         "pretty_name": f"{platform.system()} {platform.release()}".strip(),
         "package_manager": None,
     }
@@ -1212,47 +1363,47 @@ def detect_os() -> dict[str, Any]:
 # *binary* name, not the package name — the packages all happen to
 # match the binary on these distros.
 _INSTALL_HINT_BY_FAMILY: dict[str, dict[str, str]] = {
-    "rhel":   {
-        "lspci":      "dnf install pciutils",
+    "rhel": {
+        "lspci": "dnf install pciutils",
         "tpm2_getcap": "dnf install tpm2-tools",
-        "swanctl":    "dnf install strongswan",
-        "ssh":        "dnf install openssh-clients",
-        "certutil":   "dnf install nss-tools",
-        "rpm":        "(should already be present on RHEL/Fedora)",
+        "swanctl": "dnf install strongswan",
+        "ssh": "dnf install openssh-clients",
+        "certutil": "dnf install nss-tools",
+        "rpm": "(should already be present on RHEL/Fedora)",
         "dpkg-query": "n/a — RHEL uses rpm",
     },
     "debian": {
-        "lspci":      "apt-get install pciutils",
+        "lspci": "apt-get install pciutils",
         "tpm2_getcap": "apt-get install tpm2-tools",
-        "swanctl":    "apt-get install strongswan-swanctl",
-        "ssh":        "apt-get install openssh-client",
-        "certutil":   "apt-get install libnss3-tools",
+        "swanctl": "apt-get install strongswan-swanctl",
+        "ssh": "apt-get install openssh-client",
+        "certutil": "apt-get install libnss3-tools",
         "dpkg-query": "(should already be present on Debian/Ubuntu)",
-        "rpm":        "n/a — Debian uses dpkg",
+        "rpm": "n/a — Debian uses dpkg",
     },
-    "suse":   {
-        "lspci":      "zypper install pciutils",
+    "suse": {
+        "lspci": "zypper install pciutils",
         "tpm2_getcap": "zypper install tpm2.0-tools",
-        "swanctl":    "zypper install strongswan",
-        "ssh":        "zypper install openssh-clients",
-        "certutil":   "zypper install mozilla-nss-tools",
-        "rpm":        "(should already be present on SLES/openSUSE)",
+        "swanctl": "zypper install strongswan",
+        "ssh": "zypper install openssh-clients",
+        "certutil": "zypper install mozilla-nss-tools",
+        "rpm": "(should already be present on SLES/openSUSE)",
     },
-    "arch":   {
-        "lspci":      "pacman -S pciutils",
+    "arch": {
+        "lspci": "pacman -S pciutils",
         "tpm2_getcap": "pacman -S tpm2-tools",
-        "swanctl":    "pacman -S strongswan",
-        "ssh":        "pacman -S openssh",
-        "certutil":   "pacman -S nss",
-        "pacman":     "(should already be present on Arch)",
+        "swanctl": "pacman -S strongswan",
+        "ssh": "pacman -S openssh",
+        "certutil": "pacman -S nss",
+        "pacman": "(should already be present on Arch)",
     },
     "alpine": {
-        "lspci":      "apk add pciutils",
+        "lspci": "apk add pciutils",
         "tpm2_getcap": "apk add tpm2-tools",
-        "swanctl":    "apk add strongswan",
-        "ssh":        "apk add openssh-client",
-        "certutil":   "apk add nss-tools",
-        "apk":        "(should already be present on Alpine)",
+        "swanctl": "apk add strongswan",
+        "ssh": "apk add openssh-client",
+        "certutil": "apk add nss-tools",
+        "apk": "(should already be present on Alpine)",
     },
 }
 
@@ -1269,12 +1420,13 @@ def _install_hint(binary: str, family: str) -> str:
 # Kernel + RHEL minor + /proc/crypto PQC awareness
 # ---------------------------------------------------------------------------
 
+
 def parse_redhat_release(text: str) -> dict[str, Any]:
     """Parse /etc/redhat-release one-liner.  Examples:
 
-        Red Hat Enterprise Linux release 9.4 (Plow)
-        CentOS Stream release 9
-        Fedora release 44 (Forty Four)
+    Red Hat Enterprise Linux release 9.4 (Plow)
+    CentOS Stream release 9
+    Fedora release 44 (Forty Four)
     """
     s = text.strip()
     out: dict[str, Any] = {"raw": s}
@@ -1293,8 +1445,9 @@ def parse_proc_crypto_pqc(text: str) -> list[str]:
     of 2026 this almost always returns an empty list — kernel-side PQC
     primitives are not yet in mainline."""
     out: list[str] = []
-    pqc_re = re.compile(r"ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs",
-                        re.IGNORECASE)
+    pqc_re = re.compile(
+        r"ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs", re.IGNORECASE
+    )
     block: list[str] = []
     for line in text.splitlines() + [""]:
         if line.strip():
@@ -1339,7 +1492,9 @@ def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, An
         except OSError:
             pass
     try:
-        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(host_path("/proc/crypto").read_text())
+        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(
+            host_path("/proc/crypto").read_text()
+        )
     except OSError:
         info["proc_crypto_pqc"] = []
     return info
@@ -1370,9 +1525,9 @@ _FIPS_NOTES_BY_FAMILY: dict[str, str] = {
         "Enterprise.  ML-KEM/ML-DSA are not yet covered as of SLES 15 "
         "SP6; verify against the latest SUSE FIPS bulletin."
     ),
-    "arch":   "Arch does not provide a FIPS-validated OpenSSL build.",
+    "arch": "Arch does not provide a FIPS-validated OpenSSL build.",
     "alpine": "Alpine does not provide a FIPS-validated OpenSSL build.",
-    "macos":  "macOS does not expose Linux-style FIPS mode; this field reflects OpenSSL provider state only.",
+    "macos": "macOS does not expose Linux-style FIPS mode; this field reflects OpenSSL provider state only.",
     "unknown": "Cannot determine distribution-specific FIPS posture.",
 }
 
@@ -1382,8 +1537,8 @@ _FIPS_NOTES_BY_FAMILY: dict[str, str] = {
 # fips.distribution_certified=True with the vendor source attribution.
 _DISTRO_CERTIFIED_FIPS: list[tuple[str, str | None, str]] = [
     # (family, id_match_or_None, vendor_source_label)
-    ("rhel",   None,    "Red Hat-validated FIPS provider"),
-    ("suse",   None,    "SUSE Linux Enterprise FIPS module"),
+    ("rhel", None, "Red Hat-validated FIPS provider"),
+    ("suse", None, "SUSE Linux Enterprise FIPS module"),
     # Ubuntu Pro ships a Canonical-built FIPS provider.  We can't
     # distinguish Ubuntu Pro from regular Ubuntu purely from os_release,
     # but the presence of an active FIPS provider on Ubuntu strongly
@@ -1392,8 +1547,9 @@ _DISTRO_CERTIFIED_FIPS: list[tuple[str, str | None, str]] = [
 ]
 
 
-def interpret_fips(fips: dict[str, Any], openssl: dict[str, Any],
-                   os_release: dict[str, Any]) -> dict[str, Any]:
+def interpret_fips(
+    fips: dict[str, Any], openssl: dict[str, Any], os_release: dict[str, Any]
+) -> dict[str, Any]:
     """Augment the fips dict with family-aware certification context.
 
     distribution_certified is True only when the script has affirmative
@@ -1422,23 +1578,31 @@ def interpret_fips(fips: dict[str, Any], openssl: dict[str, Any],
     return out
 
 
-def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> dict[str, Any]:
+def fips_pqc_conflict_check(
+    fips: dict[str, Any], openssl: dict[str, Any]
+) -> dict[str, Any]:
     """Detect the case where a host is in kernel FIPS mode AND OpenSSL is
     advertising PQC algorithms via the non-FIPS default provider.  In this
     state ML-KEM/ML-DSA appear listed but are NOT usable in a FIPS-validated
     workflow (RHEL 9 / 10 FIPS provider does not yet include PQC)."""
     if not fips.get("kernel"):
         return {"in_conflict": False, "explanation": "Kernel FIPS mode not enabled."}
-    has_pqc = bool((openssl.get("kem_algorithms") or []) or
-                   (openssl.get("sig_algorithms") or []))
+    has_pqc = bool(
+        (openssl.get("kem_algorithms") or []) or (openssl.get("sig_algorithms") or [])
+    )
     if not has_pqc:
-        return {"in_conflict": False, "explanation": "FIPS mode active and no PQC algorithms exposed."}
+        return {
+            "in_conflict": False,
+            "explanation": "FIPS mode active and no PQC algorithms exposed.",
+        }
     if fips.get("openssl_provider"):
         return {
             "in_conflict": False,
-            "explanation": ("FIPS provider is active and PQC algorithms are exposed.  "
-                            "Verify they are coming from a FIPS-validated provider before "
-                            "relying on them in regulated workflows."),
+            "explanation": (
+                "FIPS provider is active and PQC algorithms are exposed.  "
+                "Verify they are coming from a FIPS-validated provider before "
+                "relying on them in regulated workflows."
+            ),
         }
     return {
         "in_conflict": True,
@@ -1468,18 +1632,29 @@ def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> di
 #
 # Updates as CNSA evolves are a one-line edit in this dict.
 CNSA_2_0_REQUIREMENTS: dict[str, list[str]] = {
-    "kem":       ["ML-KEM-1024"],
+    "kem": ["ML-KEM-1024"],
     "signature": ["ML-DSA-87"],
     "symmetric": ["AES-256"],
-    "hash":      ["SHA-384", "SHA-512"],
+    "hash": ["SHA-384", "SHA-512"],
 }
 
 # Driver-name suffixes that indicate a hardware-accelerated /proc/crypto
 # entry — matches the same set used by detect_kernel_crypto_hw() so the
 # CNSA hash check stays consistent with the rest of the report.
 _HW_DRIVER_SUFFIXES: tuple[str, ...] = (
-    "-ni", "-ce", "-ssse3", "-avx2", "-avx", "-arm64-ce", "-arm64",
-    "-aesni", "-pclmul", "-sha-ce", "-sha-ni", "_asm", "-paes",
+    "-ni",
+    "-ce",
+    "-ssse3",
+    "-avx2",
+    "-avx",
+    "-arm64-ce",
+    "-arm64",
+    "-aesni",
+    "-pclmul",
+    "-sha-ce",
+    "-sha-ni",
+    "_asm",
+    "-paes",
 )
 
 
@@ -1644,7 +1819,7 @@ TRUST_STORE_DIRS: list[str] = [
 PQC_OID_RE = re.compile(r"\b2\.16\.840\.1\.101\.3\.4\.3\.(1[7-9]|2\d|3[01])\b")
 HYBRID_OID_RES: list[re.Pattern[str]] = [
     re.compile(r"\b1\.3\.6\.1\.4\.1\.42235\.1\.7\.\d+\b"),  # Mozilla draft
-    re.compile(r"\b1\.3\.9999\.\d+\.\d+\.\d+\b"),            # liboqs experimental
+    re.compile(r"\b1\.3\.9999\.\d+\.\d+\.\d+\b"),  # liboqs experimental
 ]
 
 
@@ -1669,8 +1844,16 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
                 continue
             seen.add(key)
             rc, dump = _run(
-                ["openssl", "x509", "-in", str(cert), "-noout", "-text",
-                 "-certopt", "no_validity,no_serial,no_pubkey,no_sigdump"],
+                [
+                    "openssl",
+                    "x509",
+                    "-in",
+                    str(cert),
+                    "-noout",
+                    "-text",
+                    "-certopt",
+                    "no_validity,no_serial,no_pubkey,no_sigdump",
+                ],
                 timeout=3,
             )
             if rc != 0:
@@ -1693,11 +1876,19 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
 # Runtime environment detection (container vs host)
 # ---------------------------------------------------------------------------
 
+
 def parse_cgroup_for_container(text: str) -> str | None:
     """Inspect /proc/1/cgroup content for container-runtime hierarchy
     markers.  Returns a marker string when one is found, else None."""
-    for marker in ("kubepods", "/docker/", "/containerd/", "/podman-",
-                   "/crio-", "/system.slice/docker-", "/lxc/"):
+    for marker in (
+        "kubepods",
+        "/docker/",
+        "/containerd/",
+        "/podman-",
+        "/crio-",
+        "/system.slice/docker-",
+        "/lxc/",
+    ):
         if marker in text:
             return marker
     return None
@@ -1734,65 +1925,67 @@ def detect_runtime_environment() -> dict[str, Any]:
 # vs SUSE `java-21-openjdk` vs Arch `jdk-openjdk` vs Alpine `openjdk21`.
 BUNDLED_CRYPTO_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
     "rhel": [
-        (r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$",
-         "Java JCE provider (SunJCE / Bouncy Castle)"),
+        (
+            r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$",
+            "Java JCE provider (SunJCE / Bouncy Castle)",
+        ),
         (r"^bouncycastle", "Bouncy Castle (separate provider)"),
-        (r"^(golang|go)(-bin)?$",
-         "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)"),
-        (r"^nodejs$",
-         "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)"),
-        (r"^(rust|cargo|rustc)$",
-         "Rust toolchain (rustls embeds ring or openssl-sys)"),
-        (r"^firefox$",      "Firefox (embeds NSS — separate PQC roadmap)"),
-        (r"^thunderbird$",  "Thunderbird (embeds NSS)"),
-        (r"^chromium$",     "Chromium (embeds BoringSSL)"),
-        (r"^python3$",      "Python ssl module (links system OpenSSL)"),
+        (
+            r"^(golang|go)(-bin)?$",
+            "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)",
+        ),
+        (
+            r"^nodejs$",
+            "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)",
+        ),
+        (r"^(rust|cargo|rustc)$", "Rust toolchain (rustls embeds ring or openssl-sys)"),
+        (r"^firefox$", "Firefox (embeds NSS — separate PQC roadmap)"),
+        (r"^thunderbird$", "Thunderbird (embeds NSS)"),
+        (r"^chromium$", "Chromium (embeds BoringSSL)"),
+        (r"^python3$", "Python ssl module (links system OpenSSL)"),
     ],
     "debian": [
-        (r"^openjdk-\d+-(jdk|jre)(-headless)?$",
-         "Java JCE provider (SunJCE / Bouncy Castle)"),
-        (r"^libbcprov-java$",
-         "Bouncy Castle Java library"),
-        (r"^golang-(go|\d+(\.\d+)?-go)$",
-         "Go runtime (crypto/tls embedded)"),
-        (r"^nodejs$",
-         "Node.js (bundled OpenSSL build)"),
-        (r"^(rustc|cargo)$",
-         "Rust toolchain (rustls embeds ring or openssl-sys)"),
+        (
+            r"^openjdk-\d+-(jdk|jre)(-headless)?$",
+            "Java JCE provider (SunJCE / Bouncy Castle)",
+        ),
+        (r"^libbcprov-java$", "Bouncy Castle Java library"),
+        (r"^golang-(go|\d+(\.\d+)?-go)$", "Go runtime (crypto/tls embedded)"),
+        (r"^nodejs$", "Node.js (bundled OpenSSL build)"),
+        (r"^(rustc|cargo)$", "Rust toolchain (rustls embeds ring or openssl-sys)"),
         (r"^firefox(-esr)?$", "Firefox (embeds NSS)"),
-        (r"^thunderbird$",    "Thunderbird (embeds NSS)"),
-        (r"^chromium$",       "Chromium (embeds BoringSSL)"),
-        (r"^python3$",        "Python ssl module (links system OpenSSL)"),
+        (r"^thunderbird$", "Thunderbird (embeds NSS)"),
+        (r"^chromium$", "Chromium (embeds BoringSSL)"),
+        (r"^python3$", "Python ssl module (links system OpenSSL)"),
     ],
     "suse": [
-        (r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$",
-         "Java JCE provider"),
-        (r"^go(1\.\d+)?$",          "Go runtime"),
-        (r"^nodejs(\d+)?$",         "Node.js"),
-        (r"^(rust|cargo)$",         "Rust toolchain"),
-        (r"^MozillaFirefox$",       "Firefox (embeds NSS)"),
-        (r"^MozillaThunderbird$",   "Thunderbird (embeds NSS)"),
-        (r"^chromium$",             "Chromium (embeds BoringSSL)"),
-        (r"^python3$",              "Python ssl module"),
+        (r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$", "Java JCE provider"),
+        (r"^go(1\.\d+)?$", "Go runtime"),
+        (r"^nodejs(\d+)?$", "Node.js"),
+        (r"^(rust|cargo)$", "Rust toolchain"),
+        (r"^MozillaFirefox$", "Firefox (embeds NSS)"),
+        (r"^MozillaThunderbird$", "Thunderbird (embeds NSS)"),
+        (r"^chromium$", "Chromium (embeds BoringSSL)"),
+        (r"^python3$", "Python ssl module"),
     ],
     "arch": [
-        (r"^jdk\d+-openjdk$",  "Java JCE provider"),
-        (r"^go$",              "Go runtime"),
-        (r"^nodejs$",          "Node.js"),
-        (r"^rust$",            "Rust toolchain"),
-        (r"^firefox$",         "Firefox (embeds NSS)"),
-        (r"^thunderbird$",     "Thunderbird"),
-        (r"^chromium$",        "Chromium"),
-        (r"^python$",          "Python"),
+        (r"^jdk\d+-openjdk$", "Java JCE provider"),
+        (r"^go$", "Go runtime"),
+        (r"^nodejs$", "Node.js"),
+        (r"^rust$", "Rust toolchain"),
+        (r"^firefox$", "Firefox (embeds NSS)"),
+        (r"^thunderbird$", "Thunderbird"),
+        (r"^chromium$", "Chromium"),
+        (r"^python$", "Python"),
     ],
     "alpine": [
         (r"^openjdk\d+(-jdk|-jre)?$", "Java JCE provider"),
-        (r"^go$",                     "Go runtime"),
-        (r"^nodejs$",                 "Node.js"),
-        (r"^rust$",                   "Rust toolchain"),
-        (r"^firefox$",                "Firefox"),
-        (r"^chromium$",               "Chromium"),
-        (r"^python3$",                "Python"),
+        (r"^go$", "Go runtime"),
+        (r"^nodejs$", "Node.js"),
+        (r"^rust$", "Rust toolchain"),
+        (r"^firefox$", "Firefox"),
+        (r"^chromium$", "Chromium"),
+        (r"^python3$", "Python"),
     ],
 }
 
@@ -1849,12 +2042,16 @@ def parse_apk_packages(text: str) -> list[dict[str, str]]:
     return out
 
 
-def classify_bundled_crypto(pkgs: list[dict[str, str]], family: str) -> list[dict[str, str]]:
+def classify_bundled_crypto(
+    pkgs: list[dict[str, str]], family: str
+) -> list[dict[str, str]]:
     """Match each installed package against the family's bundled-crypto
     regex catalogue.  First-match wins per package (so a package can
     appear in only one row even if multiple regexes match).  De-dupes on
     package name across multi-arch installs (i686 + x86_64)."""
-    patterns = [(re.compile(p), hint) for p, hint in BUNDLED_CRYPTO_BY_FAMILY.get(family, [])]
+    patterns = [
+        (re.compile(p), hint) for p, hint in BUNDLED_CRYPTO_BY_FAMILY.get(family, [])
+    ]
     seen: set[str] = set()
     out: list[dict[str, str]] = []
     for entry in pkgs:
@@ -1876,11 +2073,20 @@ def classify_bundled_crypto(pkgs: list[dict[str, str]], family: str) -> list[dic
 PACKAGE_QUERY_BY_FAMILY: dict[
     str, tuple[list[str], Callable[[str], list[dict[str, str]]]]
 ] = {
-    "rhel":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
-    "suse":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
-    "debian": (["dpkg-query", "-W",  "-f=${Package} ${Version}\\n"],            parse_dpkg_packages),
-    "arch":   (["pacman",     "-Q"],                                            parse_pacman_packages),
-    "alpine": (["apk",        "info", "-v"],                                    parse_apk_packages),
+    "rhel": (
+        ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
+        parse_rpm_packages,
+    ),
+    "suse": (
+        ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
+        parse_rpm_packages,
+    ),
+    "debian": (
+        ["dpkg-query", "-W", "-f=${Package} ${Version}\\n"],
+        parse_dpkg_packages,
+    ),
+    "arch": (["pacman", "-Q"], parse_pacman_packages),
+    "alpine": (["apk", "info", "-v"], parse_apk_packages),
 }
 
 
@@ -1891,12 +2097,16 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     family = (os_release or {}).get("family", "unknown")
     plan = PACKAGE_QUERY_BY_FAMILY.get(family)
     if plan is None:
-        return {"available": False,
-                "reason": f"no package-query tool registered for family={family}"}
+        return {
+            "available": False,
+            "reason": f"no package-query tool registered for family={family}",
+        }
     argv, parser = plan
     if not shutil.which(argv[0]):
-        return {"available": False,
-                "reason": f"{argv[0]} not on PATH ({_install_hint(argv[0], family)})"}
+        return {
+            "available": False,
+            "reason": f"{argv[0]} not on PATH ({_install_hint(argv[0], family)})",
+        }
     rc, out = _run(argv, timeout=30)
     if rc != 0:
         return {"available": False, "reason": f"{argv[0]} failed (rc={rc})"}
@@ -1913,6 +2123,7 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
 # Fleet aggregation (--aggregate DIR)
 # ---------------------------------------------------------------------------
 
+
 def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     """Roll up many per-host reports into a single fleet view.
 
@@ -1927,6 +2138,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
       each kind), unique_cpu_models, replace_required_count.
     """
     from collections import Counter
+
     out: dict[str, Any] = {
         "total_hosts": len(reports),
         "schema_version": SCHEMA_VERSION,
@@ -1975,14 +2187,20 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
     spreadsheet without nested-JSON gymnastics."""
     import io
     import csv
+
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["group", "key", "count"])
     w.writerow(["total_hosts", "", rollup.get("total_hosts", 0)])
     w.writerow(["replace_required_count", "", rollup.get("replace_required_count", 0)])
-    for group in ("by_arch", "by_os_release_id", "by_isa_tier",
-                  "by_verdict", "by_runtime_environment",
-                  "accelerator_kinds_host_count"):
+    for group in (
+        "by_arch",
+        "by_os_release_id",
+        "by_isa_tier",
+        "by_verdict",
+        "by_runtime_environment",
+        "accelerator_kinds_host_count",
+    ):
         for k, v in (rollup.get(group) or {}).items():
             w.writerow([group, k, v])
     for cpu in rollup.get("unique_cpu_models", []):
@@ -2003,8 +2221,12 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
             continue
         sv = data.get("schema_version")
         if sv != SCHEMA_VERSION:
-            skipped.append({"file": str(fp),
-                            "reason": f"schema mismatch: file={sv!r} expected={SCHEMA_VERSION!r}"})
+            skipped.append(
+                {
+                    "file": str(fp),
+                    "reason": f"schema mismatch: file={sv!r} expected={SCHEMA_VERSION!r}",
+                }
+            )
             continue
         reports.append(data)
     rollup = aggregate_reports(reports)
@@ -2018,8 +2240,10 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
 # OpenSSL capability inspection
 # ---------------------------------------------------------------------------
 
-def openssl_upgrade_path(version_tuple: list[int] | None,
-                         os_release: dict[str, Any] | None) -> str | None:
+
+def openssl_upgrade_path(
+    version_tuple: list[int] | None, os_release: dict[str, Any] | None
+) -> str | None:
     """Family-aware hint for getting a PQC-capable OpenSSL on this host.
 
     Empty when OpenSSL is already 3.5+ (nothing to upgrade) or when we
@@ -2037,35 +2261,53 @@ def openssl_upgrade_path(version_tuple: list[int] | None,
 
     if family == "rhel":
         if id_ == "rhel" and major and int(major) <= 9:
-            return ("RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "
-                    "RHEL 10 or a Red Hat-supported channel with newer crypto.")
+            return (
+                "RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "
+                "RHEL 10 or a Red Hat-supported channel with newer crypto."
+            )
         if id_ == "fedora" and major and int(major) < 41:
-            return f"Fedora {major} predates OpenSSL 3.5; upgrade to Fedora 41 or newer."
+            return (
+                f"Fedora {major} predates OpenSSL 3.5; upgrade to Fedora 41 or newer."
+            )
         if id_ in {"rocky", "almalinux", "centos", "ol"} and major and int(major) <= 9:
-            return ("EL9-class distributions ship OpenSSL 3.0/3.2; PQC requires "
-                    "the EL10 release of this distribution or a backport channel.")
+            return (
+                "EL9-class distributions ship OpenSSL 3.0/3.2; PQC requires "
+                "the EL10 release of this distribution or a backport channel."
+            )
     elif family == "debian":
         if id_ == "debian":
             if major == "12":
-                return ("Debian 12 (bookworm) ships OpenSSL 3.0; OpenSSL 3.5 is "
-                        "available in trixie or bookworm-backports.")
+                return (
+                    "Debian 12 (bookworm) ships OpenSSL 3.0; OpenSSL 3.5 is "
+                    "available in trixie or bookworm-backports."
+                )
             if major and int(major) < 12:
-                return ("Pre-bookworm Debian ships OpenSSL 1.1.x; upgrade to "
-                        "Debian 12 + backports or newer.")
+                return (
+                    "Pre-bookworm Debian ships OpenSSL 1.1.x; upgrade to "
+                    "Debian 12 + backports or newer."
+                )
         elif id_ == "ubuntu":
             if major == "24":
-                return ("Ubuntu 24.04 LTS main ships OpenSSL 3.0; OpenSSL 3.5 is "
-                        "available in universe — `apt install libssl3` from a "
-                        "newer channel — or upgrade to 25.10.")
+                return (
+                    "Ubuntu 24.04 LTS main ships OpenSSL 3.0; OpenSSL 3.5 is "
+                    "available in universe — `apt install libssl3` from a "
+                    "newer channel — or upgrade to 25.10."
+                )
             if major and int(major) < 24:
-                return ("Ubuntu pre-24.04 LTS predates OpenSSL 3.5; upgrade to "
-                        "24.04 LTS (universe) or 25.10.")
+                return (
+                    "Ubuntu pre-24.04 LTS predates OpenSSL 3.5; upgrade to "
+                    "24.04 LTS (universe) or 25.10."
+                )
     elif family == "suse":
-        return ("SLES 15 SP6 ships OpenSSL 3.0; OpenSSL 3.5 is available via "
-                "SUSE Package Hub.  Verify FIPS validation status before swapping.")
+        return (
+            "SLES 15 SP6 ships OpenSSL 3.0; OpenSSL 3.5 is available via "
+            "SUSE Package Hub.  Verify FIPS validation status before swapping."
+        )
     elif family == "alpine":
-        return ("Alpine ships OpenSSL via the apk repository.  Edge channel "
-                "carries 3.5+; verify against the host's apk repo configuration.")
+        return (
+            "Alpine ships OpenSSL via the apk repository.  Edge channel "
+            "carries 3.5+; verify against the host's apk repo configuration."
+        )
     elif family == "arch":
         return "Arch rolls forward; `pacman -Syu` should bring OpenSSL 3.5+."
     return None
@@ -2084,9 +2326,7 @@ def openssl_upgrade_path(version_tuple: list[int] | None,
 # curves, FFDHE groups, brainpool) is bucketed as "classical".  Names
 # that match no catalog are dropped rather than silently miscategorised.
 _PURE_PQC_TLS_GROUP_RE = re.compile(r"^MLKEM\d+$")
-_HYBRID_TLS_GROUP_RE = re.compile(
-    r"^(?:X(?:25519|448)MLKEM\d+|SecP\d+r1MLKEM\d+)$"
-)
+_HYBRID_TLS_GROUP_RE = re.compile(r"^(?:X(?:25519|448)MLKEM\d+|SecP\d+r1MLKEM\d+)$")
 _CLASSICAL_TLS_GROUP_RE = re.compile(
     r"^(?:secp\d+[kr]\d+|prime\d+v\d+|x25519|x448|ffdhe\d+|"
     r"brainpoolP\d+r\d+(?:tls13)?|sect\d+\w+)$",
@@ -2150,8 +2390,8 @@ def classify_tls_groups(group_names: list[str]) -> dict[str, list[str]]:
         elif _CLASSICAL_TLS_GROUP_RE.match(name):
             classical.add(name)
     return {
-        "pure_pqc":  sorted(pure),
-        "hybrid":    sorted(hybrid),
+        "pure_pqc": sorted(pure),
+        "hybrid": sorted(hybrid),
         "classical": sorted(classical),
     }
 
@@ -2163,12 +2403,22 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     rc, ver = _run(["openssl", "version"], timeout=5)
     out["version"] = ver.strip() if rc == 0 else "unknown"
     m = re.search(r"OpenSSL\s+(\d+)\.(\d+)\.(\d+)", out["version"])
-    out["version_tuple"] = [int(m.group(1)), int(m.group(2)), int(m.group(3))] if m else None
-    out["pqc_native"] = bool(out["version_tuple"]) and tuple(out["version_tuple"][:2]) >= (3, 5)
+    out["version_tuple"] = (
+        [int(m.group(1)), int(m.group(2)), int(m.group(3))] if m else None
+    )
+    out["pqc_native"] = bool(out["version_tuple"]) and tuple(
+        out["version_tuple"][:2]
+    ) >= (3, 5)
     rc, kems = _run(["openssl", "list", "-kem-algorithms"], timeout=5)
-    out["kem_algorithms"] = sorted({a for a in re.findall(r"ML-KEM-\d+", kems)}) if rc == 0 else []
+    out["kem_algorithms"] = (
+        sorted({a for a in re.findall(r"ML-KEM-\d+", kems)}) if rc == 0 else []
+    )
     rc, sigs = _run(["openssl", "list", "-signature-algorithms"], timeout=5)
-    out["sig_algorithms"] = sorted({a for a in re.findall(r"ML-DSA-\d+|SLH-DSA-[A-Za-z0-9-]+", sigs)}) if rc == 0 else []
+    out["sig_algorithms"] = (
+        sorted({a for a in re.findall(r"ML-DSA-\d+|SLH-DSA-[A-Za-z0-9-]+", sigs)})
+        if rc == 0
+        else []
+    )
     rc, groups = _run(["openssl", "list", "-tls-groups", "-tls1_3"], timeout=5)
     if rc != 0:
         rc, groups = _run(["openssl", "list", "-tls-groups"], timeout=5)
@@ -2178,9 +2428,17 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     # Back-compat: tls_pqc_groups was historically the pure-PQC + hybrid
     # union.  Aggregator/JSON consumers may key off it; new consumers
     # should prefer the explicit tls_groups split above.
-    out["tls_pqc_groups"] = sorted(set(classified["pure_pqc"]) | set(classified["hybrid"]))
+    out["tls_pqc_groups"] = sorted(
+        set(classified["pure_pqc"]) | set(classified["hybrid"])
+    )
     rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
-    out["providers"] = sorted({m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}) if rc == 0 else []
+    out["providers"] = (
+        sorted(
+            {m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}
+        )
+        if rc == 0
+        else []
+    )
     out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
     return out
 
@@ -2189,7 +2447,10 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
 # Benchmarking
 # ---------------------------------------------------------------------------
 
-def parse_speed_row(text: str, algo: str, labels: tuple[str, ...]) -> dict[str, float] | None:
+
+def parse_speed_row(
+    text: str, algo: str, labels: tuple[str, ...]
+) -> dict[str, float] | None:
     """Parse the per-algorithm summary row from `openssl speed` output.
 
     The summary row looks like:
@@ -2212,7 +2473,7 @@ def parse_speed_row(text: str, algo: str, labels: tuple[str, ...]) -> dict[str, 
             continue
         nums = re.findall(r"\d+(?:\.\d+)?", line)
         if len(nums) >= len(labels) * 2:
-            tail = nums[-len(labels):]
+            tail = nums[-len(labels) :]
             return {labels[i]: float(tail[i]) for i in range(len(labels))}
     return None
 
@@ -2259,7 +2520,7 @@ def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
         nums = re.findall(r"\d+(?:\.\d+)?", line)
         if len(nums) < len(pending):
             continue
-        rates = [float(x) for x in nums[-len(pending):]]
+        rates = [float(x) for x in nums[-len(pending) :]]
         # The same algorithm appears under several header sections in
         # `openssl speed` (e.g., RSA shows up under the legacy block, the
         # KEM block, and the signature block).  Keep the first reading.
@@ -2270,16 +2531,22 @@ def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
 
 def run_pqc_bench(seconds: int, threads: int) -> dict[str, Any]:
     plan: list[tuple[str, str, tuple[str, ...]]] = [
-        ("ML-KEM-768",         "-kem-algorithms",       ("keygen/s", "encaps/s", "decaps/s")),
-        ("ML-DSA-65",          "-signature-algorithms", ("keygen/s", "sign/s",   "verify/s")),
-        ("SLH-DSA-SHA2-128s",  "-signature-algorithms", ("keygen/s", "sign/s",   "verify/s")),
+        ("ML-KEM-768", "-kem-algorithms", ("keygen/s", "encaps/s", "decaps/s")),
+        ("ML-DSA-65", "-signature-algorithms", ("keygen/s", "sign/s", "verify/s")),
+        (
+            "SLH-DSA-SHA2-128s",
+            "-signature-algorithms",
+            ("keygen/s", "sign/s", "verify/s"),
+        ),
     ]
     results: dict[str, Any] = {}
     for algo, flag, labels in plan:
         cmd = ["openssl", "speed", "-seconds", str(seconds), flag, algo]
         rc, out = _run(cmd, timeout=seconds * 8 + 30)
         if rc != 0:
-            results[algo] = {"error": out.strip().splitlines()[-1][:200] if out else f"rc={rc}"}
+            results[algo] = {
+                "error": out.strip().splitlines()[-1][:200] if out else f"rc={rc}"
+            }
             continue
         rates = parse_speed_row(out, algo, labels)
         if rates is None:
@@ -2287,7 +2554,16 @@ def run_pqc_bench(seconds: int, threads: int) -> dict[str, Any]:
         else:
             results[algo] = rates
         if threads > 1:
-            cmd_m = ["openssl", "speed", "-multi", str(threads), "-seconds", str(seconds), flag, algo]
+            cmd_m = [
+                "openssl",
+                "speed",
+                "-multi",
+                str(threads),
+                "-seconds",
+                str(seconds),
+                flag,
+                algo,
+            ]
             rc2, out2 = _run(cmd_m, timeout=seconds * 8 + 60)
             if rc2 == 0:
                 m_rates = parse_speed_row(out2, algo, labels)
@@ -2298,7 +2574,15 @@ def run_pqc_bench(seconds: int, threads: int) -> dict[str, Any]:
 
 def run_classical_baseline(seconds: int) -> dict[str, dict[str, float]]:
     rc, out = _run(
-        ["openssl", "speed", "-seconds", str(seconds), "rsa2048", "ed25519", "ecdhx25519"],
+        [
+            "openssl",
+            "speed",
+            "-seconds",
+            str(seconds),
+            "rsa2048",
+            "ed25519",
+            "ecdhx25519",
+        ],
         timeout=seconds * 6 + 30,
     )
     if rc != 0:
@@ -2358,7 +2642,7 @@ def memory_bandwidth_probe() -> tuple[float | None, str]:
         # element per iteration.  numpy may fuse this to 3 ops; we
         # under-report rather than over-report.
         bytes_moved = 4 * 8 * n * iters
-        gb_per_s = bytes_moved / elapsed / (1024 ** 3)
+        gb_per_s = bytes_moved / elapsed / (1024**3)
         return round(gb_per_s, 1), "STREAM-triad (numpy)"
     except (MemoryError, OSError) as e:
         return None, f"probe failed: {e}"
@@ -2453,7 +2737,9 @@ def per_algo_verdict(
     return out
 
 
-def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> dict[str, Any]:
+def production_estimate(
+    per_algo: dict[str, dict[str, Any]], mem_gb: float
+) -> dict[str, Any]:
     """Translate per-core rates into 'how many TLS-PQC handshakes / signatures
     can this host realistically sustain?'  Conservative: assume 60% CPU
     headroom for non-crypto work in a real TLS server."""
@@ -2467,7 +2753,9 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
         out["ml_dsa_signatures_per_sec"] = int(dsa["rate_host_estimate"] * headroom)
     slh = per_algo.get("SLH-DSA-SHA2-128s", {})
     if "rate_host_estimate" in slh:
-        out["slh_dsa_sha2_128s_signatures_per_sec"] = round(slh["rate_host_estimate"] * headroom, 1)
+        out["slh_dsa_sha2_128s_signatures_per_sec"] = round(
+            slh["rate_host_estimate"] * headroom, 1
+        )
     # Per-connection memory accounting.  The earlier 32 KB figure ignored
     # default Linux socket buffers, ML-KEM ciphertext (1088 B), the
     # ML-DSA cert chain (typically 8-12 KB across 2-3 certs), TLS state,
@@ -2476,7 +2764,7 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
     # comparison.  50% of RAM is reserved for non-connection use
     # (binary, kernel, working memory headroom).
     if mem_gb > 0:
-        usable_bytes = mem_gb * (1024 ** 3) * 0.5
+        usable_bytes = mem_gb * (1024**3) * 0.5
         out["concurrent_connections_realistic"] = int(usable_bytes / (192 * 1024))
         out["concurrent_connections_theoretical_max"] = int(usable_bytes / (32 * 1024))
         out["assumptions"] = (
@@ -2488,7 +2776,10 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
 
 
 def overall_verdict(
-    isa: str, mem: str, dedicated: bool, per_algo: dict[str, dict[str, Any]],
+    isa: str,
+    mem: str,
+    dedicated: bool,
+    per_algo: dict[str, dict[str, Any]],
 ) -> tuple[str, str, int, str]:
     """Compose ISA, memory, and (when available) measured per-algorithm
     tiers into one verdict.  Returns (verdict, why, exit_code, caveat).
@@ -2502,11 +2793,23 @@ def overall_verdict(
         host to the floor.
     """
     if dedicated:
-        return ("EXCELLENT - dedicated PQC silicon present",
-                "Use the accelerator for keygen/sign/decap; software path covers the rest.",
-                0, "")
-    rank = {"excellent": 4, "good": 3, "adequate": 2, "marginal": 2, "poor": 1, "unknown": 2}
-    bench_tiers = [v["tier"] for v in per_algo.values() if v.get("tier") not in (None, "unknown")]
+        return (
+            "EXCELLENT - dedicated PQC silicon present",
+            "Use the accelerator for keygen/sign/decap; software path covers the rest.",
+            0,
+            "",
+        )
+    rank = {
+        "excellent": 4,
+        "good": 3,
+        "adequate": 2,
+        "marginal": 2,
+        "poor": 1,
+        "unknown": 2,
+    }
+    bench_tiers = [
+        v["tier"] for v in per_algo.values() if v.get("tier") not in (None, "unknown")
+    ]
     has_bench = bool(bench_tiers)
     isa_score = rank.get(isa, 2)
     mem_score = rank.get(mem, 2)
@@ -2521,28 +2824,528 @@ def overall_verdict(
             "measured per-algorithm rates and tier validation."
         )
     if composite >= 4:
-        return ("EXCELLENT - software PQC at production speed",
-                "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.",
-                0, caveat)
+        return (
+            "EXCELLENT - software PQC at production speed",
+            "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.",
+            0,
+            caveat,
+        )
     if composite == 3:
-        return ("GOOD - production-capable in software",
-                "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.",
-                1, caveat)
+        return (
+            "GOOD - production-capable in software",
+            "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.",
+            1,
+            caveat,
+        )
     if composite == 2:
-        return ("MARGINAL - works, but plan for an accelerator",
-                "Software PQC will be a hot spot under load; consider HSM/QAT offload.",
-                2, caveat)
-    return ("POOR - not suitable for production PQC",
-            "Add a dedicated accelerator or upgrade the host.",
-            3, caveat)
+        return (
+            "MARGINAL - works, but plan for an accelerator",
+            "Software PQC will be a hot spot under load; consider HSM/QAT offload.",
+            2,
+            caveat,
+        )
+    return (
+        "POOR - not suitable for production PQC",
+        "Add a dedicated accelerator or upgrade the host.",
+        3,
+        caveat,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Renderers
 # ---------------------------------------------------------------------------
 
+
 def _tier_label(tier: str) -> str:
     return C.wrap(TIER_COLOR.get(tier, ""), tier.upper())
+
+
+# CycloneDX 1.6 CBOM rendering ----------------------------------------------
+#
+# A CBOM (Cryptographic Bill of Materials) is a CycloneDX BOM whose
+# `components` are populated with `cryptographic-asset` entries.  NIST IR
+# 8547 references CycloneDX 1.6 as the standard for cryptographic inventory
+# exchange, so emitting this shape lets downstream PQC-migration tooling
+# ingest pqc-readiness output without writing a bespoke translator.
+#
+# The mapping of pqc-readiness Report fields to crypto-asset entries is
+# kept in small declarative tables below so it is auditable: each table
+# row is one `(input field, asset shape)` pair, and the renderer simply
+# iterates the report.
+#
+# Refs:
+#   https://cyclonedx.org/docs/1.6/json/  (specVersion 1.6)
+#   https://csrc.nist.gov/pubs/ir/8547/final  (NIST IR 8547)
+
+# Implementation platform mapping for CycloneDX algorithmProperties.
+# CycloneDX enumerates a fixed set of `implementationPlatform` values;
+# anything outside the set must collapse to `other` or `unknown`.
+_CBOM_PLATFORM: dict[str, str] = {
+    "x86_64": "x86_64",
+    "amd64": "x86_64",
+    "i386": "x86_32",
+    "i686": "x86_32",
+    "aarch64": "armv8-a",
+    "arm64": "armv8-a",
+    "armv7l": "armv7-a",
+    "s390x": "s390x",
+    "ppc64": "ppc64",
+    "ppc64le": "ppc64le",
+}
+
+
+def _cbom_platform(arch: str) -> str:
+    return _CBOM_PLATFORM.get(arch.lower(), "unknown")
+
+
+# NIST PQC parameter sets — security category lookup.  Categories follow
+# the NIST PQC evaluation criteria (1=AES128-equivalent, 3=AES192-equiv,
+# 5=AES256-equiv); SLH-DSA `s` and `f` variants share the category of the
+# underlying parameter set.  Source: FIPS 203 / 204 / 205.
+_PQC_NIST_CATEGORY: dict[str, int] = {
+    "ML-KEM-512": 1,
+    "ML-KEM-768": 3,
+    "ML-KEM-1024": 5,
+    "ML-DSA-44": 2,
+    "ML-DSA-65": 3,
+    "ML-DSA-87": 5,
+    "SLH-DSA-SHA2-128s": 1,
+    "SLH-DSA-SHA2-128f": 1,
+    "SLH-DSA-SHA2-192s": 3,
+    "SLH-DSA-SHA2-192f": 3,
+    "SLH-DSA-SHA2-256s": 5,
+    "SLH-DSA-SHA2-256f": 5,
+    "SLH-DSA-SHAKE-128s": 1,
+    "SLH-DSA-SHAKE-128f": 1,
+    "SLH-DSA-SHAKE-192s": 3,
+    "SLH-DSA-SHAKE-192f": 3,
+    "SLH-DSA-SHAKE-256s": 5,
+    "SLH-DSA-SHAKE-256f": 5,
+}
+
+
+def _pqc_parameter_set(name: str) -> str:
+    """Extract the parameter-set identifier from a NIST PQC algorithm name.
+    For ML-KEM-768 → '768'; for SLH-DSA-SHA2-128s → 'SHA2-128s'."""
+    for prefix in ("ML-KEM-", "ML-DSA-"):
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    if name.startswith("SLH-DSA-"):
+        return name[len("SLH-DSA-") :]
+    return name
+
+
+def _cbom_provenance() -> list[dict[str, str]]:
+    """The provenance property required by the issue acceptance criteria.
+    Stamped onto every emitted asset so downstream aggregators can tell
+    which tool detected the entry."""
+    return [{"name": "detectedBy", "value": f"pqc-readiness@{SCRIPT_VERSION}"}]
+
+
+def _cbom_asset(
+    bom_ref: str,
+    name: str,
+    crypto_props: dict[str, Any],
+    extra_props: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """Build a CycloneDX 1.6 cryptographic-asset component.  Every asset
+    carries the `detectedBy` provenance tag and may carry extra free-form
+    properties (e.g. `evidence`, `source`) that downstream consumers can
+    surface to operators."""
+    props = _cbom_provenance()
+    if extra_props:
+        props.extend(extra_props)
+    return {
+        "type": "cryptographic-asset",
+        "bom-ref": bom_ref,
+        "name": name,
+        "cryptoProperties": crypto_props,
+        "properties": props,
+    }
+
+
+def _cbom_isa_assets(r: Report) -> list[dict[str, Any]]:
+    """Each detected ISA feature becomes a hardware-execution algorithm
+    asset.  Primitive is `other` because an ISA feature accelerates many
+    primitives (Keccak, lattice mul, AES round) rather than implementing
+    one — the human-readable purpose lives in the `purpose` property."""
+    platform_id = _cbom_platform(r.arch)
+    out: list[dict[str, Any]] = []
+    for flag, info in sorted(r.isa_features.items()):
+        out.append(
+            _cbom_asset(
+                bom_ref=f"isa/{flag}",
+                name=info.get("name", flag),
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "other",
+                        "executionEnvironment": "hardware",
+                        "implementationPlatform": platform_id,
+                    },
+                },
+                extra_props=[
+                    {"name": "isa:flag", "value": flag},
+                    {"name": "isa:purpose", "value": info.get("purpose", "")},
+                ],
+            )
+        )
+    return out
+
+
+def _cbom_accelerator_assets(r: Report) -> list[dict[str, Any]]:
+    """HSMs, TPMs, accelerators, DPUs and network HSMs each become a
+    hardware-execution algorithm asset.  The detection layer already
+    classifies kind/name/detail/pqc_capable; we surface those verbatim
+    in extra properties so consumers can filter on them."""
+    out: list[dict[str, Any]] = []
+    for idx, a in enumerate(r.accelerators):
+        kind = a.get("kind", "accelerator")
+        name = a.get("name", "")
+        bom_ref = f"accel/{idx}/{kind}"
+        extra = [{"name": "accelerator:kind", "value": str(kind)}]
+        detail = a.get("detail")
+        if detail:
+            extra.append({"name": "accelerator:detail", "value": str(detail)})
+        if a.get("pqc_capable"):
+            extra.append({"name": "accelerator:pqc_capable", "value": "true"})
+        out.append(
+            _cbom_asset(
+                bom_ref=bom_ref,
+                name=name or kind,
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "other",
+                        "executionEnvironment": "hardware",
+                        "implementationPlatform": _cbom_platform(r.arch),
+                    },
+                },
+                extra_props=extra,
+            )
+        )
+    return out
+
+
+def _cbom_pqc_algorithm_asset(
+    bom_ref: str,
+    name: str,
+    primitive: str,
+    source: str,
+) -> dict[str, Any]:
+    """A NIST PQC algorithm exposed by a library.  Carries
+    parameterSetIdentifier and nistQuantumSecurityLevel where the
+    algorithm name is in the published FIPS lookup."""
+    algo_props: dict[str, Any] = {
+        "primitive": primitive,
+        "executionEnvironment": "software-plain-ram",
+    }
+    pset = _pqc_parameter_set(name)
+    if pset != name:
+        algo_props["parameterSetIdentifier"] = pset
+    cat = _PQC_NIST_CATEGORY.get(name)
+    if cat is not None:
+        algo_props["nistQuantumSecurityLevel"] = cat
+    return _cbom_asset(
+        bom_ref=bom_ref,
+        name=name,
+        crypto_props={
+            "assetType": "algorithm",
+            "algorithmProperties": algo_props,
+        },
+        extra_props=[{"name": "source", "value": source}],
+    )
+
+
+def _cbom_openssl_assets(r: Report) -> list[dict[str, Any]]:
+    osinfo = r.openssl or {}
+    if not osinfo.get("available"):
+        return []
+    out: list[dict[str, Any]] = []
+    version = osinfo.get("version") or "unknown"
+    src = f"openssl@{version}"
+    for kem in osinfo.get("kem_algorithms") or []:
+        out.append(
+            _cbom_pqc_algorithm_asset(
+                f"openssl/kem/{kem}",
+                kem,
+                "kem",
+                src,
+            )
+        )
+    for sig in osinfo.get("sig_algorithms") or []:
+        out.append(
+            _cbom_pqc_algorithm_asset(
+                f"openssl/sig/{sig}",
+                sig,
+                "signature",
+                src,
+            )
+        )
+    tls_groups = osinfo.get("tls_groups") or {}
+    for grp in tls_groups.get("hybrid") or []:
+        out.append(
+            _cbom_asset(
+                bom_ref=f"openssl/tls-hybrid/{grp}",
+                name=grp,
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "combiner",
+                        "executionEnvironment": "software-plain-ram",
+                    },
+                },
+                extra_props=[
+                    {"name": "source", "value": src},
+                    {"name": "tls:role", "value": "hybrid-group"},
+                ],
+            )
+        )
+    for grp in tls_groups.get("pure_pqc") or []:
+        out.append(
+            _cbom_asset(
+                bom_ref=f"openssl/tls-pure-pqc/{grp}",
+                name=grp,
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "kem",
+                        "executionEnvironment": "software-plain-ram",
+                    },
+                },
+                extra_props=[
+                    {"name": "source", "value": src},
+                    {"name": "tls:role", "value": "pure-pqc-group"},
+                ],
+            )
+        )
+    return out
+
+
+def _cbom_ssh_assets(r: Report) -> list[dict[str, Any]]:
+    """SSH KEX algorithms surface as key-agreement assets.  We only emit
+    the PQC subset detected by `ssh -Q kex` — the classical kex set is
+    out of scope for a PQC inventory."""
+    ssh_info = r.ssh_pqc or {}
+    if not ssh_info.get("available"):
+        return []
+    out: list[dict[str, Any]] = []
+    version = ssh_info.get("version") or "unknown"
+    kex_groups = ssh_info.get("kex_groups") or {}
+    for kex in kex_groups.get("hybrid") or []:
+        out.append(
+            _cbom_asset(
+                bom_ref=f"ssh/kex/hybrid/{kex}",
+                name=kex,
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "key-agree",
+                        "executionEnvironment": "software-plain-ram",
+                    },
+                },
+                extra_props=[
+                    {"name": "source", "value": f"openssh@{version}"},
+                    {"name": "ssh:role", "value": "hybrid-kex"},
+                ],
+            )
+        )
+    for kex in kex_groups.get("pure_pqc") or []:
+        out.append(
+            _cbom_asset(
+                bom_ref=f"ssh/kex/pure-pqc/{kex}",
+                name=kex,
+                crypto_props={
+                    "assetType": "algorithm",
+                    "algorithmProperties": {
+                        "primitive": "kem",
+                        "executionEnvironment": "software-plain-ram",
+                    },
+                },
+                extra_props=[
+                    {"name": "source", "value": f"openssh@{version}"},
+                    {"name": "ssh:role", "value": "pure-pqc-kex"},
+                ],
+            )
+        )
+    return out
+
+
+def _cbom_ipsec_assets(r: Report) -> list[dict[str, Any]]:
+    """IPsec stacks expose PQC support as a single boolean today; emit
+    one protocol asset describing the implementation found and whether
+    it advertises any PQC KE.  When a future strongSwan release ships
+    per-algorithm PQC names, this can split into algorithm assets."""
+    ipsec = r.ipsec_pqc or {}
+    if not ipsec.get("available"):
+        return []
+    impl = str(ipsec.get("implementation") or "ipsec")
+    extra = [{"name": "ipsec:implementation", "value": impl}]
+    if ipsec.get("evidence"):
+        extra.append({"name": "ipsec:evidence", "value": str(ipsec["evidence"])})
+    if ipsec.get("version"):
+        extra.append({"name": "ipsec:version", "value": str(ipsec["version"])})
+    extra.append(
+        {
+            "name": "ipsec:pqc_advertised",
+            "value": "true" if ipsec.get("pqc") else "false",
+        }
+    )
+    return [
+        _cbom_asset(
+            bom_ref=f"ipsec/{impl}",
+            name=f"IPsec ({impl})",
+            crypto_props={
+                "assetType": "protocol",
+                "protocolProperties": {"type": "ipsec"},
+            },
+            extra_props=extra,
+        )
+    ]
+
+
+def _cbom_pkcs11_assets(r: Report) -> list[dict[str, Any]]:
+    """PKCS#11 is a cryptographic-token API; each loadable module is
+    emitted as a protocol asset with the module path captured in a
+    property so an aggregator can deduplicate identical modules across
+    a fleet."""
+    out: list[dict[str, Any]] = []
+    for idx, mod in enumerate(r.pkcs11_modules or []):
+        out.append(
+            _cbom_asset(
+                bom_ref=f"pkcs11/{idx}",
+                name=Path(mod).name or f"pkcs11-module-{idx}",
+                crypto_props={
+                    "assetType": "protocol",
+                    "protocolProperties": {"type": "other"},
+                },
+                extra_props=[
+                    {"name": "pkcs11:module_path", "value": mod},
+                ],
+            )
+        )
+    return out
+
+
+def _cbom_tpm_assets(r: Report) -> list[dict[str, Any]]:
+    tpm = r.tpm_pqc or {}
+    if not tpm.get("present"):
+        return []
+    return [
+        _cbom_asset(
+            bom_ref="tpm/pqc",
+            name="TPM PQC capability",
+            crypto_props={
+                "assetType": "algorithm",
+                "algorithmProperties": {
+                    "primitive": "other",
+                    "executionEnvironment": "hardware",
+                    "implementationPlatform": _cbom_platform(r.arch),
+                },
+            },
+            extra_props=[
+                {
+                    "name": "tpm:pqc_advertised",
+                    "value": "true" if tpm.get("pqc_advertised") else "false",
+                },
+                {"name": "tpm:note", "value": str(tpm.get("note", ""))},
+            ],
+        )
+    ]
+
+
+def _cbom_trust_store_assets(r: Report) -> list[dict[str, Any]]:
+    """Trust-store scan is summary-only (counts by category) — there is
+    no per-cert detail in the Report, so we emit a single related-crypto-
+    material asset whose properties carry the totals.  When a richer
+    per-cert scan ships, this can fan out to one certificate asset per
+    file."""
+    ts = r.trust_store or {}
+    if not ts.get("available"):
+        return []
+    extra = [
+        {"name": "trust_store:total_certs", "value": str(ts.get("total_certs", 0))},
+        {"name": "trust_store:pqc_certs", "value": str(ts.get("pqc_certs", 0))},
+        {"name": "trust_store:hybrid_certs", "value": str(ts.get("hybrid_certs", 0))},
+    ]
+    for d in ts.get("scanned_dirs") or []:
+        extra.append({"name": "trust_store:scanned_dir", "value": d})
+    return [
+        _cbom_asset(
+            bom_ref="trust-store/summary",
+            name="Trust store certificate inventory",
+            crypto_props={
+                "assetType": "related-crypto-material",
+                "relatedCryptoMaterialProperties": {"type": "other"},
+            },
+            extra_props=extra,
+        )
+    ]
+
+
+def render_cbom(r: Report) -> str:
+    """Render the report as a CycloneDX 1.6 CBOM (JSON).  The output is
+    schema-conformant — see tests/test_cbom.py for the schema check."""
+    components: list[dict[str, Any]] = []
+    for builder in (
+        _cbom_isa_assets,
+        _cbom_accelerator_assets,
+        _cbom_tpm_assets,
+        _cbom_pkcs11_assets,
+        _cbom_openssl_assets,
+        _cbom_ssh_assets,
+        _cbom_ipsec_assets,
+        _cbom_trust_store_assets,
+    ):
+        components.extend(builder(r))
+
+    timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    # CycloneDX metadata.timestamp must be RFC 3339 / ISO-8601 with a
+    # timezone designator.  Report.generated_at already has +00:00; if a
+    # caller stamped a naive value we leave it alone — the schema accepts
+    # bare date-time but downstream consumers should treat it as UTC.
+    host_bom_ref = f"host/{r.hostname or 'unknown'}"
+    host_props: list[dict[str, str]] = []
+    if r.os:
+        host_props.append({"name": "host:os", "value": r.os})
+    if r.arch:
+        host_props.append({"name": "host:arch", "value": r.arch})
+    if r.cpu_model:
+        host_props.append({"name": "host:cpu_model", "value": r.cpu_model})
+    host_component: dict[str, Any] = {
+        "type": "device",
+        "bom-ref": host_bom_ref,
+        "name": r.hostname or "unknown-host",
+    }
+    if host_props:
+        host_component["properties"] = host_props
+
+    bom: dict[str, Any] = {
+        "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "serialNumber": f"urn:uuid:{uuid.uuid4()}",
+        "version": 1,
+        "metadata": {
+            "timestamp": timestamp,
+            "tools": {
+                "components": [
+                    {
+                        "type": "application",
+                        "bom-ref": f"tool/pqc-readiness@{SCRIPT_VERSION}",
+                        "name": "pqc-readiness",
+                        "version": SCRIPT_VERSION,
+                    }
+                ],
+            },
+            "component": host_component,
+        },
+        "components": components,
+    }
+    return json.dumps(bom, indent=2)
 
 
 def render_text(r: Report) -> str:
@@ -2555,11 +3358,17 @@ def render_text(r: Report) -> str:
     L.append(f"  Host:          {r.hostname}  ({r.os}, {r.arch})")
     L.append(f"  CPU:           {r.cpu_model}")
     if r.cpu_freq_mhz:
-        L.append(f"  Max freq:      {r.cpu_freq_mhz/1000:.2f} GHz")
-    L.append(f"  Cores:         {r.cores_physical} physical / {r.cores_logical} logical")
-    L.append(f"  Memory:        {r.mem_total_gb:.1f} GiB total / {r.mem_avail_gb:.1f} GiB available")
+        L.append(f"  Max freq:      {r.cpu_freq_mhz / 1000:.2f} GHz")
+    L.append(
+        f"  Cores:         {r.cores_physical} physical / {r.cores_logical} logical"
+    )
+    L.append(
+        f"  Memory:        {r.mem_total_gb:.1f} GiB total / {r.mem_avail_gb:.1f} GiB available"
+    )
     if r.memory_bandwidth_gb_s is not None:
-        L.append(f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s ({r.memory_bandwidth_method})")
+        L.append(
+            f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s ({r.memory_bandwidth_method})"
+        )
     elif r.memory_bandwidth_method:
         L.append(f"  Mem bandwidth: {r.memory_bandwidth_method}")
     L.append(f"  Generated:     {r.generated_at}")
@@ -2583,12 +3392,20 @@ def render_text(r: Report) -> str:
     else:
         L.append("     none detected - host would do all PQC in CPU/memory")
     if r.hsm_present_but_not_pqc:
-        L.append(C.wrap(C.YELLOW,
-            "     NOTE: HSM(s) detected but none currently confirmed PQC-capable."))
-        L.append("           Verify firmware version against vendor's PQC release notes.")
+        L.append(
+            C.wrap(
+                C.YELLOW,
+                "     NOTE: HSM(s) detected but none currently confirmed PQC-capable.",
+            )
+        )
+        L.append(
+            "           Verify firmware version against vendor's PQC release notes."
+        )
     if r.tpm_pqc.get("present"):
         marker = "yes" if r.tpm_pqc.get("pqc_advertised") else "no"
-        L.append(f"     TPM PQC algorithms advertised: {marker}  ({r.tpm_pqc.get('note', '')})")
+        L.append(
+            f"     TPM PQC algorithms advertised: {marker}  ({r.tpm_pqc.get('note', '')})"
+        )
     if r.pkcs11_modules:
         L.append(f"     PKCS#11 modules installed: {len(r.pkcs11_modules)}")
         for p in r.pkcs11_modules[:5]:
@@ -2607,7 +3424,9 @@ def render_text(r: Report) -> str:
         if pqc_drivers:
             L.append(f"   /proc/crypto PQC drivers: {', '.join(pqc_drivers)}")
         else:
-            L.append("   /proc/crypto PQC drivers: none (kernel-side PQC not in mainline)")
+            L.append(
+                "   /proc/crypto PQC drivers: none (kernel-side PQC not in mainline)"
+            )
     if r.kernel_crypto_hw:
         L.append(f"   /proc/crypto hw-accel: {len(r.kernel_crypto_hw)} drivers")
         for d in r.kernel_crypto_hw[:6]:
@@ -2617,12 +3436,22 @@ def render_text(r: Report) -> str:
     if r.ktls_supported is not None:
         L.append(f"   Kernel TLS:    {'yes' if r.ktls_supported else 'no'}")
     if r.fips:
-        L.append(f"   FIPS mode:     kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}")
+        L.append(
+            f"   FIPS mode:     kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}"
+        )
     if r.fips_pqc_conflict.get("in_conflict"):
-        L.append(C.wrap(C.RED, f"   ⚠  FIPS/PQC conflict: {r.fips_pqc_conflict.get('explanation')}"))
+        L.append(
+            C.wrap(
+                C.RED,
+                f"   ⚠  FIPS/PQC conflict: {r.fips_pqc_conflict.get('explanation')}",
+            )
+        )
     if r.ssh_pqc.get("available"):
         pqc = r.ssh_pqc.get("pqc_kex") or []
-        L.append(f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)" + (f": {', '.join(pqc)}" if pqc else ""))
+        L.append(
+            f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)"
+            + (f": {', '.join(pqc)}" if pqc else "")
+        )
         kg = r.ssh_pqc.get("kex_groups") or {}
         hyb = kg.get("hybrid") or []
         pure = kg.get("pure_pqc") or []
@@ -2631,9 +3460,13 @@ def render_text(r: Report) -> str:
         if pure:
             L.append(f"     pure PQC:  {', '.join(pure)}")
     if r.ipsec_pqc.get("available"):
-        L.append(f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}")
+        L.append(
+            f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}"
+        )
     if r.nss.get("available"):
-        L.append(f"   NSS:           {r.nss.get('version')}  (PQC-capable: {r.nss.get('pqc_capable')})")
+        L.append(
+            f"   NSS:           {r.nss.get('version')}  (PQC-capable: {r.nss.get('pqc_capable')})"
+        )
     L.append("")
 
     L.append(C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)"))
@@ -2641,7 +3474,9 @@ def render_text(r: Report) -> str:
         L.append(f"   {r.openssl.get('reason', 'unknown')}")
     else:
         L.append(f"   Version:       {r.openssl.get('version')}")
-        L.append(f"   PQC native:    {'yes (>=3.5)' if r.openssl.get('pqc_native') else 'no'}")
+        L.append(
+            f"   PQC native:    {'yes (>=3.5)' if r.openssl.get('pqc_native') else 'no'}"
+        )
         kems = r.openssl.get("kem_algorithms") or []
         sigs = r.openssl.get("sig_algorithms") or []
         L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
@@ -2653,8 +3488,12 @@ def render_text(r: Report) -> str:
         if not (hybrid or pure):
             L.append("   TLS PQC groups: not exposed")
         else:
-            L.append(f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}")
-            L.append(f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}")
+            L.append(
+                f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}"
+            )
+            L.append(
+                f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}"
+            )
         if classical:
             L.append(f"   TLS classical groups:    {len(classical)} detected")
     L.append("")
@@ -2671,8 +3510,10 @@ def render_text(r: Report) -> str:
         if not r.benchmark.get("available"):
             L.append(f"   unavailable: {r.benchmark.get('reason')}")
         else:
-            L.append(f"   engine: {r.benchmark['engine']}, {r.benchmark['seconds_per_test']}s per test, "
-                     f"{r.benchmark.get('threads', 1)} thread(s)")
+            L.append(
+                f"   engine: {r.benchmark['engine']}, {r.benchmark['seconds_per_test']}s per test, "
+                f"{r.benchmark.get('threads', 1)} thread(s)"
+            )
             for algo, data in (r.benchmark.get("pqc") or {}).items():
                 L.append(f"   {algo}:")
                 for k, v in data.items():
@@ -2699,7 +3540,7 @@ def render_text(r: Report) -> str:
             if "rate_per_core" in v:
                 extra = f" - {v['rate_per_core']:.1f} {v['metric']}/core, ~{v['rate_host_estimate']:.0f} host"
             L.append(f"   {key:<22} {tier_s:<14}{extra}")
-            L.append(f"     {v.get('reason','')}")
+            L.append(f"     {v.get('reason', '')}")
             for note in v.get("notes", []):
                 L.append(C.wrap(C.YELLOW, f"     note: {note}"))
         L.append("")
@@ -2708,41 +3549,63 @@ def render_text(r: Report) -> str:
         L.append(C.wrap(C.BOLD, "8. Production capacity estimate (60% CPU headroom)"))
         e = r.production_estimate
         if "tls_pqc_handshakes_per_sec" in e:
-            L.append(f"   TLS-PQC handshakes/sec:           ~{e['tls_pqc_handshakes_per_sec']:,}")
+            L.append(
+                f"   TLS-PQC handshakes/sec:           ~{e['tls_pqc_handshakes_per_sec']:,}"
+            )
         if "ml_dsa_signatures_per_sec" in e:
-            L.append(f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}")
+            L.append(
+                f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}"
+            )
         if "slh_dsa_sha2_128s_signatures_per_sec" in e:
-            L.append(f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}")
+            L.append(
+                f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}"
+            )
         if "concurrent_connections_realistic" in e:
-            L.append(f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)")
+            L.append(
+                f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)"
+            )
         if "concurrent_connections_theoretical_max" in e:
-            L.append(f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)")
+            L.append(
+                f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)"
+            )
         if "assumptions" in e:
             L.append(f"   ({e['assumptions']})")
         L.append("")
 
     if r.trust_store.get("available"):
         L.append(C.wrap(C.BOLD, "9. Trust store inventory"))
-        L.append(f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}")
+        L.append(
+            f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}"
+        )
         L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
         L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
         L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
         L.append("")
 
     if r.cnsa_2_0:
-        L.append(C.wrap(C.BOLD, "10. CNSA 2.0 compliance (NSA national security suite)"))
+        L.append(
+            C.wrap(C.BOLD, "10. CNSA 2.0 compliance (NSA national security suite)")
+        )
         status = r.cnsa_2_0.get("status", "unknown")
         status_color = {
-            "compliant":     C.GREEN,
-            "partial":       C.YELLOW,
+            "compliant": C.GREEN,
+            "partial": C.YELLOW,
             "non_compliant": C.RED,
-            "unknown":       C.DIM,
+            "unknown": C.DIM,
         }.get(status, C.DIM)
         L.append(f"   Status:                 {C.wrap(status_color, status.upper())}")
-        L.append(f"   ML-KEM-1024 (KEM):      {'yes' if r.cnsa_2_0.get('kem_compliant') else 'no'}")
-        L.append(f"   ML-DSA-87  (signature): {'yes' if r.cnsa_2_0.get('signature_compliant') else 'no'}")
-        L.append(f"   AES-256    (symmetric): {'yes' if r.cnsa_2_0.get('symmetric_compliant') else 'no'}")
-        L.append(f"   SHA-384/512 (hash, hw): {'yes' if r.cnsa_2_0.get('hash_compliant') else 'no'}")
+        L.append(
+            f"   ML-KEM-1024 (KEM):      {'yes' if r.cnsa_2_0.get('kem_compliant') else 'no'}"
+        )
+        L.append(
+            f"   ML-DSA-87  (signature): {'yes' if r.cnsa_2_0.get('signature_compliant') else 'no'}"
+        )
+        L.append(
+            f"   AES-256    (symmetric): {'yes' if r.cnsa_2_0.get('symmetric_compliant') else 'no'}"
+        )
+        L.append(
+            f"   SHA-384/512 (hash, hw): {'yes' if r.cnsa_2_0.get('hash_compliant') else 'no'}"
+        )
         for note in r.cnsa_2_0.get("notes") or []:
             L.append(C.wrap(C.YELLOW, f"   note: {note}"))
         L.append("")
@@ -2793,8 +3656,12 @@ def render_markdown(r: Report) -> str:
     if r.openssl.get("available"):
         L.append("## OpenSSL PQC capability")
         L.append(f"- Version: `{r.openssl.get('version')}`")
-        L.append(f"- KEM algorithms: {', '.join(r.openssl.get('kem_algorithms') or []) or '_none_'}")
-        L.append(f"- Signature algorithms: {', '.join(r.openssl.get('sig_algorithms') or []) or '_none_'}")
+        L.append(
+            f"- KEM algorithms: {', '.join(r.openssl.get('kem_algorithms') or []) or '_none_'}"
+        )
+        L.append(
+            f"- Signature algorithms: {', '.join(r.openssl.get('sig_algorithms') or []) or '_none_'}"
+        )
         tg_md = r.openssl.get("tls_groups") or {}
         hybrid_md = tg_md.get("hybrid") or []
         pure_md = tg_md.get("pure_pqc") or []
@@ -2808,7 +3675,9 @@ def render_markdown(r: Report) -> str:
         for algo, v in r.per_algo.items():
             rc = f"{v.get('rate_per_core', '-')}"
             rh = f"{v.get('rate_host_estimate', '-')}"
-            L.append(f"| {algo} | **{v['tier']}** | {rc} | {rh} | {v.get('metric', '-')} |")
+            L.append(
+                f"| {algo} | **{v['tier']}** | {rc} | {rh} | {v.get('metric', '-')} |"
+            )
         L.append("")
     if r.production_estimate:
         e = r.production_estimate
@@ -2823,35 +3692,71 @@ def render_markdown(r: Report) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--json", action="store_true", help="emit JSON")
     ap.add_argument("--markdown", action="store_true", help="emit markdown")
-    ap.add_argument("--bench", action="store_true", help="run PQC + classical microbench")
+    ap.add_argument(
+        "--cbom",
+        action="store_true",
+        help="emit CycloneDX 1.6 CBOM JSON (NIST IR 8547)",
+    )
+    ap.add_argument(
+        "--bench", action="store_true", help="run PQC + classical microbench"
+    )
     ap.add_argument("--threads", type=int, default=1, help="add an N-way scaling test")
     ap.add_argument("--seconds", type=int, default=1, help="seconds per benchmark op")
-    ap.add_argument("--check",
-                    choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
-                    help="exit 4 if verdict is below TIER, or if cnsa-2.0 status != compliant")
-    ap.add_argument("--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/")
+    ap.add_argument(
+        "--check",
+        choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
+        help="exit 4 if verdict is below TIER, or if cnsa-2.0 status != compliant",
+    )
+    ap.add_argument(
+        "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
+    )
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
-    ap.add_argument("--scan-trust-store", action="store_true",
-                    help="walk system trust store dirs and count PQC / hybrid certs (slow)")
-    ap.add_argument("--scan-packages", action="store_true",
-                    help="enumerate installed packages with bundled crypto (RHEL/Fedora)")
-    ap.add_argument("--host-mount", metavar="PATH", default="",
-                    help="prefix for /proc /sys /dev /etc reads (DaemonSet pattern)")
-    ap.add_argument("--ansible", action="store_true",
-                    help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0")
-    ap.add_argument("--aggregate", metavar="DIR",
-                    help="aggregate every *.json in DIR into a fleet rollup; exits when done")
-    ap.add_argument("--aggregate-format", choices=["json", "csv"], default="json",
-                    help="output format for --aggregate (default: json)")
-    ap.add_argument("--version", action="version",
-                    version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})")
+    ap.add_argument(
+        "--scan-trust-store",
+        action="store_true",
+        help="walk system trust store dirs and count PQC / hybrid certs (slow)",
+    )
+    ap.add_argument(
+        "--scan-packages",
+        action="store_true",
+        help="enumerate installed packages with bundled crypto (RHEL/Fedora)",
+    )
+    ap.add_argument(
+        "--host-mount",
+        metavar="PATH",
+        default="",
+        help="prefix for /proc /sys /dev /etc reads (DaemonSet pattern)",
+    )
+    ap.add_argument(
+        "--ansible",
+        action="store_true",
+        help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0",
+    )
+    ap.add_argument(
+        "--aggregate",
+        metavar="DIR",
+        help="aggregate every *.json in DIR into a fleet rollup; exits when done",
+    )
+    ap.add_argument(
+        "--aggregate-format",
+        choices=["json", "csv"],
+        default="json",
+        help="output format for --aggregate (default: json)",
+    )
+    ap.add_argument(
+        "--version",
+        action="version",
+        version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})",
+    )
     args = ap.parse_args()
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
@@ -2868,7 +3773,13 @@ def main() -> int:
     if args.host_mount:
         HOST_PREFIX = args.host_mount.rstrip("/")
 
-    C.configure(sys.stdout.isatty() and not args.no_color and not args.json and not args.markdown)
+    C.configure(
+        sys.stdout.isatty()
+        and not args.no_color
+        and not args.json
+        and not args.markdown
+        and not args.cbom
+    )
 
     arch = platform.machine().lower()
     flags = cpu_flags(arch)
@@ -2909,7 +3820,9 @@ def main() -> int:
         packages_info = scan_packages(os_release)
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
-    hsm_pqc_capable = any(a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels)
+    hsm_pqc_capable = any(
+        a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels
+    )
     hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
     bench: dict[str, Any] = {}
@@ -2921,12 +3834,16 @@ def main() -> int:
 
     cores_for_estimate = physical or logical or 1
     tls_hybrid_avail = bool((osinfo.get("tls_groups") or {}).get("hybrid"))
-    palg = per_algo_verdict(
-        bench,
-        cores_for_estimate,
-        mem_bw_gb_s=membw,
-        tls_hybrid_available=tls_hybrid_avail,
-    ) if bench else {}
+    palg = (
+        per_algo_verdict(
+            bench,
+            cores_for_estimate,
+            mem_bw_gb_s=membw,
+            tls_hybrid_available=tls_hybrid_avail,
+        )
+        if bench
+        else {}
+    )
     pest = production_estimate(palg, total_gb) if palg else {}
     verdict, why, code, caveat = overall_verdict(isa_t, mem_t, dedicated, palg)
     why = f"{why} ISA: {isa_reason}. Memory: {mem_reason}."
@@ -2997,6 +3914,8 @@ def main() -> int:
         return 0
     if args.json:
         print(json.dumps(asdict(r), indent=2))
+    elif args.cbom:
+        print(render_cbom(r))
     elif args.markdown:
         print(render_markdown(r))
     elif args.quiet:
@@ -3009,7 +3928,15 @@ def main() -> int:
             return 4
     elif args.check:
         rank = {"poor": 0, "marginal": 1, "good": 2, "excellent": 3}
-        cur = "excellent" if r.exit_code == 0 else "good" if r.exit_code == 1 else "marginal" if r.exit_code == 2 else "poor"
+        cur = (
+            "excellent"
+            if r.exit_code == 0
+            else "good"
+            if r.exit_code == 1
+            else "marginal"
+            if r.exit_code == 2
+            else "poor"
+        )
         if rank[cur] < rank[args.check]:
             return 4
     return r.exit_code
