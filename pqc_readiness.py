@@ -19,6 +19,7 @@ Usage:
     pqc-readiness --cbom                    CycloneDX 1.6 CBOM JSON (NIST IR 8547)
     pqc-readiness --markdown                markdown report (for tickets)
     pqc-readiness --bench                   run PQC + classical microbench
+    pqc-readiness --bench-tls               run loopback TLS 1.3 handshake bench
     pqc-readiness --threads N               include N-way scaling test
     pqc-readiness --check TIER              exit nonzero if verdict < TIER
     pqc-readiness --check cnsa-2.0          exit nonzero if not CNSA 2.0 compliant
@@ -43,10 +44,14 @@ import json
 import os
 import platform
 import re
+import select
 import shutil
 import socket
+import statistics
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -405,6 +410,7 @@ class Report:
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     benchmark: dict[str, Any] = field(default_factory=dict)
+    benchmark_tls_handshake: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
     production_estimate: dict[str, Any] = field(default_factory=dict)
@@ -2607,6 +2613,500 @@ def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# TLS-handshake benchmark
+#
+# `openssl speed` measures algorithm operations in isolation; it does not
+# capture the network-side cost of larger PQC keys and signatures (cert
+# chain inflation, initcwnd overflow) that only shows up at the handshake
+# layer specified in RFC 8446.  This benchmark drives `openssl s_server`
+# and `openssl s_client` over loopback so the wire-side bandwidth impact
+# becomes visible alongside the algorithm-level numbers.
+# ---------------------------------------------------------------------------
+
+
+def _tls_pick_classical_group(classical: list[str]) -> str | None:
+    """Pick a sensible classical TLS 1.3 group for the baseline.
+
+    Prefer x25519 (modern default); fall back to secp256r1 if x25519 is
+    not exposed by the local OpenSSL.  Older curves (secp384r1, etc.)
+    are accepted only as a last resort so the comparison stays apples
+    to apples with the PQC suites.
+    """
+    lowered = {g.lower(): g for g in classical}
+    for pref in ("x25519", "secp256r1", "secp384r1"):
+        if pref in lowered:
+            return lowered[pref]
+    return classical[0] if classical else None
+
+
+def _tls_find_composite_signature_alg(sig_algs: list[str]) -> str | None:
+    """Detect a composite signature scheme exposed by the local OpenSSL.
+
+    Composite signatures (draft-ietf-lamps-pq-composite-sigs) bind a PQC
+    signature with a classical signature in a single key, providing a
+    hybrid hedge during PQC migration.  Only stock OpenSSL builds with
+    a provider exposing such names will return a non-None value.
+    Returns the OpenSSL algorithm name (suitable as `-newkey` arg) or
+    None if no composite scheme is available.
+    """
+    pat = re.compile(
+        r"^(?:id-)?(?:ml-?dsa)[-_]?\d+[-_]?"
+        r"(?:rsa\d*|p\d{3}|ecdsa[-_]?p\d{3}|ed25519|ed448)",
+        re.IGNORECASE,
+    )
+    for name in sig_algs:
+        if pat.match(name):
+            return name
+    return None
+
+
+def _tls_build_suites(osinfo: dict[str, Any]) -> list[dict[str, str]]:
+    """Pick the set of TLS group/cert configurations to benchmark.
+
+    Returns a list of suite descriptors with `label`, `role`, `group`,
+    and (optionally) `cert_signature_algorithm` keys.  Suites that are
+    not supported by the local OpenSSL are silently omitted.
+    """
+    groups = osinfo.get("tls_groups") or {}
+    suites: list[dict[str, str]] = []
+    classical = _tls_pick_classical_group(list(groups.get("classical") or []))
+    if classical:
+        suites.append(
+            {
+                "label": f"classical ({classical})",
+                "role": "classical",
+                "group": classical,
+            }
+        )
+    hybrid = list(groups.get("hybrid") or [])
+    pref_hybrid = next(
+        (g for g in hybrid if g.lower() in ("x25519mlkem768",)),
+        hybrid[0] if hybrid else None,
+    )
+    if pref_hybrid:
+        suites.append(
+            {"label": f"hybrid ({pref_hybrid})", "role": "hybrid", "group": pref_hybrid}
+        )
+    pure = list(groups.get("pure_pqc") or [])
+    pref_pure = next(
+        (g for g in pure if g.lower() in ("mlkem768",)),
+        pure[0] if pure else None,
+    )
+    if pref_pure:
+        suites.append(
+            {"label": f"pure-pqc ({pref_pure})", "role": "pure_pqc", "group": pref_pure}
+        )
+    return suites
+
+
+def _tls_get_free_port() -> int:
+    """Return a TCP port that is currently free on 127.0.0.1.
+
+    We close the probe socket before returning, so there is a small
+    race where another process could grab the port before s_server
+    binds.  In practice loopback contention on a CI runner is low
+    enough that this is not a problem in practice; we accept the race
+    rather than maintain a long-lived parent socket.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _tls_wait_for_port(port: int, timeout: float) -> bool:
+    """Poll-connect to 127.0.0.1:port until it accepts or timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                return True
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def _tls_byte_counting_proxy(
+    listen_port: int,
+    target_port: int,
+    expected_connections: int,
+    accumulator: dict[str, int],
+    timeout: float,
+    ready_event: threading.Event,
+) -> None:
+    """Forward TCP between listen_port and target_port, counting bytes.
+
+    Runs in its own thread.  Accepts up to `expected_connections`
+    inbound connections (one per s_client invocation), forwards each to
+    target_port, and accumulates the total byte count in
+    accumulator['total'] with the connection count in accumulator['n'].
+    Sets ready_event once it is listening.
+    """
+    deadline = time.monotonic() + timeout
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind(("127.0.0.1", listen_port))
+        srv.listen(max(expected_connections, 1))
+    except OSError:
+        ready_event.set()
+        srv.close()
+        return
+    ready_event.set()
+    accepted = 0
+    try:
+        while accepted < expected_connections and time.monotonic() < deadline:
+            srv.settimeout(max(0.1, deadline - time.monotonic()))
+            try:
+                client, _ = srv.accept()
+            except (socket.timeout, TimeoutError):
+                break
+            accepted += 1
+            try:
+                upstream = socket.create_connection(
+                    ("127.0.0.1", target_port), timeout=2.0
+                )
+            except OSError:
+                client.close()
+                continue
+            client.settimeout(None)
+            upstream.settimeout(None)
+            socks: list[socket.socket] = [client, upstream]
+            conn_bytes = 0
+            try:
+                while socks:
+                    rlist, _, _ = select.select(socks, [], [], 5.0)
+                    if not rlist:
+                        break
+                    closed = False
+                    for s in rlist:
+                        try:
+                            data = s.recv(8192)
+                        except OSError:
+                            data = b""
+                        if not data:
+                            closed = True
+                            break
+                        conn_bytes += len(data)
+                        peer = upstream if s is client else client
+                        try:
+                            peer.sendall(data)
+                        except OSError:
+                            closed = True
+                            break
+                    if closed:
+                        break
+            finally:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                try:
+                    upstream.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                client.close()
+                upstream.close()
+            accumulator["total"] += conn_bytes
+            accumulator["n"] += 1
+    finally:
+        srv.close()
+
+
+def _tls_generate_test_cert(
+    cert: Path, key: Path, key_alg: str = "RSA:2048"
+) -> tuple[bool, str]:
+    """Create a self-signed loopback test cert.
+
+    Uses RSA-2048 by default since it is universally supported by
+    OpenSSL 3.x without requiring the EC subsystem.  Returns
+    (True, "") on success, (False, reason) on failure.
+    """
+    cmd = [
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        key_alg,
+        "-keyout",
+        str(key),
+        "-out",
+        str(cert),
+        "-noenc",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        "-days",
+        "1",
+    ]
+    rc, out = _run(cmd, timeout=20)
+    if rc != 0 or not cert.exists() or not key.exists():
+        return False, (out.strip().splitlines() or [f"rc={rc}"])[-1][:200]
+    return True, ""
+
+
+def _tls_run_one_handshake(
+    cert: Path, group: str, port: int, timeout: float = 10.0
+) -> float | None:
+    """Run a single full TLS handshake against 127.0.0.1:port via s_client.
+
+    Returns elapsed wall-clock seconds for the s_client invocation, or
+    None if the handshake failed.  Note: this measurement includes the
+    cost of spawning the openssl process; the relative comparison
+    between groups remains valid because spawn cost is constant.
+    """
+    cmd = [
+        "openssl",
+        "s_client",
+        "-connect",
+        f"127.0.0.1:{port}",
+        "-groups",
+        group,
+        "-CAfile",
+        str(cert),
+        "-verify_return_error",
+        "-quiet",
+        "-no_ign_eof",
+    ]
+    start = time.perf_counter()
+    try:
+        p = subprocess.run(
+            cmd,
+            input=b"GET / HTTP/1.0\r\n\r\n",
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    elapsed = time.perf_counter() - start
+    # `s_server -www` returns an HTTP 200 page and closes; s_client exits 0.
+    # Some OpenSSL builds exit non-zero on the server-side close even when
+    # the handshake succeeded, so we accept any exit code as long as the
+    # response payload is present.
+    if p.returncode != 0 and b"s_server" not in p.stdout:
+        return None
+    return elapsed
+
+
+def _tls_bench_one_suite(
+    cert: Path,
+    key: Path,
+    suite: dict[str, str],
+    iterations: int,
+    handshake_timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Run `iterations` handshakes for one TLS suite and report metrics."""
+    server_port = _tls_get_free_port()
+    proxy_port = _tls_get_free_port()
+    while proxy_port == server_port:
+        proxy_port = _tls_get_free_port()
+    server_cmd = [
+        "openssl",
+        "s_server",
+        "-accept",
+        str(server_port),
+        "-cert",
+        str(cert),
+        "-key",
+        str(key),
+        "-groups",
+        suite["group"],
+        "-www",
+        "-no_ticket",
+        "-naccept",
+        str(iterations + 4),
+        "-quiet",
+    ]
+    try:
+        server = subprocess.Popen(
+            server_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        return {"error": f"failed to spawn s_server: {exc}"}
+    try:
+        if not _tls_wait_for_port(server_port, timeout=5.0):
+            stderr = b""
+            try:
+                stderr = server.stderr.read() if server.stderr else b""
+            except OSError:
+                stderr = b""
+            return {
+                "error": "s_server failed to listen",
+                "detail": stderr.decode("utf-8", "replace").strip()[:200],
+            }
+        accumulator: dict[str, int] = {"total": 0, "n": 0}
+        ready = threading.Event()
+        proxy = threading.Thread(
+            target=_tls_byte_counting_proxy,
+            args=(
+                proxy_port,
+                server_port,
+                iterations,
+                accumulator,
+                handshake_timeout * iterations + 30.0,
+                ready,
+            ),
+            daemon=True,
+        )
+        proxy.start()
+        ready.wait(timeout=5.0)
+        if not _tls_wait_for_port(proxy_port, timeout=5.0):
+            return {"error": "byte-counting proxy failed to listen"}
+        times: list[float] = []
+        for _ in range(iterations):
+            t = _tls_run_one_handshake(
+                cert, suite["group"], proxy_port, timeout=handshake_timeout
+            )
+            if t is not None:
+                times.append(t)
+        proxy.join(timeout=10.0)
+    finally:
+        try:
+            server.terminate()
+            server.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                server.kill()
+                server.wait(timeout=2)
+            except OSError:
+                pass
+        except OSError:
+            pass
+        if server.stderr:
+            try:
+                server.stderr.close()
+            except OSError:
+                pass
+    if not times:
+        return {"error": "no successful handshakes"}
+    total = sum(times)
+    bytes_per = (
+        round(accumulator["total"] / accumulator["n"])
+        if accumulator["n"] > 0
+        else None
+    )
+    return {
+        "iterations": len(times),
+        "handshakes_per_sec": round(len(times) / total, 2) if total > 0 else 0.0,
+        "ttfb_ms_mean": round(statistics.mean(times) * 1000.0, 3),
+        "ttfb_ms_median": round(statistics.median(times) * 1000.0, 3),
+        "bytes_on_wire_per_handshake": bytes_per,
+        "bytes_observed_connections": accumulator["n"],
+    }
+
+
+def _tls_bench_composite_signature(
+    tmpdir: Path,
+    osinfo: dict[str, Any],
+    iterations: int,
+) -> dict[str, Any] | None:
+    """Run the composite-signature variant of the suite, if available.
+
+    Composite signatures bind a PQC scheme with a classical scheme in a
+    single signing key (per draft-ietf-lamps-pq-composite-sigs).  Only
+    OpenSSL builds with a provider exposing such names can generate a
+    cert with a composite key; the function returns None when no such
+    algorithm is exposed or when cert generation fails.
+    """
+    sig_algs = list(osinfo.get("sig_algorithms") or [])
+    composite = _tls_find_composite_signature_alg(sig_algs)
+    if not composite:
+        return None
+    classical_group = _tls_pick_classical_group(
+        list((osinfo.get("tls_groups") or {}).get("classical") or [])
+    )
+    if not classical_group:
+        return None
+    cert = tmpdir / "cert-composite.pem"
+    key = tmpdir / "key-composite.pem"
+    ok, reason = _tls_generate_test_cert(cert, key, key_alg=composite)
+    if not ok:
+        return {
+            "label": f"composite-sig ({composite})",
+            "role": "composite_sig",
+            "group": classical_group,
+            "cert_signature_algorithm": composite,
+            "skipped": True,
+            "reason": f"cert generation failed: {reason}",
+        }
+    suite: dict[str, str] = {
+        "label": f"composite-sig ({composite})",
+        "role": "composite_sig",
+        "group": classical_group,
+        "cert_signature_algorithm": composite,
+    }
+    metrics = _tls_bench_one_suite(cert, key, suite, iterations)
+    return {**suite, **metrics}
+
+
+def run_tls_handshake_bench(
+    seconds: int, osinfo: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Loopback TLS handshake benchmark across classical / hybrid / PQC.
+
+    Drives `openssl s_server` and `openssl s_client` over a Python
+    byte-counting proxy on 127.0.0.1.  Reports handshakes/sec, mean and
+    median time-to-first-byte (in milliseconds, including s_client
+    process startup), and bytes-on-wire per handshake for each
+    available TLS group selection plus an optional composite-signature
+    cert variant.
+    """
+    if not shutil.which("openssl"):
+        return {"available": False, "reason": "openssl not on PATH"}
+    rc, ver = _run(["openssl", "version"], timeout=5)
+    m = re.search(r"OpenSSL\s+(\d+)\.(\d+)", ver)
+    if not m or (int(m.group(1)), int(m.group(2))) < (3, 5):
+        return {
+            "available": False,
+            "reason": f"OpenSSL pre-3.5 lacks ML-KEM groups (got {ver.strip()})",
+        }
+    if osinfo is None:
+        osinfo = openssl_capability()
+    if not osinfo.get("available"):
+        return {"available": False, "reason": "openssl_capability probe failed"}
+    suites = _tls_build_suites(osinfo)
+    if not suites:
+        return {
+            "available": False,
+            "reason": "no TLS groups recognised by the local OpenSSL",
+        }
+    iterations = max(20, min(200, seconds * 30))
+    with tempfile.TemporaryDirectory(prefix="pqc-readiness-tls-") as td_str:
+        td = Path(td_str)
+        cert = td / "cert.pem"
+        key = td / "key.pem"
+        ok, reason = _tls_generate_test_cert(cert, key)
+        if not ok:
+            return {
+                "available": False,
+                "reason": f"failed to generate test cert: {reason}",
+            }
+        results: list[dict[str, Any]] = []
+        for s in suites:
+            metrics = _tls_bench_one_suite(cert, key, s, iterations)
+            results.append({**s, **metrics})
+        composite = _tls_bench_composite_signature(td, osinfo, iterations)
+        if composite is not None:
+            results.append(composite)
+    return {
+        "available": True,
+        "engine": "tls-handshake",
+        "transport": "loopback",
+        "openssl_version": (osinfo.get("version") or "").strip(),
+        "iterations_per_suite": iterations,
+        "seconds_budget": seconds,
+        "note": (
+            "ttfb measurements include the s_client process startup cost; "
+            "comparisons across groups are still meaningful because that "
+            "cost is constant"
+        ),
+        "suites": results,
+    }
+
+
 def memory_bandwidth_probe() -> tuple[float | None, str]:
     """STREAM-triad-style memory bandwidth probe (a = b * scalar + c).
 
@@ -3991,6 +4491,34 @@ def render_text(r: Report) -> str:
                     L.append(f"     {name:<10} {s}")
         L.append("")
 
+    if r.benchmark_tls_handshake:
+        L.append(C.wrap(C.BOLD, "6b. TLS handshake benchmark (loopback)"))
+        b = r.benchmark_tls_handshake
+        if not b.get("available"):
+            L.append(f"   unavailable: {b.get('reason')}")
+        else:
+            L.append(
+                f"   engine: {b.get('engine')}, transport: {b.get('transport')}, "
+                f"{b.get('iterations_per_suite')} handshakes/suite"
+            )
+            for s in b.get("suites") or []:
+                if "error" in s:
+                    L.append(f"   {s.get('label', s.get('role', '?')):<32} error: {s['error']}")
+                    continue
+                if s.get("skipped"):
+                    L.append(f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}")
+                    continue
+                hps = s.get("handshakes_per_sec")
+                ttfb = s.get("ttfb_ms_median")
+                bw = s.get("bytes_on_wire_per_handshake")
+                L.append(
+                    f"   {s.get('label', '?'):<32} "
+                    f"{hps:>7.1f} hs/s  "
+                    f"ttfb={ttfb:>6.2f} ms  "
+                    f"wire={bw if bw is not None else '?'} B"
+                )
+        L.append("")
+
     if r.per_algo:
         L.append(C.wrap(C.BOLD, "7. Per-algorithm production verdict"))
         for key, v in r.per_algo.items():
@@ -4144,6 +4672,31 @@ def render_markdown(r: Report) -> str:
         for k, v in e.items():
             L.append(f"- {k}: {v}")
         L.append("")
+    if r.benchmark_tls_handshake.get("available"):
+        b = r.benchmark_tls_handshake
+        L.append("## TLS handshake benchmark (loopback)")
+        L.append(
+            f"_{b.get('iterations_per_suite')} handshakes per suite via "
+            f"`{b.get('openssl_version', 'openssl')}`. "
+            "ttfb includes s_client process startup._"
+        )
+        L.append("")
+        L.append("| Suite | Role | Handshakes/sec | TTFB median (ms) | Bytes on wire / handshake |")
+        L.append("|-------|------|---------------:|-----------------:|--------------------------:|")
+        for s in b.get("suites") or []:
+            if "error" in s:
+                L.append(f"| {s.get('label', '?')} | {s.get('role', '?')} | error | error | error |")
+                continue
+            if s.get("skipped"):
+                L.append(f"| {s.get('label', '?')} | {s.get('role', '?')} | skipped | skipped | skipped |")
+                continue
+            L.append(
+                f"| {s.get('label', '?')} | {s.get('role', '?')} | "
+                f"{s.get('handshakes_per_sec', '-')} | "
+                f"{s.get('ttfb_ms_median', '-')} | "
+                f"{s.get('bytes_on_wire_per_handshake', '-')} |"
+            )
+        L.append("")
     return "\n".join(L)
 
 
@@ -4166,6 +4719,11 @@ def main() -> int:
     )
     ap.add_argument(
         "--bench", action="store_true", help="run PQC + classical microbench"
+    )
+    ap.add_argument(
+        "--bench-tls",
+        action="store_true",
+        help="run loopback TLS 1.3 handshake benchmark (classical/hybrid/PQC)",
     )
     ap.add_argument("--threads", type=int, default=1, help="add an N-way scaling test")
     ap.add_argument("--seconds", type=int, default=1, help="seconds per benchmark op")
@@ -4311,11 +4869,14 @@ def main() -> int:
     hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
     bench: dict[str, Any] = {}
+    bench_tls: dict[str, Any] = {}
     membw: float | None = None
     membw_method = ""
     if args.bench:
         bench = run_benchmarks(seconds=args.seconds, threads=max(args.threads, 1))
         membw, membw_method = memory_bandwidth_probe()
+    if args.bench_tls:
+        bench_tls = run_tls_handshake_bench(seconds=args.seconds, osinfo=osinfo)
 
     cores_for_estimate = physical or logical or 1
     tls_hybrid_avail = bool((osinfo.get("tls_groups") or {}).get("hybrid"))
@@ -4376,6 +4937,7 @@ def main() -> int:
         replace_required=replace_required,
         os_release=os_release,
         benchmark=bench,
+        benchmark_tls_handshake=bench_tls,
         per_algo=palg,
         production_estimate=pest,
         verdict=verdict,
