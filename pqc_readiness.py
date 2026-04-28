@@ -64,7 +64,13 @@ HOST_PREFIX: str = ""
 # Path namespaces that should be redirected through HOST_PREFIX when set.
 # Paths outside these namespaces (binary lookups, /opt/..., /tmp/...) are
 # left alone — they belong to the running container, not the host kernel.
-_HOST_NAMESPACES = ("/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share")
+# /usr/lib/os-release is enumerated explicitly because /etc/os-release is
+# a symlink to it on most modern distros (Fedora, Debian, Ubuntu, Arch);
+# bind-mounting only /etc would dangle the symlink in the container.
+_HOST_NAMESPACES = (
+    "/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share",
+    "/usr/lib/os-release",
+)
 
 
 def host_path(p: str) -> Path:
@@ -1033,14 +1039,19 @@ def detect_os() -> dict[str, Any]:
             "pretty_name": f"macOS {ver}".rstrip() if ver else "macOS",
             "package_manager": "brew" if shutil.which("brew") else None,
         }
-    osr = host_path("/etc/os-release")
-    if osr.exists():
+    # /etc/os-release is the freedesktop standard.  On most modern
+    # distros it's a symlink to /usr/lib/os-release; in containerised
+    # invocations the symlink can dangle when /usr/lib is not host-
+    # mounted, so we try both paths explicitly.
+    for candidate in ("/etc/os-release", "/usr/lib/os-release"):
+        p = host_path(candidate)
         try:
-            out = parse_os_release(osr.read_text())
-            out["package_manager"] = _resolve_package_manager(out["family"])
-            return out
+            text = p.read_text()
         except OSError:
-            pass
+            continue
+        out = parse_os_release(text)
+        out["package_manager"] = _resolve_package_manager(out["family"])
+        return out
     # Legacy fallbacks — only triggered when /etc/os-release is missing.
     if host_path("/etc/redhat-release").exists():
         rh = parse_redhat_release(host_path("/etc/redhat-release").read_text())

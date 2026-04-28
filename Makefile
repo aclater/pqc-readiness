@@ -7,8 +7,10 @@ RUFF ?= ruff
 MYPY ?= mypy
 PODMAN ?= podman
 IMAGE ?= pqc-readiness:dev
+IMAGE_UBI10 ?= pqc-readiness:ubi10
+IMAGE_DEBIAN ?= pqc-readiness:debian
 
-.PHONY: help test lint typecheck check container-build clean
+.PHONY: help test lint typecheck check container container-build container-ubi10 container-debian clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | awk -F':.*##' '{printf "  %-20s %s\n", $$1, $$2}'
@@ -24,8 +26,15 @@ typecheck: ## mypy strict
 
 check: lint typecheck test ## All of the above
 
-container-build: ## Build the UBI 10 minimal container with podman
-	$(PODMAN) build --format=docker -t $(IMAGE) -f Containerfile .
+container-build: container-ubi10 ## Alias for container-ubi10 (back-compat)
+
+container: container-ubi10 container-debian ## Build both UBI and Debian images
+
+container-ubi10: ## Build the UBI 10 minimal container with podman
+	$(PODMAN) build --format=docker -t $(IMAGE_UBI10) -f Containerfile.ubi10 .
+
+container-debian: ## Build the Debian 12-slim container with podman
+	$(PODMAN) build --format=docker -t $(IMAGE_DEBIAN) -f Containerfile.debian .
 
 clean: ## Remove pytest / mypy / ruff caches
 	rm -rf .pytest_cache .mypy_cache .ruff_cache __pycache__ tests/__pycache__

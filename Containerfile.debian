@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: Apache-2.0
+# Containerfile.debian — Debian 12 (bookworm-slim) build of pqc-readiness.
+# Functionally identical to Containerfile.ubi10: same script, same flags,
+# same JSON schema, same non-root UID, same Python healthcheck.
+#
+# Build:
+#   podman build --format=docker -t pqc-readiness:debian -f Containerfile.debian .
+#
+# Run (host probe — needs host /proc, /sys, /dev, /etc, plus the
+# os-release file target that /etc/os-release symlinks to on Debian):
+#   podman run --rm \
+#     --pid=host \
+#     -v /proc:/host/proc:ro \
+#     -v /sys:/host/sys:ro \
+#     -v /dev:/host/dev:ro \
+#     -v /etc:/host/etc:ro \
+#     -v /usr/lib/os-release:/host/usr/lib/os-release:ro \
+#     pqc-readiness:debian --host-mount /host --json
+#
+# Note: Debian 12 ships OpenSSL 3.0; ML-KEM/ML-DSA require OpenSSL 3.5+.
+# For full PQC support either: (a) use Containerfile.ubi10 (UBI 10
+# ships OpenSSL 3.5), or (b) install libssl3 + openssl from
+# bookworm-backports / trixie when this Containerfile is used in a
+# DaemonSet that requires the bench path.  The script runs without
+# OpenSSL 3.5 — it just reports `openssl.pqc_native: false` and the
+# verdict gains the no-bench caveat.
+
+FROM docker.io/library/debian:12-slim
+
+LABEL org.opencontainers.image.title="pqc-readiness"
+LABEL org.opencontainers.image.description="Host-level PQC readiness assessment (Debian build)"
+LABEL org.opencontainers.image.source="https://github.com/aclater/pqc-readiness"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Single RUN layer: install + cleanup so the image stays small.
+# python3-numpy enables the STREAM-triad memory bandwidth probe; the
+# script falls back gracefully when missing but every customer report
+# benefits from a real bandwidth number.  openssh-client provides
+# `ssh -Q kex` for the §2 OpenSSH PQC detection.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3 \
+        python3-numpy \
+        openssl \
+        openssh-client \
+        ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Non-root UID 1001 — same as the UBI build, same user/group ownership
+# of /var/lib/pqc-readiness so quadlets and DaemonSets that bind-mount
+# either image into the same volume work without UID surprises.
+RUN groupadd -r -g 1001 probe \
+    && useradd -r -u 1001 -g probe -s /usr/sbin/nologin -d /var/lib/pqc-readiness probe \
+    && mkdir -p /var/lib/pqc-readiness \
+    && chown -R 1001:1001 /var/lib/pqc-readiness
+
+COPY --chown=1001:1001 pqc_readiness.py /usr/local/bin/pqc-readiness
+RUN chmod 0755 /usr/local/bin/pqc-readiness
+
+# Healthcheck — same Python-only pattern as the UBI build.
+HEALTHCHECK --interval=1h --timeout=5s --start-period=5s --retries=1 \
+    CMD python3 /usr/local/bin/pqc-readiness --help >/dev/null 2>&1 || exit 1
+
+USER 1001
+WORKDIR /var/lib/pqc-readiness
+
+ENTRYPOINT ["/usr/local/bin/pqc-readiness"]
+CMD ["--json"]

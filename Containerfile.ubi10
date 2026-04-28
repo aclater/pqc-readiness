@@ -1,21 +1,26 @@
 # SPDX-License-Identifier: Apache-2.0
-# Containerfile for pqc-readiness — host-level Post-Quantum Cryptography
-# readiness assessment.  Uses Red Hat UBI 10 minimal as the base image.
+# Containerfile.ubi10 — host-level Post-Quantum Cryptography readiness
+# assessment, Red Hat UBI 10 minimal base.  This is the Red Hat-supported
+# build path; see Containerfile.debian for the Debian/Ubuntu equivalent
+# and Containerfile.ubuntu-fips for the (stub) Ubuntu Pro FIPS build.
 #
 # Build:
-#   podman build --format=docker -t pqc-readiness:dev -f Containerfile .
+#   podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
 # (The OCI image format does not encode HEALTHCHECK; Docker format does.
 #  Drop --format=docker if you do not need the in-image healthcheck —
 #  OpenShift uses readiness/liveness probes from the manifest instead.)
 #
-# Run (host probe — needs host /proc, /sys, /dev, /etc):
+# Run (host probe — needs host /proc, /sys, /dev, /etc, and the
+# os-release file target /usr/lib/os-release that /etc/os-release
+# symlinks to on Fedora / Debian / Ubuntu / Arch):
 #   podman run --rm \
 #     --pid=host \
 #     -v /proc:/host/proc:ro \
 #     -v /sys:/host/sys:ro \
 #     -v /dev:/host/dev:ro \
 #     -v /etc:/host/etc:ro \
-#     pqc-readiness:dev --host-mount /host --json
+#     -v /usr/lib/os-release:/host/usr/lib/os-release:ro \
+#     pqc-readiness:ubi10 --host-mount /host --json
 #
 # UBI 10.1 was the current released minor at the time of writing.  Verify
 # before bumping:
