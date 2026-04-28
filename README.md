@@ -7,6 +7,15 @@ primitives (ML-KEM, ML-DSA, SLH-DSA) at production speed in software, or
 whether it requires a dedicated cryptographic accelerator. Output is a
 stable JSON schema designed for fleet inventory aggregation.
 
+## Scope
+
+`pqc-readiness` is a host-level capability and inventory scanner. It
+sits alongside — not in place of — network-level TLS analyzers,
+source-code cryptographic scanners, dependency-scoped scanners, and
+TLS-handshake benchmarking harnesses. See [`docs/scope.md`](docs/scope.md)
+for how each category composes with this project's CBOM, SARIF, and
+SPDX output.
+
 ## Audience
 
 Field architects and customer infrastructure teams. The tool is intended
