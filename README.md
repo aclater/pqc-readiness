@@ -10,9 +10,9 @@ stable JSON schema designed for fleet inventory aggregation.
 ## Audience
 
 Field architects and customer infrastructure teams. The tool is intended
-for use during EU MoD / NATO and other regulated-environment PQC
-migration engagements. It runs on bare metal RHEL 8/9/10, in containers
-(podman/quadlet), and as a privileged DaemonSet on OpenShift.
+for use during regulated-environment PQC migration engagements. It runs
+on bare metal RHEL 8/9/10, in containers (podman/quadlet), and as a
+privileged DaemonSet on OpenShift.
 
 ## What it detects
 
