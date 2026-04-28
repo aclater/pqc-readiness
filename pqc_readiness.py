@@ -1827,6 +1827,28 @@ HYBRID_OID_RES: list[re.Pattern[str]] = [
     re.compile(r"\b1\.3\.6\.1\.4\.1\.42235\.1\.7\.\d+\b"),  # Mozilla draft
     re.compile(r"\b1\.3\.9999\.\d+\.\d+\.\d+\b"),  # liboqs experimental
 ]
+# IETF composite signature OIDs (draft-ietf-lamps-pq-composite-sigs).
+# IANA early-allocated 2025-10-20 under the SMI Security PKIX Algorithms arc
+# 1.3.6.1.5.5.7.6.{37..54} — covers all 18 Composite-ML-DSA variants pairing
+# ML-DSA-44/65/87 with RSA, ECDSA, or EdDSA classical components.  These
+# certs use a single composite signature algorithm OID and form the
+# "hybrid_composite" category in trust_store.cert_categories.
+COMPOSITE_SIG_OID_RE = re.compile(r"\b1\.3\.6\.1\.5\.5\.7\.6\.(3[7-9]|4\d|5[0-4])\b")
+
+
+def categorise_cert_dump(dump: str) -> str:
+    """Categorise an openssl x509 -text dump as 'classical',
+    'hybrid_composite', or 'pure_pqc'.
+
+    Composite is checked before pure PQC because a composite-signature cert
+    typically advertises both the composite OID and the embedded ML-DSA OID
+    — the IETF composite category is the more specific (and accurate) label
+    for those certs."""
+    if COMPOSITE_SIG_OID_RE.search(dump):
+        return "hybrid_composite"
+    if PQC_OID_RE.search(dump):
+        return "pure_pqc"
+    return "classical"
 
 
 def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
@@ -1836,6 +1858,11 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
     total = 0
     pqc_certs = 0
     hybrid_certs = 0
+    cert_categories: dict[str, int] = {
+        "classical": 0,
+        "hybrid_composite": 0,
+        "pure_pqc": 0,
+    }
     seen: set[str] = set()
     for d in target_dirs:
         p = Path(d)
@@ -1869,12 +1896,14 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
                 pqc_certs += 1
             if any(p.search(dump) for p in HYBRID_OID_RES):
                 hybrid_certs += 1
+            cert_categories[categorise_cert_dump(dump)] += 1
     return {
         "available": True,
         "scanned_dirs": [d for d in target_dirs if Path(d).is_dir()],
         "total_certs": total,
         "pqc_certs": pqc_certs,
         "hybrid_certs": hybrid_certs,
+        "cert_categories": cert_categories,
     }
 
 
@@ -2984,9 +3013,7 @@ def _tls_bench_one_suite(
         return {"error": "no successful handshakes"}
     total = sum(times)
     bytes_per = (
-        round(accumulator["total"] / accumulator["n"])
-        if accumulator["n"] > 0
-        else None
+        round(accumulator["total"] / accumulator["n"]) if accumulator["n"] > 0 else None
     )
     return {
         "iterations": len(times),
@@ -3529,9 +3556,7 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
                 "if compliance scope demands it"
             )
         else:
-            kem_reason = (
-                "ML-KEM-768 per FIPS 203; balanced for civilian deployments"
-            )
+            kem_reason = "ML-KEM-768 per FIPS 203; balanced for civilian deployments"
     else:  # commercial
         kem_chosen = "ML-KEM-768"
         kem_reason = (
@@ -3609,8 +3634,7 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
             )
         else:
             sig_reason = (
-                "ML-DSA-65 — balanced default for civilian/commercial "
-                "deployments"
+                "ML-DSA-65 — balanced default for civilian/commercial deployments"
             )
 
     # Hash ----------------------------------------------------------------
@@ -3718,9 +3742,7 @@ def recommend(
             "mode": "auto",
             "hostname": r.hostname,
             "generated_at": r.generated_at,
-            "recommendations": {
-                p: _recommend_one(r, p, role) for p in VALID_POLICIES
-            },
+            "recommendations": {p: _recommend_one(r, p, role) for p in VALID_POLICIES},
         }
     if policy not in POLICY_PREFERENCES:
         raise ValueError(
@@ -4228,6 +4250,14 @@ def _cbom_trust_store_assets(r: Report) -> list[dict[str, Any]]:
         {"name": "trust_store:pqc_certs", "value": str(ts.get("pqc_certs", 0))},
         {"name": "trust_store:hybrid_certs", "value": str(ts.get("hybrid_certs", 0))},
     ]
+    cats = ts.get("cert_categories") or {}
+    for cat in ("classical", "hybrid_composite", "pure_pqc"):
+        extra.append(
+            {
+                "name": f"trust_store:cert_categories:{cat}",
+                "value": str(cats.get(cat, 0)),
+            }
+        )
     for d in ts.get("scanned_dirs") or []:
         extra.append({"name": "trust_store:scanned_dir", "value": d})
     return [
@@ -4503,10 +4533,14 @@ def render_text(r: Report) -> str:
             )
             for s in b.get("suites") or []:
                 if "error" in s:
-                    L.append(f"   {s.get('label', s.get('role', '?')):<32} error: {s['error']}")
+                    L.append(
+                        f"   {s.get('label', s.get('role', '?')):<32} error: {s['error']}"
+                    )
                     continue
                 if s.get("skipped"):
-                    L.append(f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}")
+                    L.append(
+                        f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}"
+                    )
                     continue
                 hps = s.get("handshakes_per_sec")
                 ttfb = s.get("ttfb_ms_median")
@@ -4567,6 +4601,14 @@ def render_text(r: Report) -> str:
         L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
         L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
         L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
+        cats = r.trust_store.get("cert_categories") or {}
+        if cats:
+            L.append(
+                "   Categories:       "
+                f"classical={cats.get('classical', 0)}, "
+                f"hybrid_composite={cats.get('hybrid_composite', 0)}, "
+                f"pure_pqc={cats.get('pure_pqc', 0)}"
+            )
         L.append("")
 
     if r.cnsa_2_0:
@@ -4681,14 +4723,22 @@ def render_markdown(r: Report) -> str:
             "ttfb includes s_client process startup._"
         )
         L.append("")
-        L.append("| Suite | Role | Handshakes/sec | TTFB median (ms) | Bytes on wire / handshake |")
-        L.append("|-------|------|---------------:|-----------------:|--------------------------:|")
+        L.append(
+            "| Suite | Role | Handshakes/sec | TTFB median (ms) | Bytes on wire / handshake |"
+        )
+        L.append(
+            "|-------|------|---------------:|-----------------:|--------------------------:|"
+        )
         for s in b.get("suites") or []:
             if "error" in s:
-                L.append(f"| {s.get('label', '?')} | {s.get('role', '?')} | error | error | error |")
+                L.append(
+                    f"| {s.get('label', '?')} | {s.get('role', '?')} | error | error | error |"
+                )
                 continue
             if s.get("skipped"):
-                L.append(f"| {s.get('label', '?')} | {s.get('role', '?')} | skipped | skipped | skipped |")
+                L.append(
+                    f"| {s.get('label', '?')} | {s.get('role', '?')} | skipped | skipped | skipped |"
+                )
                 continue
             L.append(
                 f"| {s.get('label', '?')} | {s.get('role', '?')} | "
