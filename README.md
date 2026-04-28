@@ -35,6 +35,7 @@ DaemonSet on OpenShift.
 ./pqc_readiness.py                    # human-readable report
 ./pqc_readiness.py --bench            # include OpenSSL microbench
 ./pqc_readiness.py --json             # stable JSON for aggregation
+./pqc_readiness.py --cbom             # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
 ./pqc_readiness.py --markdown         # markdown for tickets
 ./pqc_readiness.py --ansible          # ansible_facts wrapper
 ./pqc_readiness.py --aggregate ./out  # roll up many --save outputs
@@ -109,6 +110,26 @@ pqc_readiness.py --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CS
 
 Files with mismatched `schema_version` are listed under `skipped` with
 a reason rather than silently merged.
+
+## CBOM output (`--cbom`)
+
+`--cbom` emits a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/)
+Cryptographic Bill of Materials. Each detected source — ISA features,
+accelerators / HSMs / TPMs, OpenSSL KEM and signature algorithms,
+OpenSSL TLS hybrid and pure-PQC groups, OpenSSH PQC kex, IPsec
+implementation, PKCS#11 modules, and the trust-store summary — becomes
+a `cryptographic-asset` component with the appropriate `assetType`,
+`algorithmProperties` (or `protocolProperties` /
+`relatedCryptoMaterialProperties`) where applicable, and a `detectedBy:
+pqc-readiness@<version>` provenance property.
+
+The output validates against the official CycloneDX 1.6 JSON schema and
+is suitable for ingest by any CBOM-aware tooling. NIST IR 8547
+([final](https://csrc.nist.gov/pubs/ir/8547/final)) references CycloneDX
+1.6 as the standard exchange format for cryptographic inventory.
+
+The existing `--json` output is unchanged; the two formats can be
+emitted side by side from the same probe run.
 
 ## License
 
