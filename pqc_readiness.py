@@ -239,7 +239,8 @@ class Report:
     isa_score: int = 0
     isa_tier: str = ""
     isa_reason: str = ""
-    accelerators: list[dict[str, str]] = field(default_factory=list)
+    accelerators: list[dict[str, Any]] = field(default_factory=list)
+    hsm_present_but_not_pqc: bool = False
     pkcs11_modules: list[str] = field(default_factory=list)
     kernel_crypto_hw: list[str] = field(default_factory=list)
     ktls_supported: bool | None = None
@@ -247,6 +248,7 @@ class Report:
     openssl: dict[str, Any] = field(default_factory=dict)
     tpm_pqc: dict[str, Any] = field(default_factory=dict)
     memory_bandwidth_gb_s: float | None = None
+    memory_bandwidth_method: str = ""
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -493,8 +495,8 @@ def memory_tier(gb: float) -> tuple[str, str]:
 # Accelerator detection
 # ---------------------------------------------------------------------------
 
-def detect_accelerators() -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def detect_accelerators() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     if shutil.which("lspci"):
         rc, data = _run(["lspci", "-nn"], timeout=10)
         if rc == 0:
@@ -505,6 +507,11 @@ def detect_accelerators() -> list[dict[str, str]]:
     for path, label, kind in DEVICE_HINTS:
         if Path(path).exists():
             out.append({"kind": kind, "name": label, "detail": path})
+    # IBM z: enumerate Crypto Express adapters via lszcrypt.  Only CEX8 in
+    # EP11 mode is flagged pqc_capable; CEX5/6/7 surface but do not count
+    # toward dedicated PQC silicon.
+    if platform.machine().lower() == "s390x":
+        out.extend(detect_s390x_crypto())
     return out
 
 
@@ -568,6 +575,33 @@ def detect_ktls() -> bool | None:
     return rc == 0 and "filename" in out
 
 
+def detect_fips_mode_from_providers_text(text: str) -> bool:
+    """Parse `openssl list -providers -verbose` output as records and
+    return True iff a provider named exactly 'fips' has 'status: active'.
+
+    Provider records are introduced by a 2-space-indented line containing
+    just the provider name; field lines under that record are indented
+    4+ spaces and look like `    status: active`.  A FIPS provider that
+    is loaded but inactive (status anything other than 'active') must NOT
+    register as enabled — earlier regex-based detection conflated the two.
+    """
+    records: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        m = re.match(r"^  (\S+)\s*$", line)
+        if m:
+            current = m.group(1).strip()
+            records.setdefault(current, {})
+            continue
+        if current is None:
+            continue
+        f = re.match(r"^    (\S+):\s*(.*)$", line)
+        if f:
+            records[current][f.group(1).strip()] = f.group(2).strip()
+    fips = records.get("fips") or {}
+    return fips.get("status", "").lower() == "active"
+
+
 def detect_fips_mode() -> dict[str, Any]:
     info: dict[str, Any] = {"kernel": False, "openssl_provider": False}
     try:
@@ -576,18 +610,112 @@ def detect_fips_mode() -> dict[str, Any]:
         pass
     if shutil.which("openssl"):
         rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
-        if rc == 0 and re.search(r"^\s*fips\s*$.*?status:\s*active", out, re.IGNORECASE | re.DOTALL | re.MULTILINE):
-            info["openssl_provider"] = True
-        elif rc == 0 and "fips" in out.lower() and "active" in out.lower():
-            info["openssl_provider"] = True
+        if rc == 0:
+            info["openssl_provider"] = detect_fips_mode_from_providers_text(out)
     return info
 
 
-def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str, str]]) -> bool:
-    if arch == "s390x" and {"msa8", "msa9"}.issubset(flags):
-        if any(a["kind"] == "hsm" and "Crypto Express" in a["name"] for a in accels):
-            return True
-    return any(a["kind"] == "hsm" for a in accels)
+def parse_lszcrypt(text: str) -> list[dict[str, Any]]:
+    """Parse `lszcrypt -V` output into per-adapter records.
+
+    Output format (IBM z, kernel zcrypt module):
+
+        CARD.DOMAIN TYPE  MODE             STATUS  REQUEST_CNT ...
+        00          CEX8C CCA-Coproc       online           0
+        00.0026     CEX8C CCA-Coproc       online           0
+        01          CEX8P EP11-Coproc      online           0
+        02          CEX8A Accelerator      online           0
+
+    Returns adapter dicts with: card, domain (None for card-level rows),
+    type_str (e.g. "CEX8P"), level (int 5/6/7/8), mode (CCA/EP11/
+    Accelerator), status, pqc_eligible.
+
+    pqc_eligible is set True only for CEX8 in EP11 mode, the only
+    generally-available IBM hardware that exposes ML-KEM/ML-DSA today.
+    CEX5/6/7 in any mode and CEX8 in CCA or Accelerator modes do NOT
+    qualify regardless of MSA8/MSA9 CPACF facility bits.
+    """
+    out: list[dict[str, Any]] = []
+    pat = re.compile(
+        r"^\s*(\S+)\s+(CEX(\d+)([CPA]))\s+(\S+)\s+(\S+)"
+    )
+    for line in text.splitlines():
+        if "CARD" in line.upper() and "TYPE" in line.upper():
+            continue
+        if not line.strip() or set(line.strip()) <= set("-"):
+            continue
+        m = pat.match(line)
+        if not m:
+            continue
+        card_dom = m.group(1)
+        if "." in card_dom:
+            card, domain = card_dom.split(".", 1)
+        else:
+            card, domain = card_dom, None
+        type_str = m.group(2)
+        level = int(m.group(3))
+        suffix = m.group(4)
+        mode_token = m.group(5)
+        status = m.group(6)
+        mode = {"C": "CCA", "P": "EP11", "A": "Accelerator"}.get(suffix, mode_token)
+        out.append({
+            "card": card,
+            "domain": domain,
+            "type_str": type_str,
+            "level": level,
+            "mode": mode,
+            "status": status,
+            "pqc_eligible": (level >= 8 and mode == "EP11"),
+        })
+    return out
+
+
+def detect_s390x_crypto() -> list[dict[str, Any]]:
+    """Run `lszcrypt -V` and convert each adapter to an accelerators-list
+    entry.  Only invoked on s390x; safe to call on other arches (returns
+    empty list when the tool isn't installed)."""
+    if not shutil.which("lszcrypt"):
+        return []
+    rc, out = _run(["lszcrypt", "-V"], timeout=5)
+    if rc != 0:
+        return []
+    accels: list[dict[str, Any]] = []
+    for adapter in parse_lszcrypt(out):
+        accels.append({
+            "kind": "hsm",
+            "name": f"IBM Crypto Express {adapter['level']} ({adapter['mode']})",
+            "detail": (f"card={adapter['card']}"
+                       + (f" domain={adapter['domain']}" if adapter["domain"] else "")
+                       + f" mode={adapter['mode']} status={adapter['status']}"),
+            "pqc_capable": adapter["pqc_eligible"],
+            "cex_level": adapter["level"],
+            "cex_mode": adapter["mode"],
+        })
+    return accels
+
+
+# Explicit allow-list of HSM/accelerator models confirmed to expose NIST
+# PQC primitives on-chip in their currently-shipping firmware.  Anything
+# not on this list is reported as an HSM but does NOT count as dedicated
+# PQC silicon for fleet-readiness purposes.  Keep this list audited; the
+# customer assessment depends on it being accurate.
+#
+# Confirmed today (2026):
+#   - IBM Crypto Express 8 (CEX8) in EP11 mode on z15+/z16. Detected via
+#     parse_lszcrypt; the card-level entry has pqc_capable=True.
+#
+# TODO — track for future inclusion (require model + firmware verification):
+#   - Marvell LiquidSecurity 2/3 with PQC firmware bundle
+#   - Thales Luna Network/PCIe 7+ with PQC FM (Functionality Module)
+#   - Utimaco SecurityServer Se-Series with PQC algorithm pack
+#   - AWS CloudHSM (currently not PQC-capable as of last verification)
+def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str, Any]]) -> bool:
+    """Return True iff at least one detected accelerator is on the
+    explicit PQC allow-list.  The detector that adds the device sets
+    `pqc_capable=True` only when it has affirmative evidence (e.g.
+    parse_lszcrypt sets it for CEX8 EP11 adapters).  Generic HSMs
+    without confirmed PQC firmware return False even when present."""
+    return any(a.get("pqc_capable") is True for a in accels)
 
 
 # ---------------------------------------------------------------------------
@@ -621,37 +749,81 @@ def openssl_capability() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def parse_speed_row(text: str, algo: str, labels: tuple[str, ...]) -> dict[str, float] | None:
-    pat = re.compile(rf"^\s*{re.escape(algo)}\s+(.+)$")
+    """Parse the per-algorithm summary row from `openssl speed` output.
+
+    The summary row looks like:
+        ML-KEM-768 0.000027s 0.000017s 0.000026s   37542.4   59259.0   38383.0
+    The first len(labels) columns are seconds-per-op; the last len(labels)
+    columns are ops/sec.  We take the trailing rates.
+
+    Bug fixes:
+      - Use `\\d+(?:\\.\\d+)?` so integer rates (slow algorithms like
+        SLH-DSA, where ops/sec may print as a bare integer in some builds)
+        are not silently dropped.
+      - Match the algo name anywhere on the line via word boundaries, not
+        just at column zero, since some OpenSSL builds prefix the row with
+        parameter strings.
+    """
+    needle = re.escape(algo)
+    pat = re.compile(rf"\b{needle}\b")
     for line in text.splitlines():
-        m = pat.match(line)
-        if not m:
+        if not pat.search(line):
             continue
-        nums = re.findall(r"\d+\.\d+", m.group(1))
+        nums = re.findall(r"\d+(?:\.\d+)?", line)
         if len(nums) >= len(labels) * 2:
-            return {labels[i]: float(nums[-len(labels) + i]) for i in range(len(labels))}
+            tail = nums[-len(labels):]
+            return {labels[i]: float(tail[i]) for i in range(len(labels))}
     return None
 
 
 def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
-    """Classical asymmetric `openssl speed` output uses op/s columns named
-    sign/s, verify/s, derive/s, etc. on a per-curve / per-key row."""
+    """Parse classical asymmetric `openssl speed` output.
+
+    Headers vary by algorithm: RSA emits `sign/s verify/s encr./s decr./s`,
+    ECDH emits `op/s`, EdDSA emits `sign/s verify/s`, and PQC-style entries
+    (rsa-as-KEM) emit `keygens/s encaps/s decaps/s` or `keygens/s sign/s
+    verify/s`.  A header is followed by a single data row whose trailing
+    columns hold the per-second rates.
+
+    Detection rule: a line is a header iff it contains 1+ tokens ending in
+    `/s` and no numeric leading content.  Earlier code required the
+    literal substring `op/s`, which silently skipped RSA/EdDSA/PQC headers.
+    """
     out: dict[str, dict[str, float]] = {}
-    headers: list[str] = []
+    pending: list[str] = []
+    # Algorithm names can appear at column 0 (`rsa  2048 bits ...`,
+    # `rsa2048 ...`) or mid-line wrapped in a description
+    # (` 253 bits ecdh (X25519)`, ` 253 bits EdDSA (Ed25519)`).
+    name_re = re.compile(
+        r"\b(rsa\s*\d+|ed25519|ed448|ecdh|ecdsa|eddsa|x25519|x448)\b",
+        re.IGNORECASE,
+    )
     for line in text.splitlines():
-        if "op/s" in line and "/s" in line:
-            headers = [h.strip() for h in re.split(r"\s{2,}", line.strip()) if h.strip()]
+        s = line.strip()
+        if not s:
             continue
-        m = re.match(r"^\s*(\S[^\d]*?)\s+(\d.*)$", line)
-        if not m or not headers:
+        per_s_tokens = re.findall(r"\S+?/s\b", s)
+        # A header line: contains one or more `*/s` tokens and does not
+        # start with a digit (data rows like ` 253 bits ...` start with
+        # numeric content).
+        if per_s_tokens and not re.match(r"^\s*\d", line):
+            pending = per_s_tokens
             continue
-        name = m.group(1).strip()
-        nums = re.findall(r"\d+\.\d+", m.group(2))
-        if not nums:
+        if not pending:
             continue
-        rates = [float(x) for x in nums if float(x) > 1.0]
-        per_s = {h: r for h, r in zip([x for x in headers if x.endswith("/s")], rates) if h}
-        if per_s and re.search(r"^(rsa\d+|ed25519|ecdh|ecdsa|x25519)$", name, re.IGNORECASE):
-            out[name.lower()] = per_s
+        m = name_re.search(line)
+        if not m:
+            continue
+        name = re.sub(r"\s+", "", m.group(1).lower())
+        nums = re.findall(r"\d+(?:\.\d+)?", line)
+        if len(nums) < len(pending):
+            continue
+        rates = [float(x) for x in nums[-len(pending):]]
+        # The same algorithm appears under several header sections in
+        # `openssl speed` (e.g., RSA shows up under the legacy block, the
+        # KEM block, and the signature block).  Keep the first reading.
+        out.setdefault(name, dict(zip(pending, rates)))
+        pending = []
     return out
 
 
@@ -710,24 +882,45 @@ def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
     }
 
 
-def memory_bandwidth_probe() -> float | None:
-    """Rough memory bandwidth via repeated bytes(bytearray) copies.
-    Useful as a sanity check; SLH-DSA throughput is closely tied to memory
-    bandwidth + hash speed. Numbers are approximate (~10-20% off vendor figures)."""
+def memory_bandwidth_probe() -> tuple[float | None, str]:
+    """STREAM-triad-style memory bandwidth probe (a = b * scalar + c).
+
+    Returns (gb_per_sec, method).  When numpy is unavailable, returns
+    (None, "unavailable: numpy not installed") rather than producing a
+    misleading number.
+
+    The previous bytes(bytearray) implementation measured a combination
+    of allocator throughput and intra-process memcpy and was not
+    representative of sustained memory bandwidth — it is removed.
+    Section 3's SLH-DSA tier downgrade gates on this probe; if it
+    returned None, no downgrade is applied.
+    """
     try:
-        size = 256 * 1024 * 1024
-        buf = bytearray(size)
-        for _ in range(2):
-            bytes(buf)  # warm-up
-        iters = 4
+        import numpy as np
+    except ImportError:
+        return None, "unavailable: numpy not installed"
+    try:
+        n = 16 * 1024 * 1024  # 128 MiB per array (3 arrays = 384 MiB working set)
+        a = np.zeros(n, dtype=np.float64)
+        b = np.ones(n, dtype=np.float64)
+        c = np.full(n, 2.0, dtype=np.float64)
+        # Warm caches.
+        np.add(np.multiply(b, 3.0), c, out=a)
+        iters = 5
         t0 = time.perf_counter()
         for _ in range(iters):
-            bytes(buf)
+            np.add(np.multiply(b, 3.0), c, out=a)
         elapsed = time.perf_counter() - t0
-        gb = (size * iters) / (1024**3)
-        return round(gb / elapsed, 1) if elapsed > 0 else None
-    except (MemoryError, OSError):
-        return None
+        if elapsed <= 0:
+            return None, "probe failed: zero elapsed time"
+        # Conservative: 3 reads (b, c, intermediate) + 1 write (a) per
+        # element per iteration.  numpy may fuse this to 3 ops; we
+        # under-report rather than over-report.
+        bytes_moved = 4 * 8 * n * iters
+        gb_per_s = bytes_moved / elapsed / (1024 ** 3)
+        return round(gb_per_s, 1), "STREAM-triad (numpy)"
+    except (MemoryError, OSError) as e:
+        return None, f"probe failed: {e}"
 
 
 # ---------------------------------------------------------------------------
@@ -777,12 +970,22 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
     slh = per_algo.get("SLH-DSA-SHA2-128s", {})
     if "rate_host_estimate" in slh:
         out["slh_dsa_sha2_128s_signatures_per_sec"] = round(slh["rate_host_estimate"] * headroom, 1)
-    # Per-connection budget: ~32 KB realistic for a TLS server (kernel sockets,
-    # userspace buffers, ML-KEM/ML-DSA handshake state, certificate chain).
-    # Reserve 50% of RAM for non-connection use (binary, kernel, headroom).
+    # Per-connection memory accounting.  The earlier 32 KB figure ignored
+    # default Linux socket buffers, ML-KEM ciphertext (1088 B), the
+    # ML-DSA cert chain (typically 8-12 KB across 2-3 certs), TLS state,
+    # and userspace buffers.  192 KB is a realistic floor for a TLS
+    # server doing PQC; 32 KB is the lower theoretical bound for
+    # comparison.  50% of RAM is reserved for non-connection use
+    # (binary, kernel, working memory headroom).
     if mem_gb > 0:
-        out["concurrent_connections_at_50pct_mem"] = int(mem_gb * 1024 * 1024 / 32) // 2
-        out["assumptions"] = "32 KB/connection, 50% RAM reserved"
+        usable_bytes = mem_gb * (1024 ** 3) * 0.5
+        out["concurrent_connections_realistic"] = int(usable_bytes / (192 * 1024))
+        out["concurrent_connections_theoretical_max"] = int(usable_bytes / (32 * 1024))
+        out["assumptions"] = (
+            "realistic: 192 KB/conn (TCP buffers + ML-KEM ct + ML-DSA cert "
+            "chain + TLS state + userspace); theoretical max: 32 KB/conn "
+            "(minimal PQC handshake state only); 50% RAM reserved"
+        )
     return out
 
 
@@ -834,7 +1037,9 @@ def render_text(r: Report) -> str:
     L.append(f"  Cores:         {r.cores_physical} physical / {r.cores_logical} logical")
     L.append(f"  Memory:        {r.mem_total_gb:.1f} GiB total / {r.mem_avail_gb:.1f} GiB available")
     if r.memory_bandwidth_gb_s is not None:
-        L.append(f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s (rough probe)")
+        L.append(f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s ({r.memory_bandwidth_method})")
+    elif r.memory_bandwidth_method:
+        L.append(f"  Mem bandwidth: {r.memory_bandwidth_method}")
     L.append(f"  Generated:     {r.generated_at}")
     L.append("")
 
@@ -851,9 +1056,14 @@ def render_text(r: Report) -> str:
     L.append(C.wrap(C.BOLD, "2. Cryptographic accelerators / HSMs / TPMs"))
     if r.accelerators:
         for a in r.accelerators:
-            L.append(f"     [{a['kind']:>5}] {a['name']}  ({a['detail']})")
+            pqc_mark = " [PQC-capable]" if a.get("pqc_capable") else ""
+            L.append(f"     [{a['kind']:>11}] {a['name']}{pqc_mark}  ({a['detail']})")
     else:
         L.append("     none detected - host would do all PQC in CPU/memory")
+    if r.hsm_present_but_not_pqc:
+        L.append(C.wrap(C.YELLOW,
+            "     NOTE: HSM(s) detected but none currently confirmed PQC-capable."))
+        L.append("           Verify firmware version against vendor's PQC release notes.")
     if r.tpm_pqc.get("present"):
         marker = "yes" if r.tpm_pqc.get("pqc_advertised") else "no"
         L.append(f"     TPM PQC algorithms advertised: {marker}  ({r.tpm_pqc.get('note', '')})")
@@ -944,8 +1154,12 @@ def render_text(r: Report) -> str:
             L.append(f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}")
         if "slh_dsa_sha2_128s_signatures_per_sec" in e:
             L.append(f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}")
-        if "concurrent_connections_at_50pct_mem" in e:
-            L.append(f"   Concurrent connections:           ~{e['concurrent_connections_at_50pct_mem']:,}  ({e.get('assumptions','')})")
+        if "concurrent_connections_realistic" in e:
+            L.append(f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)")
+        if "concurrent_connections_theoretical_max" in e:
+            L.append(f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)")
+        if "assumptions" in e:
+            L.append(f"   ({e['assumptions']})")
         L.append("")
 
     L.append(sub)
@@ -1051,12 +1265,16 @@ def main() -> int:
     tpm = detect_tpm_pqc()
     osinfo = openssl_capability()
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
+    hsm_present = any(a.get("kind") == "hsm" for a in accels)
+    hsm_pqc_capable = any(a.get("kind") == "hsm" and a.get("pqc_capable") for a in accels)
+    hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
     bench: dict[str, Any] = {}
     membw: float | None = None
+    membw_method = ""
     if args.bench:
         bench = run_benchmarks(seconds=args.seconds, threads=max(args.threads, 1))
-        membw = memory_bandwidth_probe()
+        membw, membw_method = memory_bandwidth_probe()
 
     cores_for_estimate = physical or logical or 1
     palg = per_algo_verdict(bench, cores_for_estimate) if bench else {}
@@ -1080,6 +1298,7 @@ def main() -> int:
         isa_tier=isa_t,
         isa_reason=isa_reason,
         accelerators=accels,
+        hsm_present_but_not_pqc=hsm_present_but_not_pqc,
         pkcs11_modules=pkcs11,
         kernel_crypto_hw=kcrypto,
         ktls_supported=ktls,
@@ -1087,6 +1306,7 @@ def main() -> int:
         openssl=osinfo,
         tpm_pqc=tpm,
         memory_bandwidth_gb_s=membw,
+        memory_bandwidth_method=membw_method,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,

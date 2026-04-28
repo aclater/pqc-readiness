@@ -1,0 +1,28 @@
+Doing 2048 bits private rsa sign ops for 1s: 5625 2048 bits private RSA sign ops in 0.99s
+Doing 2048 bits public rsa verify ops for 1s: 94943 2048 bits public RSA verify ops in 1.00s
+Doing 2048 bits public rsa encrypt ops for 1s: 90551 2048 bits public RSA encrypt ops in 1.00s
+Doing 2048 bits private rsa decrypt ops for 1s: 5476 2048 bits private RSA decrypt ops in 0.99s
+Doing 253 bits  ecdh ops for 1s: 51280 253-bits ECDH ops in 1.00s
+Doing 253 bits sign Ed25519 ops for 1s: 57674 253 bits Ed25519 sign ops in 1.00s 
+Doing 253 bits verify Ed25519 ops for 1s: 20331 253 bits Ed25519 verify ops in 1.00s
+Doing rsa2048 keygen ops for 1s: 32 rsa2048 KEM keygen ops in 1.00s
+Doing rsa2048 encaps ops for 1s: 87167 rsa2048 KEM encaps ops in 0.99s
+Doing rsa2048 decaps ops for 1s: 5638 rsa2048 KEM decaps ops in 1.00s
+Doing rsa2048 keygen ops for 1s: 39 rsa2048 signature keygen ops in 1.02s
+Doing rsa2048 signs ops for 1s: 5616 rsa2048 signature sign ops in 1.00s
+Doing rsa2048 verify ops for 1s: 95793 rsa2048 signature verify ops in 0.99s
+version: 3.5.5
+built on: Mon Apr 20 00:00:00 2026 UTC
+options: bn(64,64)
+compiler: gcc -fPIC -pthread -m64 -Wa,--noexecstack -O2 -flto=auto -ffat-lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall -Werror=format-security -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1  -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer   -O2 -flto=auto -ffat-lto-objects -fexceptions -g -grecord-gcc-switches -pipe -Wall -Wno-complain-wrong-lang -Werror=format-security -Wp,-U_FORTIFY_SOURCE,-D_FORTIFY_SOURCE=3 -Wp,-D_GLIBCXX_ASSERTIONS -specs=/usr/lib/rpm/redhat/redhat-hardened-cc1 -fstack-protector-strong -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1 -m64 -march=x86-64 -mtune=generic -fasynchronous-unwind-tables -fstack-clash-protection -fcf-protection -mtls-dialect=gnu2 -fno-omit-frame-pointer -mno-omit-leaf-frame-pointer -Wa,--noexecstack -Wa,--generate-missing-build-notes=yes -specs=/usr/lib/rpm/redhat/redhat-hardened-ld -specs=/usr/lib/rpm/redhat/redhat-hardened-ld-errors -specs=/usr/lib/rpm/redhat/redhat-annobin-cc1 -specs=/usr/lib/rpm/redhat/redhat-package-notes -DOPENSSL_USE_NODELETE -DL_ENDIAN -DOPENSSL_PIC -DOPENSSL_BUILDING_OPENSSL -DZLIB -DNDEBUG -D_GNU_SOURCE -DPURIFY -DDEVRANDOM="\\"/dev/urandom\\"" -DOPENSSL_PEDANTIC_ZEROIZATION -DREDHAT_FIPS_VENDOR="\\"Red Hat Enterprise Linux OpenSSL FIPS Provider\\"" -DREDHAT_FIPS_VERSION="\\"3.5.5-1947c314844f780f\\"" -DSYSTEM_CIPHERS_FILE="/etc/crypto-policies/back-ends/opensslcnf.config"
+CPUINFO: OPENSSL_ia32cap=0x7ed8320b078bffff:0x19405fdef1bf97ab:0x0000003010000110:0x0000000000000000:0x0000000000000000
+                   sign    verify    encrypt   decrypt   sign/s verify/s  encr./s  decr./s
+rsa  2048 bits 0.000176s 0.000011s 0.000011s 0.000181s   5681.8  94943.0  90551.0   5531.3
+                              op      op/s
+ 253 bits ecdh (X25519)   0.0000s  51280.0
+                              sign    verify    sign/s verify/s
+ 253 bits EdDSA (Ed25519)   0.0000s   0.0000s  57674.0  20331.0
+                               keygen    encaps    decaps keygens/s  encaps/s  decaps/s
+                    rsa2048 0.031250s 0.000011s 0.000177s      32.0   88047.5    5638.0
+                               keygen     signs    verify keygens/s    sign/s  verify/s
+                    rsa2048 0.026154s 0.000178s 0.000010s      38.2    5616.0   96760.6
