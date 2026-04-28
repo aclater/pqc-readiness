@@ -10,7 +10,7 @@ IMAGE ?= pqc-readiness:dev
 IMAGE_UBI10 ?= pqc-readiness:ubi10
 IMAGE_DEBIAN ?= pqc-readiness:debian
 
-.PHONY: help test lint typecheck check container container-build container-ubi10 container-debian clean
+.PHONY: help test lint typecheck check check-readme container container-build container-ubi10 container-debian clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | awk -F':.*##' '{printf "  %-20s %s\n", $$1, $$2}'
@@ -25,6 +25,9 @@ typecheck: ## mypy strict
 	$(MYPY) --strict pqc_readiness.py
 
 check: lint typecheck test ## All of the above
+
+check-readme: ## Verify README.md documents every --help flag
+	@bash scripts/check-readme-flags.sh
 
 container-build: container-ubi10 ## Alias for container-ubi10 (back-compat)
 
