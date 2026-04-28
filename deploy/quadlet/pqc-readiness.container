@@ -1,0 +1,75 @@
+# pqc-readiness systemd quadlet — runs the probe periodically and writes
+# the JSON report to /var/lib/pqc-readiness/ on the host.
+#
+# Install:
+#   sudo cp pqc-readiness.container /etc/containers/systemd/
+#   sudo cp pqc-readiness.timer     /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pqc-readiness.timer
+#
+# This unit is one-shot; it is invoked by pqc-readiness.timer (sibling
+# file) on whatever cadence the operator chooses.  The container is
+# rootless-friendly but in practice will need to read /proc, /sys, /dev,
+# /etc — host-mounted read-only — to give an accurate report, so it is
+# typically deployed as a system-mode quadlet.
+#
+# Pinning: tag is 10.1 today.  Replace with a digest in production for
+# supply-chain reproducibility:
+#   Image=registry.access.redhat.com/ubi10/ubi-minimal@sha256:<digest>
+
+[Unit]
+Description=PQC readiness probe (one-shot)
+Documentation=https://github.com/aclater/pqc-readiness
+
+[Container]
+Image=ghcr.io/aclater/pqc-readiness:v2
+ContainerName=pqc-readiness
+PodmanArgs=--pid=host
+
+# Read-only host filesystem mounts.  The probe never writes to /proc,
+# /sys, /dev, /etc — only to its writable Volume below.  No `,Z` on the
+# system mounts: SELinux refuses to relabel /proc and /sys.  The host
+# paths keep their existing labels and the container reads them with
+# its container_t domain via the rule below.
+Volume=/proc:/host/proc:ro
+Volume=/sys:/host/sys:ro
+Volume=/dev:/host/dev:ro
+Volume=/etc:/host/etc:ro
+Volume=/var/lib/pqc-readiness:/var/lib/pqc-readiness:rw,Z
+
+# SecurityLabelDisable is required because the container_t domain does
+# not have read access to the host's /proc and /sys labels by default.
+# This is read-only host inspection — no writes are performed against
+# the labeled host filesystem, and all four mounts are :ro.  See ADR
+# (TBD) for the specific allowed/denied operations and the rationale
+# for not creating a custom SELinux policy module for a probe tool.
+SecurityLabelDisable=true
+
+# Run the probe with --bench, --save (writes timestamped JSON to
+# /var/lib/pqc-readiness inside the container, which is bind-mounted
+# from the host), and --host-mount so detection sees host state.
+Exec=--host-mount /host --bench --seconds 1 --save --quiet
+
+# Resource caps.  Numpy triad probe uses ~384 MB transiently.
+Memory=512M
+CPUQuota=200%
+
+# Run as the image's USER 1001.
+User=1001
+
+# No network needed: the probe is purely local.
+Network=none
+
+# Read-only root filesystem; only /var/lib/pqc-readiness is writable.
+ReadOnly=true
+Tmpfs=/tmp:size=64M,mode=1777
+
+# AutoUpdate is opt-in — operator must explicitly accept image bumps.
+# Uncomment once a published tag/digest scheme is settled:
+# AutoUpdate=registry
+
+[Service]
+Type=oneshot
+
+[Install]
+WantedBy=multi-user.target

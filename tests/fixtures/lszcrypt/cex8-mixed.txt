@@ -1,0 +1,7 @@
+CARD.DOMAIN TYPE  MODE             STATUS  REQUEST_CNT  PENDING_CNT  HWTYPE  QDEPTH  FUNCTIONS  DRIVER
+--------------------------------------------------------------------------------------------------------
+00          CEX8C CCA-Coproc       online           0            0      14       8  S--D--N--   cex4card
+00.0026     CEX8C CCA-Coproc       online           0            0      14       8  S--D--N--   cex4queue
+01          CEX8P EP11-Coproc      online           0            0      14       8  S--D--N--   cex4card
+01.0026     CEX8P EP11-Coproc      online           0            0      14       8  S--D--N--   cex4queue
+02          CEX8A Accelerator      online           0            0      14       8  S--D--N--   cex4card

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """pqc-readiness: assess host suitability for Post-Quantum Cryptography.
 
 Determines whether on-chip ISA features accelerate NIST PQC primitives
@@ -49,7 +50,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SCRIPT_VERSION = "2.0.0"
 SCHEMA_VERSION = "1.0"
+
+# Host-filesystem prefix for DaemonSet / containerized invocations.  When
+# the tool runs inside a container with the host's /proc /sys /dev /etc
+# bind-mounted under (e.g.) /host, --host-mount /host sets this prefix
+# so detection still reads from the host rather than the container's
+# own pid 1 namespace.  Empty in normal bare-metal use.
+HOST_PREFIX: str = ""
+
+# Path namespaces that should be redirected through HOST_PREFIX when set.
+# Paths outside these namespaces (binary lookups, /opt/..., /tmp/...) are
+# left alone — they belong to the running container, not the host kernel.
+_HOST_NAMESPACES = ("/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share")
+
+
+def host_path(p: str) -> Path:
+    """Return Path(p) under HOST_PREFIX when --host-mount is in effect
+    and p targets a kernel/state namespace.  Bare-metal callers and
+    user-space paths are unaffected."""
+    if HOST_PREFIX and any(p == ns or p.startswith(ns + "/") for ns in _HOST_NAMESPACES):
+        return Path(HOST_PREFIX + p)
+    return Path(p)
 
 # ---------------------------------------------------------------------------
 # ISA feature catalogs
@@ -86,7 +109,7 @@ ARM_FEATURES: dict[str, tuple[str, str, int]] = {
     "pmull":  ("PMULL",   "Polynomial multiply long",              1),
     "sve":    ("SVE",     "Scalable Vector Extension",             2),
     "sve2":   ("SVE2",    "SVE2; lattice arithmetic",              3),
-    "i8mm":   ("I8MM",    "Int8 matrix multiply",                  1),
+    "i8mm":   ("I8MM",    "Int8 matrix multiply (Neoverse V1/V2)", 2),
 }
 
 # IBM z facilities. MSA8 added SHA-3/SHAKE on-chip; MSA9 added EdDSA.
@@ -148,6 +171,11 @@ ACCEL_PCI_HINTS: list[tuple[str, str, str]] = [
     (r"ARM.*CryptoCell",                               "ARM CryptoCell",                  "accel"),
     (r"Amazon\.com.*Nitro|Amazon Web Services.*Nitro", "AWS Nitro Security Chip",        "accel"),
     (r"Microchip.*CryptoAuth",                         "Microchip CryptoAuthentication",  "accel"),
+    # SmartNICs / DPUs.  These are not PQC silicon today but customers
+    # want them inventoried as part of the broader accelerator picture.
+    (r"Mellanox.*BlueField|NVIDIA.*BlueField",         "NVIDIA BlueField DPU",            "dpu"),
+    (r"Intel.*IPU(\s+E2000)?|Intel.*Mount Evans",      "Intel IPU E2000",                 "dpu"),
+    (r"Pensando|AMD.*Pensando|DSC2|DSC-25",            "AMD Pensando DSC",                "dpu"),
 ]
 
 DEVICE_HINTS: list[tuple[str, str, str]] = [
@@ -180,14 +208,42 @@ PQC_SIZES = {
     "SLH-DSA-SHA2-256f": {"role": "high-sec sig",   "pk":   64, "sk":  128, "sig": 49856},
 }
 
-# Per-core ops/sec thresholds for the bottleneck operation of each algorithm.
-# ML-KEM bottleneck = decaps (server-side TLS); ML-DSA = sign (cert/JWT issuance);
-# SLH-DSA = sign (catastrophically slow without an accelerator).
-# Calibrated against published Intel SPR / Zen 4 / Graviton 3 numbers.
+# Per-core ops/sec thresholds for the bottleneck operation of each
+# algorithm.  ML-KEM bottleneck = decaps (server-side TLS).  ML-DSA = sign
+# (cert/JWT issuance) AND verify (clients consuming PQC certs are
+# verify-bound, especially in mTLS hot paths).  SLH-DSA = sign
+# (catastrophically slow without an accelerator).  Calibrated against
+# published Intel SPR / AMD Zen 4 / Graviton 3 numbers (Cloudflare CIRCL
+# benchmarks 2024–2025) and conservative for non-AVX-512 hosts.
+#
+# An algorithm may appear more than once when distinct operations
+# matter — the per-algo verdict picks the worst tier across them.
 ALGO_THRESHOLDS: dict[str, tuple[str, dict[str, float]]] = {
     "ML-KEM-768":        ("decaps/s", {"excellent": 20000, "good":  8000, "marginal": 2000}),
     "ML-DSA-65":         ("sign/s",   {"excellent":  1500, "good":   600, "marginal":  150}),
+    "ML-DSA-65/verify":  ("verify/s", {"excellent":  8000, "good":  3000, "marginal":  500}),
+    "ML-DSA-87":         ("sign/s",   {"excellent":  1000, "good":   400, "marginal":  100}),
+    "ML-DSA-87/verify":  ("verify/s", {"excellent":  5000, "good":  2000, "marginal":  300}),
     "SLH-DSA-SHA2-128s": ("sign/s",   {"excellent":     5, "good":     2, "marginal":  0.5}),
+}
+
+# Memory-bandwidth threshold (GB/s) below which SLH-DSA tier is
+# downgraded one level.  SLH-DSA's hash-tree work is bounded by main-
+# memory bandwidth far more than by ALU throughput — a host with
+# excellent ISA but poor RAM can still bottleneck on it.
+SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S = 10.0
+
+# Per-algorithm operational notes appended to the verdict.  Customer-
+# facing text — be precise about what the tier label does and does not
+# imply.  SLH-DSA's "excellent" tier still warrants the warning.
+ALGO_NOTES: dict[str, list[str]] = {
+    "SLH-DSA-SHA2-128s": [
+        "SLH-DSA is unsuitable for hot-path use in software regardless of "
+        "tier — even at the 'excellent' threshold of 5 sign/s/core it is "
+        "orders of magnitude slower than ML-DSA.  Reserve for offline "
+        "code-signing or rare-use cases; consider hardware offload for "
+        "anything resembling production sign throughput."
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -195,9 +251,14 @@ ALGO_THRESHOLDS: dict[str, tuple[str, dict[str, float]]] = {
 # ---------------------------------------------------------------------------
 
 class C:
-    BOLD = "\033[1m"; DIM = "\033[2m"; RESET = "\033[0m"
-    GREEN = "\033[32m"; YELLOW = "\033[33m"; RED = "\033[31m"
-    CYAN = "\033[36m"; MAGENTA = "\033[35m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    CYAN = "\033[36m"
+    MAGENTA = "\033[35m"
     enabled = False
 
     @classmethod
@@ -239,7 +300,8 @@ class Report:
     isa_score: int = 0
     isa_tier: str = ""
     isa_reason: str = ""
-    accelerators: list[dict[str, str]] = field(default_factory=list)
+    accelerators: list[dict[str, Any]] = field(default_factory=list)
+    hsm_present_but_not_pqc: bool = False
     pkcs11_modules: list[str] = field(default_factory=list)
     kernel_crypto_hw: list[str] = field(default_factory=list)
     ktls_supported: bool | None = None
@@ -247,12 +309,23 @@ class Report:
     openssl: dict[str, Any] = field(default_factory=dict)
     tpm_pqc: dict[str, Any] = field(default_factory=dict)
     memory_bandwidth_gb_s: float | None = None
+    memory_bandwidth_method: str = ""
+    ssh_pqc: dict[str, Any] = field(default_factory=dict)
+    ipsec_pqc: dict[str, Any] = field(default_factory=dict)
+    nss: dict[str, Any] = field(default_factory=dict)
+    kernel_info: dict[str, Any] = field(default_factory=dict)
+    fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
+    trust_store: dict[str, Any] = field(default_factory=dict)
+    runtime_environment: dict[str, Any] = field(default_factory=dict)
+    packages: dict[str, Any] = field(default_factory=dict)
+    replace_required: bool = False
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
     production_estimate: dict[str, Any] = field(default_factory=dict)
     verdict: str = ""
     verdict_reason: str = ""
+    verdict_caveat: str = ""
     exit_code: int = 0
 
 
@@ -287,17 +360,24 @@ def is_macos() -> bool:
 # CPU / memory inventory
 # ---------------------------------------------------------------------------
 
-def linux_cpu_flags() -> set[str]:
+def parse_cpuinfo_flags(text: str) -> set[str]:
+    """Pure helper: extract the union of feature tokens from any
+    /proc/cpuinfo-style text.  Handles all four label variants seen in
+    the wild (`flags` on x86, `Features` on aarch64, `facilities` on
+    s390x, lower-case `features` on some embedded kernels)."""
     flags: set[str] = set()
-    try:
-        text = Path("/proc/cpuinfo").read_text()
-    except OSError:
-        return flags
     for line in text.splitlines():
         if line.startswith(("flags", "Features", "features", "facilities")):
             _, _, vals = line.partition(":")
             flags.update(vals.split())
     return flags
+
+
+def linux_cpu_flags() -> set[str]:
+    try:
+        return parse_cpuinfo_flags(host_path("/proc/cpuinfo").read_text())
+    except OSError:
+        return set()
 
 
 def macos_cpu_flags(arch: str) -> set[str]:
@@ -327,7 +407,7 @@ def cpu_flags(arch: str) -> set[str]:
 def cpu_model() -> str:
     if is_linux():
         try:
-            for line in Path("/proc/cpuinfo").read_text().splitlines():
+            for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if line.startswith(("model name", "Hardware", "cpu model", "machine")):
                     return line.split(":", 1)[1].strip()
         except OSError:
@@ -350,7 +430,7 @@ def cpu_freq_mhz() -> float:
             except (OSError, ValueError):
                 continue
         try:
-            for line in Path("/proc/cpuinfo").read_text().splitlines():
+            for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if "cpu MHz" in line:
                     return float(line.split(":", 1)[1].strip())
         except OSError:
@@ -369,7 +449,7 @@ def core_counts() -> tuple[int, int]:
     physical = 0
     if is_linux():
         try:
-            text = Path("/proc/cpuinfo").read_text()
+            text = host_path("/proc/cpuinfo").read_text()
             seen: set[tuple[str, str]] = set()
             cur_phys = cur_core = None
             for line in text.splitlines():
@@ -396,7 +476,7 @@ def memory_info() -> tuple[float, float]:
     total = avail = 0.0
     if is_linux():
         try:
-            for line in Path("/proc/meminfo").read_text().splitlines():
+            for line in host_path("/proc/meminfo").read_text().splitlines():
                 k, _, v = line.partition(":")
                 v = v.strip().split()[0] if v.strip() else "0"
                 if k == "MemTotal":
@@ -493,8 +573,8 @@ def memory_tier(gb: float) -> tuple[str, str]:
 # Accelerator detection
 # ---------------------------------------------------------------------------
 
-def detect_accelerators() -> list[dict[str, str]]:
-    out: list[dict[str, str]] = []
+def detect_accelerators() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     if shutil.which("lspci"):
         rc, data = _run(["lspci", "-nn"], timeout=10)
         if rc == 0:
@@ -503,8 +583,13 @@ def detect_accelerators() -> list[dict[str, str]]:
                     if re.search(pat, line, re.IGNORECASE):
                         out.append({"kind": kind, "name": label, "detail": line.strip()})
     for path, label, kind in DEVICE_HINTS:
-        if Path(path).exists():
+        if host_path(path).exists():
             out.append({"kind": kind, "name": label, "detail": path})
+    # IBM z: enumerate Crypto Express adapters via lszcrypt.  Only CEX8 in
+    # EP11 mode is flagged pqc_capable; CEX5/6/7 surface but do not count
+    # toward dedicated PQC silicon.
+    if platform.machine().lower() == "s390x":
+        out.extend(detect_s390x_crypto())
     return out
 
 
@@ -523,7 +608,7 @@ def detect_pkcs11_modules() -> list[str]:
 
 def detect_tpm_pqc() -> dict[str, Any]:
     if not shutil.which("tpm2_getcap"):
-        return {"present": Path("/dev/tpmrm0").exists() or Path("/dev/tpm0").exists(),
+        return {"present": host_path("/dev/tpmrm0").exists() or host_path("/dev/tpm0").exists(),
                 "tools": False, "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC"}
     rc, out = _run(["tpm2_getcap", "algorithms"], timeout=5)
     if rc != 0:
@@ -539,7 +624,7 @@ def detect_kernel_crypto_hw() -> list[str]:
     if not is_linux():
         return []
     try:
-        text = Path("/proc/crypto").read_text()
+        text = host_path("/proc/crypto").read_text()
     except OSError:
         return []
     hw_suffixes = ("-ni", "-ce", "-ssse3", "-avx2", "-avx512", "-arm64-ce",
@@ -557,37 +642,664 @@ def detect_ktls() -> bool | None:
     if not is_linux():
         return None
     try:
-        mods = Path("/proc/modules").read_text()
+        mods = host_path("/proc/modules").read_text()
         if "tls " in mods:
             return True
     except OSError:
         pass
-    if Path("/sys/module/tls").exists():
+    if host_path("/sys/module/tls").exists():
         return True
     rc, out = _run(["modinfo", "tls"], timeout=3)
     return rc == 0 and "filename" in out
 
 
+def detect_fips_mode_from_providers_text(text: str) -> bool:
+    """Parse `openssl list -providers -verbose` output as records and
+    return True iff a provider named exactly 'fips' has 'status: active'.
+
+    Provider records are introduced by a 2-space-indented line containing
+    just the provider name; field lines under that record are indented
+    4+ spaces and look like `    status: active`.  A FIPS provider that
+    is loaded but inactive (status anything other than 'active') must NOT
+    register as enabled — earlier regex-based detection conflated the two.
+    """
+    records: dict[str, dict[str, str]] = {}
+    current: str | None = None
+    for line in text.splitlines():
+        m = re.match(r"^  (\S+)\s*$", line)
+        if m:
+            current = m.group(1).strip()
+            records.setdefault(current, {})
+            continue
+        if current is None:
+            continue
+        f = re.match(r"^    (\S+):\s*(.*)$", line)
+        if f:
+            records[current][f.group(1).strip()] = f.group(2).strip()
+    fips = records.get("fips") or {}
+    return fips.get("status", "").lower() == "active"
+
+
 def detect_fips_mode() -> dict[str, Any]:
     info: dict[str, Any] = {"kernel": False, "openssl_provider": False}
     try:
-        info["kernel"] = Path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
+        info["kernel"] = host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
     except OSError:
         pass
     if shutil.which("openssl"):
         rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
-        if rc == 0 and re.search(r"^\s*fips\s*$.*?status:\s*active", out, re.IGNORECASE | re.DOTALL | re.MULTILINE):
-            info["openssl_provider"] = True
-        elif rc == 0 and "fips" in out.lower() and "active" in out.lower():
-            info["openssl_provider"] = True
+        if rc == 0:
+            info["openssl_provider"] = detect_fips_mode_from_providers_text(out)
     return info
 
 
-def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str, str]]) -> bool:
-    if arch == "s390x" and {"msa8", "msa9"}.issubset(flags):
-        if any(a["kind"] == "hsm" and "Crypto Express" in a["name"] for a in accels):
-            return True
-    return any(a["kind"] == "hsm" for a in accels)
+def parse_lszcrypt(text: str) -> list[dict[str, Any]]:
+    """Parse `lszcrypt -V` output into per-adapter records.
+
+    Output format (IBM z, kernel zcrypt module):
+
+        CARD.DOMAIN TYPE  MODE             STATUS  REQUEST_CNT ...
+        00          CEX8C CCA-Coproc       online           0
+        00.0026     CEX8C CCA-Coproc       online           0
+        01          CEX8P EP11-Coproc      online           0
+        02          CEX8A Accelerator      online           0
+
+    Returns adapter dicts with: card, domain (None for card-level rows),
+    type_str (e.g. "CEX8P"), level (int 5/6/7/8), mode (CCA/EP11/
+    Accelerator), status, pqc_eligible.
+
+    pqc_eligible is set True only for CEX8 in EP11 mode, the only
+    generally-available IBM hardware that exposes ML-KEM/ML-DSA today.
+    CEX5/6/7 in any mode and CEX8 in CCA or Accelerator modes do NOT
+    qualify regardless of MSA8/MSA9 CPACF facility bits.
+    """
+    out: list[dict[str, Any]] = []
+    pat = re.compile(
+        r"^\s*(\S+)\s+(CEX(\d+)([CPA]))\s+(\S+)\s+(\S+)"
+    )
+    for line in text.splitlines():
+        if "CARD" in line.upper() and "TYPE" in line.upper():
+            continue
+        if not line.strip() or set(line.strip()) <= set("-"):
+            continue
+        m = pat.match(line)
+        if not m:
+            continue
+        card_dom = m.group(1)
+        if "." in card_dom:
+            card, domain = card_dom.split(".", 1)
+        else:
+            card, domain = card_dom, None
+        type_str = m.group(2)
+        level = int(m.group(3))
+        suffix = m.group(4)
+        mode_token = m.group(5)
+        status = m.group(6)
+        mode = {"C": "CCA", "P": "EP11", "A": "Accelerator"}.get(suffix, mode_token)
+        out.append({
+            "card": card,
+            "domain": domain,
+            "type_str": type_str,
+            "level": level,
+            "mode": mode,
+            "status": status,
+            "pqc_eligible": (level >= 8 and mode == "EP11"),
+        })
+    return out
+
+
+def detect_s390x_crypto() -> list[dict[str, Any]]:
+    """Run `lszcrypt -V` and convert each adapter to an accelerators-list
+    entry.  Only invoked on s390x; safe to call on other arches (returns
+    empty list when the tool isn't installed)."""
+    if not shutil.which("lszcrypt"):
+        return []
+    rc, out = _run(["lszcrypt", "-V"], timeout=5)
+    if rc != 0:
+        return []
+    accels: list[dict[str, Any]] = []
+    for adapter in parse_lszcrypt(out):
+        accels.append({
+            "kind": "hsm",
+            "name": f"IBM Crypto Express {adapter['level']} ({adapter['mode']})",
+            "detail": (f"card={adapter['card']}"
+                       + (f" domain={adapter['domain']}" if adapter["domain"] else "")
+                       + f" mode={adapter['mode']} status={adapter['status']}"),
+            "pqc_capable": adapter["pqc_eligible"],
+            "cex_level": adapter["level"],
+            "cex_mode": adapter["mode"],
+        })
+    return accels
+
+
+# Explicit allow-list of HSM/accelerator models confirmed to expose NIST
+# PQC primitives on-chip in their currently-shipping firmware.  Anything
+# not on this list is reported as an HSM but does NOT count as dedicated
+# PQC silicon for fleet-readiness purposes.  Keep this list audited; the
+# customer assessment depends on it being accurate.
+#
+# Confirmed today (2026):
+#   - IBM Crypto Express 8 (CEX8) in EP11 mode on z15+/z16. Detected via
+#     parse_lszcrypt; the card-level entry has pqc_capable=True.
+#
+# TODO — track for future inclusion (require model + firmware verification):
+#   - Marvell LiquidSecurity 2/3 with PQC firmware bundle
+#   - Thales Luna Network/PCIe 7+ with PQC FM (Functionality Module)
+#   - Utimaco SecurityServer Se-Series with PQC algorithm pack
+#   - AWS CloudHSM (currently not PQC-capable as of last verification)
+def has_dedicated_pqc_silicon(arch: str, flags: set[str], accels: list[dict[str, Any]]) -> bool:
+    """Return True iff at least one detected accelerator is on the
+    explicit PQC allow-list.  The detector that adds the device sets
+    `pqc_capable=True` only when it has affirmative evidence (e.g.
+    parse_lszcrypt sets it for CEX8 EP11 adapters).  Generic HSMs
+    without confirmed PQC firmware return False even when present."""
+    return any(a.get("pqc_capable") is True for a in accels)
+
+
+# ---------------------------------------------------------------------------
+# Network HSM detection (config-file based; not visible via lspci)
+# ---------------------------------------------------------------------------
+
+NETWORK_HSM_HINTS: list[tuple[str, str]] = [
+    # (path, label) — path may be a file or a directory.  We only report
+    # presence; we do NOT read or surface the contents of these files
+    # (Chrystoki.conf especially can contain server hostnames / partition
+    # IDs that customers may consider sensitive).
+    ("/etc/Chrystoki.conf",  "Thales Luna Network/PCIe (Chrystoki client config)"),
+    ("/opt/nfast/kmdata",    "Entrust nShield Connect (kmdata directory)"),
+    ("/opt/nfast/sbin",      "Entrust nShield (sbin tools)"),
+    ("/opt/cloudhsm/etc",    "AWS CloudHSM client"),
+    ("/opt/cloudhsm/bin",    "AWS CloudHSM client tools"),
+    ("/opt/utimaco/Software/cs", "Utimaco CryptoServer client"),
+]
+
+
+def detect_network_hsms() -> list[dict[str, Any]]:
+    """Detect network-attached HSMs by client-config presence.
+
+    Network HSMs are reached over IP and never appear in lspci.  Their
+    client tooling installs into well-known paths; we treat the existence
+    of those paths as evidence the customer has client integration in
+    place.  No file contents are read or reported.  All entries are
+    flagged pqc_capable=False; firmware/version verification on the
+    appliance side is out of scope for a host-level probe."""
+    out: list[dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for path, label in NETWORK_HSM_HINTS:
+        p = host_path(path)
+        if not p.exists():
+            continue
+        if label in seen_labels:
+            continue
+        seen_labels.add(label)
+        out.append({
+            "kind": "network_hsm",
+            "name": label,
+            "detail": f"client config present: {path}",
+            "pqc_capable": False,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# OpenSSH / strongSwan / NSS PQC capability
+# ---------------------------------------------------------------------------
+
+def parse_ssh_kex(text: str) -> dict[str, Any]:
+    """Parse `ssh -Q kex` output.  Returns a dict with the full count and
+    the subset of PQC-relevant kex algorithms (ML-KEM hybrids and the
+    older sntrup761 NTRU Prime hybrid)."""
+    kexes = [line.strip() for line in text.splitlines() if line.strip()]
+    pqc = sorted({k for k in kexes if re.search(r"\b(?:mlkem|sntrup)", k, re.IGNORECASE)})
+    return {"available": True, "kex_count": len(kexes), "pqc_kex": pqc}
+
+
+def detect_ssh_pqc() -> dict[str, Any]:
+    if not shutil.which("ssh"):
+        return {"available": False, "reason": "ssh not on PATH"}
+    rc, out = _run(["ssh", "-Q", "kex"], timeout=5)
+    if rc != 0:
+        return {"available": False, "reason": f"ssh -Q kex failed (rc={rc})"}
+    return parse_ssh_kex(out)
+
+
+def detect_ipsec_pqc() -> dict[str, Any]:
+    """Look for ML-KEM / Kyber tokens in `swanctl --list-algs`."""
+    if not shutil.which("swanctl"):
+        return {"available": False, "reason": "swanctl not on PATH"}
+    rc, out = _run(["swanctl", "--list-algs"], timeout=10)
+    if rc != 0:
+        return {"available": False, "reason": f"swanctl --list-algs failed (rc={rc})"}
+    pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", out, re.IGNORECASE)
+    return {
+        "available": True,
+        "pqc": bool(pqc_match),
+        "evidence": pqc_match.group(0) if pqc_match else None,
+    }
+
+
+# Mozilla NSS 3.108 (Aug 2025) added hybrid PQC TLS support; earlier
+# versions cannot negotiate the hybrid groups even when OpenSSL can.
+NSS_PQC_MIN_VERSION = (3, 108)
+
+
+def parse_nss_version(text: str) -> tuple[int, int, int] | None:
+    m = re.search(r"\b(\d+)\.(\d+)(?:\.(\d+))?\b", text)
+    if not m:
+        return None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3) or "0"))
+
+
+def detect_nss() -> dict[str, Any]:
+    """Probe NSS version via certutil --version (preferred) or
+    `rpm -q nss` as a fallback.  PQC capability is inferred from version
+    >= NSS_PQC_MIN_VERSION (3.108)."""
+    if shutil.which("certutil"):
+        rc, out = _run(["certutil", "--version"], timeout=5)
+        if rc == 0:
+            ver = parse_nss_version(out)
+            return {
+                "available": True,
+                "tool": "certutil --version",
+                "version": "%d.%d.%d" % ver if ver else "unknown",
+                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+            }
+    if shutil.which("rpm"):
+        rc, out = _run(["rpm", "-q", "--qf", "%{VERSION}\\n", "nss"], timeout=5)
+        if rc == 0 and out.strip():
+            # rpm -q can return multiple lines when the package is installed
+            # for several arches (i686 + x86_64); take the first version line.
+            first = out.strip().splitlines()[0].strip()
+            ver = parse_nss_version(first)
+            return {
+                "available": True,
+                "tool": "rpm -q nss",
+                "version": ("%d.%d.%d" % ver) if ver else first,
+                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+                "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
+            }
+    return {"available": False, "reason": "neither certutil nor rpm available"}
+
+
+# ---------------------------------------------------------------------------
+# Kernel + RHEL minor + /proc/crypto PQC awareness
+# ---------------------------------------------------------------------------
+
+def parse_redhat_release(text: str) -> dict[str, Any]:
+    """Parse /etc/redhat-release one-liner.  Examples:
+
+        Red Hat Enterprise Linux release 9.4 (Plow)
+        CentOS Stream release 9
+        Fedora release 44 (Forty Four)
+    """
+    s = text.strip()
+    out: dict[str, Any] = {"raw": s}
+    m = re.search(r"^(.+?)\s+release\s+(\d+(?:\.\d+)?)", s)
+    if m:
+        out["distro"] = m.group(1).strip()
+        out["version"] = m.group(2)
+        if m.group(2).count(".") == 1:
+            out["minor"] = m.group(2).split(".", 1)[1]
+    return out
+
+
+def parse_proc_crypto_pqc(text: str) -> list[str]:
+    """Return /proc/crypto driver names whose `name` line mentions a PQC
+    primitive (ML-KEM, ML-DSA, SLH-DSA, Kyber, Dilithium, SPHINCS).  As
+    of 2026 this almost always returns an empty list — kernel-side PQC
+    primitives are not yet in mainline."""
+    out: list[str] = []
+    pqc_re = re.compile(r"ml[-_ ]?kem|ml[-_ ]?dsa|slh[-_ ]?dsa|kyber|dilithium|sphincs",
+                        re.IGNORECASE)
+    block: list[str] = []
+    for line in text.splitlines() + [""]:
+        if line.strip():
+            block.append(line)
+            continue
+        if not block:
+            continue
+        joined = "\n".join(block)
+        if pqc_re.search(joined):
+            for ln in block:
+                if ln.startswith("driver"):
+                    out.append(ln.split(":", 1)[1].strip())
+                    break
+        block = []
+    return out
+
+
+def detect_kernel_info() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "release": platform.release(),
+        "system": platform.system(),
+    }
+    if not is_linux():
+        return info
+    rh = host_path("/etc/redhat-release")
+    if rh.exists():
+        try:
+            info["redhat_release"] = parse_redhat_release(rh.read_text())
+        except OSError:
+            pass
+    osr = host_path("/etc/os-release")
+    if osr.exists():
+        try:
+            text = osr.read_text()
+            for line in text.splitlines():
+                if line.startswith("ID="):
+                    info["os_release_id"] = line.split("=", 1)[1].strip().strip('"')
+                elif line.startswith("VERSION_ID="):
+                    info["os_release_version_id"] = line.split("=", 1)[1].strip().strip('"')
+        except OSError:
+            pass
+    try:
+        info["proc_crypto_pqc"] = parse_proc_crypto_pqc(host_path("/proc/crypto").read_text())
+    except OSError:
+        info["proc_crypto_pqc"] = []
+    return info
+
+
+# ---------------------------------------------------------------------------
+# FIPS / PQC interaction warning
+# ---------------------------------------------------------------------------
+
+def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> dict[str, Any]:
+    """Detect the case where a host is in kernel FIPS mode AND OpenSSL is
+    advertising PQC algorithms via the non-FIPS default provider.  In this
+    state ML-KEM/ML-DSA appear listed but are NOT usable in a FIPS-validated
+    workflow (RHEL 9 / 10 FIPS provider does not yet include PQC)."""
+    if not fips.get("kernel"):
+        return {"in_conflict": False, "explanation": "Kernel FIPS mode not enabled."}
+    has_pqc = bool((openssl.get("kem_algorithms") or []) or
+                   (openssl.get("sig_algorithms") or []))
+    if not has_pqc:
+        return {"in_conflict": False, "explanation": "FIPS mode active and no PQC algorithms exposed."}
+    if fips.get("openssl_provider"):
+        return {
+            "in_conflict": False,
+            "explanation": ("FIPS provider is active and PQC algorithms are exposed.  "
+                            "Verify they are coming from a FIPS-validated provider before "
+                            "relying on them in regulated workflows."),
+        }
+    return {
+        "in_conflict": True,
+        "explanation": (
+            "Kernel FIPS mode is enabled but OpenSSL is exposing PQC algorithms via "
+            "the default (non-FIPS) provider.  These algorithms are listed but would "
+            "not be usable in a FIPS-validated workflow — RHEL 9/10 FIPS provider "
+            "does not include ML-KEM/ML-DSA as of this writing.  Audit provider "
+            "configuration before claiming PQC support in a FIPS-mandated environment."
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Trust store certificate inventory (--scan-trust-store)
+# ---------------------------------------------------------------------------
+
+TRUST_STORE_DIRS: list[str] = [
+    "/etc/pki/tls/certs",
+    "/etc/ssl/certs",
+    "/etc/pki/ca-trust/extracted/pem",
+]
+# NIST PQC OID range 2.16.840.1.101.3.4.3.17 .. .31 covers ML-DSA-44/65/87
+# and the SLH-DSA-SHA2 / SLH-DSA-SHAKE family.
+PQC_OID_RE = re.compile(r"\b2\.16\.840\.1\.101\.3\.4\.3\.(1[7-9]|2\d|3[01])\b")
+HYBRID_OID_RES: list[re.Pattern[str]] = [
+    re.compile(r"\b1\.3\.6\.1\.4\.1\.42235\.1\.7\.\d+\b"),  # Mozilla draft
+    re.compile(r"\b1\.3\.9999\.\d+\.\d+\.\d+\b"),            # liboqs experimental
+]
+
+
+def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
+    if not shutil.which("openssl"):
+        return {"available": False, "reason": "openssl not on PATH"}
+    target_dirs = dirs if dirs is not None else TRUST_STORE_DIRS
+    total = 0
+    pqc_certs = 0
+    hybrid_certs = 0
+    seen: set[str] = set()
+    for d in target_dirs:
+        p = Path(d)
+        if not p.is_dir():
+            continue
+        for cert in list(p.rglob("*.pem")) + list(p.rglob("*.crt")):
+            try:
+                key = str(cert.resolve())
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            rc, dump = _run(
+                ["openssl", "x509", "-in", str(cert), "-noout", "-text",
+                 "-certopt", "no_validity,no_serial,no_pubkey,no_sigdump"],
+                timeout=3,
+            )
+            if rc != 0:
+                continue
+            total += 1
+            if PQC_OID_RE.search(dump):
+                pqc_certs += 1
+            if any(p.search(dump) for p in HYBRID_OID_RES):
+                hybrid_certs += 1
+    return {
+        "available": True,
+        "scanned_dirs": [d for d in target_dirs if Path(d).is_dir()],
+        "total_certs": total,
+        "pqc_certs": pqc_certs,
+        "hybrid_certs": hybrid_certs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Runtime environment detection (container vs host)
+# ---------------------------------------------------------------------------
+
+def parse_cgroup_for_container(text: str) -> str | None:
+    """Inspect /proc/1/cgroup content for container-runtime hierarchy
+    markers.  Returns a marker string when one is found, else None."""
+    for marker in ("kubepods", "/docker/", "/containerd/", "/podman-",
+                   "/crio-", "/system.slice/docker-", "/lxc/"):
+        if marker in text:
+            return marker
+    return None
+
+
+def detect_runtime_environment() -> dict[str, Any]:
+    """Identify whether we're executing inside a container.  Used by
+    every detection function that may need a `unavailable_in_container`
+    note appended to its result.  Detection is heuristic; combined with
+    --host-mount /host the report still produces accurate host data."""
+    if host_path("/.dockerenv").exists():
+        return {"environment": "container", "evidence": "/.dockerenv present"}
+    if host_path("/run/.containerenv").exists():
+        return {"environment": "container", "evidence": "/run/.containerenv present"}
+    try:
+        cg = Path("/proc/1/cgroup").read_text()
+    except OSError:
+        cg = ""
+    marker = parse_cgroup_for_container(cg)
+    if marker:
+        return {"environment": "container", "evidence": f"cgroup marker {marker}"}
+    return {"environment": "host", "evidence": "no container markers"}
+
+
+# ---------------------------------------------------------------------------
+# Bundled-crypto package inventory (--scan-packages)
+# ---------------------------------------------------------------------------
+
+# Package names whose binaries / runtimes bundle their own crypto
+# implementation rather than relying solely on system OpenSSL.  This is
+# rough but useful when scoping "what would break" for a PQC migration.
+BUNDLED_CRYPTO_PACKAGES: dict[str, str] = {
+    # JVM ships its own SunJCE + may include Bouncy Castle providers
+    "java-21-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-17-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-11-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
+    "java-1.8.0-openjdk": "Java JCE provider (SunJCE / Bouncy Castle)",
+    # Go static binaries embed crypto/tls; behavior depends on GODEBUG
+    "golang":            "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)",
+    "go":                "Go runtime (crypto/tls embedded)",
+    # Node.js dynamically links system OpenSSL but ships its own version
+    "nodejs":            "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)",
+    "rust":              "Rust toolchain (rustls embeds ring or openssl-sys)",
+    "cargo":             "Rust toolchain (rustls embeds ring or openssl-sys)",
+    # Browsers / mail clients embed NSS or BoringSSL
+    "firefox":           "Firefox (embeds NSS — separate PQC roadmap from system OpenSSL)",
+    "thunderbird":       "Thunderbird (embeds NSS)",
+    "chromium":          "Chromium (embeds BoringSSL)",
+    # Python ships its own ssl module but links system OpenSSL
+    "python3":           "Python ssl module (links system OpenSSL; verify version)",
+}
+
+
+def parse_rpm_packages(text: str) -> list[tuple[str, str]]:
+    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` output."""
+    out: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            out.append((parts[0], parts[1]))
+    return out
+
+
+def classify_bundled_crypto(pkgs: list[tuple[str, str]]) -> list[dict[str, str]]:
+    """Filter the package list to known bundled-crypto entries.  Used by
+    --scan-packages to surface 'what would break' beyond system OpenSSL."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for name, ver in pkgs:
+        for needle, hint in BUNDLED_CRYPTO_PACKAGES.items():
+            if name == needle or name.startswith(needle + "-"):
+                if name in seen:
+                    continue
+                seen.add(name)
+                out.append({"package": name, "version": ver, "note": hint})
+                break
+    return out
+
+
+def scan_packages() -> dict[str, Any]:
+    if not shutil.which("rpm"):
+        return {"available": False, "reason": "rpm not on PATH (RHEL/Fedora only today)"}
+    rc, out = _run(
+        ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
+        timeout=30,
+    )
+    if rc != 0:
+        return {"available": False, "reason": f"rpm -qa failed (rc={rc})"}
+    pkgs = parse_rpm_packages(out)
+    return {
+        "available": True,
+        "total_packages": len(pkgs),
+        "bundled_crypto": classify_bundled_crypto(pkgs),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Fleet aggregation (--aggregate DIR)
+# ---------------------------------------------------------------------------
+
+def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up many per-host reports into a single fleet view.
+
+    Accepts only reports with matching schema_version; other entries are
+    counted as `skipped_schema_mismatch` and listed by file (caller
+    populates that field externally — pure version below operates on
+    already-validated dicts).
+
+    Output:
+      total_hosts, by_arch, by_os_release_id, by_isa_tier, by_verdict,
+      by_runtime_environment, accelerator_kinds (count of hosts with
+      each kind), unique_cpu_models, replace_required_count.
+    """
+    from collections import Counter
+    out: dict[str, Any] = {
+        "total_hosts": len(reports),
+        "schema_version": SCHEMA_VERSION,
+    }
+    by_arch: Counter[str] = Counter()
+    by_os: Counter[str] = Counter()
+    by_isa: Counter[str] = Counter()
+    by_verdict: Counter[str] = Counter()
+    by_env: Counter[str] = Counter()
+    cpu_models: set[str] = set()
+    accel_kinds: Counter[str] = Counter()
+    replace_required = 0
+    for r in reports:
+        by_arch[r.get("arch", "?")] += 1
+        kinfo = r.get("kernel_info") or {}
+        by_os[kinfo.get("os_release_id") or "?"] += 1
+        by_isa[r.get("isa_tier", "?")] += 1
+        # Strip the trailing "- ..." commentary from the verdict for grouping.
+        verdict = (r.get("verdict") or "?").split(" - ", 1)[0].strip()
+        by_verdict[verdict] += 1
+        runtime = (r.get("runtime_environment") or {}).get("environment", "?")
+        by_env[runtime] += 1
+        cpu_models.add(r.get("cpu_model") or "?")
+        seen_kinds: set[str] = set()
+        for a in r.get("accelerators") or []:
+            k = a.get("kind", "?")
+            if k not in seen_kinds:
+                accel_kinds[k] += 1
+                seen_kinds.add(k)
+        if r.get("replace_required"):
+            replace_required += 1
+    out["by_arch"] = dict(by_arch)
+    out["by_os_release_id"] = dict(by_os)
+    out["by_isa_tier"] = dict(by_isa)
+    out["by_verdict"] = dict(by_verdict)
+    out["by_runtime_environment"] = dict(by_env)
+    out["accelerator_kinds_host_count"] = dict(accel_kinds)
+    out["unique_cpu_models"] = sorted(cpu_models)
+    out["replace_required_count"] = replace_required
+    return out
+
+
+def aggregate_to_csv(rollup: dict[str, Any]) -> str:
+    """Render the rollup to a flat CSV view for ingestion by ops tools.
+    One row per (group, key, count) tuple — easy to load in pandas /
+    spreadsheet without nested-JSON gymnastics."""
+    import io
+    import csv
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["group", "key", "count"])
+    w.writerow(["total_hosts", "", rollup.get("total_hosts", 0)])
+    w.writerow(["replace_required_count", "", rollup.get("replace_required_count", 0)])
+    for group in ("by_arch", "by_os_release_id", "by_isa_tier",
+                  "by_verdict", "by_runtime_environment",
+                  "accelerator_kinds_host_count"):
+        for k, v in (rollup.get(group) or {}).items():
+            w.writerow([group, k, v])
+    for cpu in rollup.get("unique_cpu_models", []):
+        w.writerow(["unique_cpu_models", cpu, 1])
+    return buf.getvalue()
+
+
+def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
+    """Read every *.json under DIR, validate schema, return (output, exit_code).
+    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view)."""
+    reports: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for fp in sorted(dir_path.glob("**/*.json")):
+        try:
+            data = json.loads(fp.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
+            continue
+        sv = data.get("schema_version")
+        if sv != SCHEMA_VERSION:
+            skipped.append({"file": str(fp),
+                            "reason": f"schema mismatch: file={sv!r} expected={SCHEMA_VERSION!r}"})
+            continue
+        reports.append(data)
+    rollup = aggregate_reports(reports)
+    rollup["skipped"] = skipped
+    if output == "csv":
+        return aggregate_to_csv(rollup), 0
+    return json.dumps(rollup, indent=2), 0
 
 
 # ---------------------------------------------------------------------------
@@ -621,37 +1333,81 @@ def openssl_capability() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def parse_speed_row(text: str, algo: str, labels: tuple[str, ...]) -> dict[str, float] | None:
-    pat = re.compile(rf"^\s*{re.escape(algo)}\s+(.+)$")
+    """Parse the per-algorithm summary row from `openssl speed` output.
+
+    The summary row looks like:
+        ML-KEM-768 0.000027s 0.000017s 0.000026s   37542.4   59259.0   38383.0
+    The first len(labels) columns are seconds-per-op; the last len(labels)
+    columns are ops/sec.  We take the trailing rates.
+
+    Bug fixes:
+      - Use `\\d+(?:\\.\\d+)?` so integer rates (slow algorithms like
+        SLH-DSA, where ops/sec may print as a bare integer in some builds)
+        are not silently dropped.
+      - Match the algo name anywhere on the line via word boundaries, not
+        just at column zero, since some OpenSSL builds prefix the row with
+        parameter strings.
+    """
+    needle = re.escape(algo)
+    pat = re.compile(rf"\b{needle}\b")
     for line in text.splitlines():
-        m = pat.match(line)
-        if not m:
+        if not pat.search(line):
             continue
-        nums = re.findall(r"\d+\.\d+", m.group(1))
+        nums = re.findall(r"\d+(?:\.\d+)?", line)
         if len(nums) >= len(labels) * 2:
-            return {labels[i]: float(nums[-len(labels) + i]) for i in range(len(labels))}
+            tail = nums[-len(labels):]
+            return {labels[i]: float(tail[i]) for i in range(len(labels))}
     return None
 
 
 def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
-    """Classical asymmetric `openssl speed` output uses op/s columns named
-    sign/s, verify/s, derive/s, etc. on a per-curve / per-key row."""
+    """Parse classical asymmetric `openssl speed` output.
+
+    Headers vary by algorithm: RSA emits `sign/s verify/s encr./s decr./s`,
+    ECDH emits `op/s`, EdDSA emits `sign/s verify/s`, and PQC-style entries
+    (rsa-as-KEM) emit `keygens/s encaps/s decaps/s` or `keygens/s sign/s
+    verify/s`.  A header is followed by a single data row whose trailing
+    columns hold the per-second rates.
+
+    Detection rule: a line is a header iff it contains 1+ tokens ending in
+    `/s` and no numeric leading content.  Earlier code required the
+    literal substring `op/s`, which silently skipped RSA/EdDSA/PQC headers.
+    """
     out: dict[str, dict[str, float]] = {}
-    headers: list[str] = []
+    pending: list[str] = []
+    # Algorithm names can appear at column 0 (`rsa  2048 bits ...`,
+    # `rsa2048 ...`) or mid-line wrapped in a description
+    # (` 253 bits ecdh (X25519)`, ` 253 bits EdDSA (Ed25519)`).
+    name_re = re.compile(
+        r"\b(rsa\s*\d+|ed25519|ed448|ecdh|ecdsa|eddsa|x25519|x448)\b",
+        re.IGNORECASE,
+    )
     for line in text.splitlines():
-        if "op/s" in line and "/s" in line:
-            headers = [h.strip() for h in re.split(r"\s{2,}", line.strip()) if h.strip()]
+        s = line.strip()
+        if not s:
             continue
-        m = re.match(r"^\s*(\S[^\d]*?)\s+(\d.*)$", line)
-        if not m or not headers:
+        per_s_tokens = re.findall(r"\S+?/s\b", s)
+        # A header line: contains one or more `*/s` tokens and does not
+        # start with a digit (data rows like ` 253 bits ...` start with
+        # numeric content).
+        if per_s_tokens and not re.match(r"^\s*\d", line):
+            pending = per_s_tokens
             continue
-        name = m.group(1).strip()
-        nums = re.findall(r"\d+\.\d+", m.group(2))
-        if not nums:
+        if not pending:
             continue
-        rates = [float(x) for x in nums if float(x) > 1.0]
-        per_s = {h: r for h, r in zip([x for x in headers if x.endswith("/s")], rates) if h}
-        if per_s and re.search(r"^(rsa\d+|ed25519|ecdh|ecdsa|x25519)$", name, re.IGNORECASE):
-            out[name.lower()] = per_s
+        m = name_re.search(line)
+        if not m:
+            continue
+        name = re.sub(r"\s+", "", m.group(1).lower())
+        nums = re.findall(r"\d+(?:\.\d+)?", line)
+        if len(nums) < len(pending):
+            continue
+        rates = [float(x) for x in nums[-len(pending):]]
+        # The same algorithm appears under several header sections in
+        # `openssl speed` (e.g., RSA shows up under the legacy block, the
+        # KEM block, and the signature block).  Keep the first reading.
+        out.setdefault(name, dict(zip(pending, rates)))
+        pending = []
     return out
 
 
@@ -710,37 +1466,85 @@ def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
     }
 
 
-def memory_bandwidth_probe() -> float | None:
-    """Rough memory bandwidth via repeated bytes(bytearray) copies.
-    Useful as a sanity check; SLH-DSA throughput is closely tied to memory
-    bandwidth + hash speed. Numbers are approximate (~10-20% off vendor figures)."""
+def memory_bandwidth_probe() -> tuple[float | None, str]:
+    """STREAM-triad-style memory bandwidth probe (a = b * scalar + c).
+
+    Returns (gb_per_sec, method).  When numpy is unavailable, returns
+    (None, "unavailable: numpy not installed") rather than producing a
+    misleading number.
+
+    The previous bytes(bytearray) implementation measured a combination
+    of allocator throughput and intra-process memcpy and was not
+    representative of sustained memory bandwidth — it is removed.
+    Section 3's SLH-DSA tier downgrade gates on this probe; if it
+    returned None, no downgrade is applied.
+    """
     try:
-        size = 256 * 1024 * 1024
-        buf = bytearray(size)
-        for _ in range(2):
-            bytes(buf)  # warm-up
-        iters = 4
+        import numpy as np
+    except ImportError:
+        return None, "unavailable: numpy not installed"
+    try:
+        n = 16 * 1024 * 1024  # 128 MiB per array (3 arrays = 384 MiB working set)
+        a = np.zeros(n, dtype=np.float64)
+        b = np.ones(n, dtype=np.float64)
+        c = np.full(n, 2.0, dtype=np.float64)
+        # Warm caches.
+        np.add(np.multiply(b, 3.0), c, out=a)
+        iters = 5
         t0 = time.perf_counter()
         for _ in range(iters):
-            bytes(buf)
+            np.add(np.multiply(b, 3.0), c, out=a)
         elapsed = time.perf_counter() - t0
-        gb = (size * iters) / (1024**3)
-        return round(gb / elapsed, 1) if elapsed > 0 else None
-    except (MemoryError, OSError):
-        return None
+        if elapsed <= 0:
+            return None, "probe failed: zero elapsed time"
+        # Conservative: 3 reads (b, c, intermediate) + 1 write (a) per
+        # element per iteration.  numpy may fuse this to 3 ops; we
+        # under-report rather than over-report.
+        bytes_moved = 4 * 8 * n * iters
+        gb_per_s = bytes_moved / elapsed / (1024 ** 3)
+        return round(gb_per_s, 1), "STREAM-triad (numpy)"
+    except (MemoryError, OSError) as e:
+        return None, f"probe failed: {e}"
 
 
 # ---------------------------------------------------------------------------
 # Per-algorithm and overall verdicts
 # ---------------------------------------------------------------------------
 
-def per_algo_verdict(bench: dict[str, Any], cores: int) -> dict[str, dict[str, Any]]:
+_TIER_ORDER = ["poor", "marginal", "good", "excellent"]
+
+
+def per_algo_verdict(
+    bench: dict[str, Any],
+    cores: int,
+    mem_bw_gb_s: float | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Score each entry in ALGO_THRESHOLDS against measured rates.
+
+    ALGO_THRESHOLDS keys may be a bare algorithm name (`ML-DSA-65`) or
+    suffixed with the operation being scored (`ML-DSA-65/verify`).  The
+    bare prefix is the bench lookup key; the trailing token disambiguates
+    multiple thresholds on the same algorithm.
+
+    SLH-DSA tier is downgraded by one step when measured memory
+    bandwidth falls below SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S.  The
+    downgrade is only applied when mem_bw_gb_s is non-None (the probe
+    actually ran); a missing measurement does not trigger it.
+    """
     out: dict[str, dict[str, Any]] = {}
     pqc = bench.get("pqc") if bench.get("available") else None
-    for algo, (op, thresholds) in ALGO_THRESHOLDS.items():
+    for key, (op, thresholds) in ALGO_THRESHOLDS.items():
+        algo = key.split("/", 1)[0]
         bench_algo = (pqc or {}).get(algo)
+        notes = list(ALGO_NOTES.get(algo, []))
         if not bench_algo or op not in bench_algo:
-            out[algo] = {"tier": "unknown", "reason": "no benchmark data", "metric": op}
+            out[key] = {
+                "algorithm": algo,
+                "tier": "unknown",
+                "reason": "no benchmark data",
+                "metric": op,
+                "notes": notes,
+            }
             continue
         rate = float(bench_algo[op])
         if rate >= thresholds["excellent"]:
@@ -751,13 +1555,30 @@ def per_algo_verdict(bench: dict[str, Any], cores: int) -> dict[str, dict[str, A
             tier = "marginal"
         else:
             tier = "poor"
+        if (
+            algo == "SLH-DSA-SHA2-128s"
+            and mem_bw_gb_s is not None
+            and mem_bw_gb_s < SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S
+        ):
+            old_tier = tier
+            idx = max(0, _TIER_ORDER.index(tier) - 1)
+            tier = _TIER_ORDER[idx]
+            notes.append(
+                f"Tier downgraded from '{old_tier}' to '{tier}': measured "
+                f"memory bandwidth {mem_bw_gb_s:.1f} GB/s is below the "
+                f"{SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S:.0f} GB/s floor for "
+                "SLH-DSA hash-tree throughput."
+            )
         host_rate = rate * cores
-        out[algo] = {
-            "tier": tier, "metric": op,
+        out[key] = {
+            "algorithm": algo,
+            "tier": tier,
+            "metric": op,
             "rate_per_core": round(rate, 2),
             "rate_host_estimate": round(host_rate, 2),
             "thresholds": thresholds,
             "reason": f"{rate:.1f} {op}/core - threshold for '{tier}' is {thresholds.get(tier, '-')}",
+            "notes": notes,
         }
     return out
 
@@ -777,39 +1598,73 @@ def production_estimate(per_algo: dict[str, dict[str, Any]], mem_gb: float) -> d
     slh = per_algo.get("SLH-DSA-SHA2-128s", {})
     if "rate_host_estimate" in slh:
         out["slh_dsa_sha2_128s_signatures_per_sec"] = round(slh["rate_host_estimate"] * headroom, 1)
-    # Per-connection budget: ~32 KB realistic for a TLS server (kernel sockets,
-    # userspace buffers, ML-KEM/ML-DSA handshake state, certificate chain).
-    # Reserve 50% of RAM for non-connection use (binary, kernel, headroom).
+    # Per-connection memory accounting.  The earlier 32 KB figure ignored
+    # default Linux socket buffers, ML-KEM ciphertext (1088 B), the
+    # ML-DSA cert chain (typically 8-12 KB across 2-3 certs), TLS state,
+    # and userspace buffers.  192 KB is a realistic floor for a TLS
+    # server doing PQC; 32 KB is the lower theoretical bound for
+    # comparison.  50% of RAM is reserved for non-connection use
+    # (binary, kernel, working memory headroom).
     if mem_gb > 0:
-        out["concurrent_connections_at_50pct_mem"] = int(mem_gb * 1024 * 1024 / 32) // 2
-        out["assumptions"] = "32 KB/connection, 50% RAM reserved"
+        usable_bytes = mem_gb * (1024 ** 3) * 0.5
+        out["concurrent_connections_realistic"] = int(usable_bytes / (192 * 1024))
+        out["concurrent_connections_theoretical_max"] = int(usable_bytes / (32 * 1024))
+        out["assumptions"] = (
+            "realistic: 192 KB/conn (TCP buffers + ML-KEM ct + ML-DSA cert "
+            "chain + TLS state + userspace); theoretical max: 32 KB/conn "
+            "(minimal PQC handshake state only); 50% RAM reserved"
+        )
     return out
 
 
 def overall_verdict(
     isa: str, mem: str, dedicated: bool, per_algo: dict[str, dict[str, Any]],
-) -> tuple[str, str, int]:
+) -> tuple[str, str, int, str]:
+    """Compose ISA, memory, and (when available) measured per-algorithm
+    tiers into one verdict.  Returns (verdict, why, exit_code, caveat).
+
+    Distinguishes 'tested and bad' from 'could not test':
+      - When per-algo verdicts are present, they participate in min().
+      - When all per-algo verdicts are 'unknown' (bench didn't run, or
+        OpenSSL too old), the verdict is based on ISA + memory only and
+        a caveat string is returned explaining what was not measured.
+        A missing benchmark must not falsely drag an otherwise-capable
+        host to the floor.
+    """
     if dedicated:
         return ("EXCELLENT - dedicated PQC silicon present",
                 "Use the accelerator for keygen/sign/decap; software path covers the rest.",
-                0)
+                0, "")
     rank = {"excellent": 4, "good": 3, "adequate": 2, "marginal": 2, "poor": 1, "unknown": 2}
     bench_tiers = [v["tier"] for v in per_algo.values() if v.get("tier") not in (None, "unknown")]
-    bench_min = min((rank[t] for t in bench_tiers), default=0)
+    has_bench = bool(bench_tiers)
     isa_score = rank.get(isa, 2)
     mem_score = rank.get(mem, 2)
-    composite = min(s for s in (isa_score, mem_score, bench_min or 99) if s)
+    if has_bench:
+        composite = min(isa_score, mem_score, min(rank[t] for t in bench_tiers))
+        caveat = ""
+    else:
+        composite = min(isa_score, mem_score)
+        caveat = (
+            "Verdict reflects CPU instruction-set and memory only; no PQC "
+            "microbenchmark was run on this host.  Re-run with --bench for "
+            "measured per-algorithm rates and tier validation."
+        )
     if composite >= 4:
         return ("EXCELLENT - software PQC at production speed",
-                "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.", 0)
+                "On-chip SIMD covers ML-KEM/ML-DSA easily; SLH-DSA acceptable for non-hot paths.",
+                0, caveat)
     if composite == 3:
         return ("GOOD - production-capable in software",
-                "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.", 1)
+                "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA.",
+                1, caveat)
     if composite == 2:
         return ("MARGINAL - works, but plan for an accelerator",
-                "Software PQC will be a hot spot under load; consider HSM/QAT offload.", 2)
+                "Software PQC will be a hot spot under load; consider HSM/QAT offload.",
+                2, caveat)
     return ("POOR - not suitable for production PQC",
-            "Add a dedicated accelerator or upgrade the host.", 3)
+            "Add a dedicated accelerator or upgrade the host.",
+            3, caveat)
 
 
 # ---------------------------------------------------------------------------
@@ -834,7 +1689,9 @@ def render_text(r: Report) -> str:
     L.append(f"  Cores:         {r.cores_physical} physical / {r.cores_logical} logical")
     L.append(f"  Memory:        {r.mem_total_gb:.1f} GiB total / {r.mem_avail_gb:.1f} GiB available")
     if r.memory_bandwidth_gb_s is not None:
-        L.append(f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s (rough probe)")
+        L.append(f"  Mem bandwidth: ~{r.memory_bandwidth_gb_s} GB/s ({r.memory_bandwidth_method})")
+    elif r.memory_bandwidth_method:
+        L.append(f"  Mem bandwidth: {r.memory_bandwidth_method}")
     L.append(f"  Generated:     {r.generated_at}")
     L.append("")
 
@@ -851,9 +1708,14 @@ def render_text(r: Report) -> str:
     L.append(C.wrap(C.BOLD, "2. Cryptographic accelerators / HSMs / TPMs"))
     if r.accelerators:
         for a in r.accelerators:
-            L.append(f"     [{a['kind']:>5}] {a['name']}  ({a['detail']})")
+            pqc_mark = " [PQC-capable]" if a.get("pqc_capable") else ""
+            L.append(f"     [{a['kind']:>11}] {a['name']}{pqc_mark}  ({a['detail']})")
     else:
         L.append("     none detected - host would do all PQC in CPU/memory")
+    if r.hsm_present_but_not_pqc:
+        L.append(C.wrap(C.YELLOW,
+            "     NOTE: HSM(s) detected but none currently confirmed PQC-capable."))
+        L.append("           Verify firmware version against vendor's PQC release notes.")
     if r.tpm_pqc.get("present"):
         marker = "yes" if r.tpm_pqc.get("pqc_advertised") else "no"
         L.append(f"     TPM PQC algorithms advertised: {marker}  ({r.tpm_pqc.get('note', '')})")
@@ -866,16 +1728,35 @@ def render_text(r: Report) -> str:
     L.append("")
 
     L.append(C.wrap(C.BOLD, "3. Operating-system crypto plumbing"))
+    if r.kernel_info:
+        rh = r.kernel_info.get("redhat_release") or {}
+        if rh.get("raw"):
+            L.append(f"   Distribution:  {rh.get('raw')}")
+        L.append(f"   Kernel:        {r.kernel_info.get('release', '?')}")
+        pqc_drivers = r.kernel_info.get("proc_crypto_pqc") or []
+        if pqc_drivers:
+            L.append(f"   /proc/crypto PQC drivers: {', '.join(pqc_drivers)}")
+        else:
+            L.append("   /proc/crypto PQC drivers: none (kernel-side PQC not in mainline)")
     if r.kernel_crypto_hw:
-        L.append(f"   /proc/crypto hw-accelerated drivers: {len(r.kernel_crypto_hw)}")
-        for d in r.kernel_crypto_hw[:8]:
+        L.append(f"   /proc/crypto hw-accel: {len(r.kernel_crypto_hw)} drivers")
+        for d in r.kernel_crypto_hw[:6]:
             L.append(f"     - {d}")
-        if len(r.kernel_crypto_hw) > 8:
-            L.append(f"     ... and {len(r.kernel_crypto_hw) - 8} more")
+        if len(r.kernel_crypto_hw) > 6:
+            L.append(f"     ... and {len(r.kernel_crypto_hw) - 6} more")
     if r.ktls_supported is not None:
-        L.append(f"   Kernel TLS (kTLS): {'yes' if r.ktls_supported else 'no'}")
+        L.append(f"   Kernel TLS:    {'yes' if r.ktls_supported else 'no'}")
     if r.fips:
-        L.append(f"   FIPS mode: kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}")
+        L.append(f"   FIPS mode:     kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}")
+    if r.fips_pqc_conflict.get("in_conflict"):
+        L.append(C.wrap(C.RED, f"   ⚠  FIPS/PQC conflict: {r.fips_pqc_conflict.get('explanation')}"))
+    if r.ssh_pqc.get("available"):
+        pqc = r.ssh_pqc.get("pqc_kex") or []
+        L.append(f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)" + (f": {', '.join(pqc)}" if pqc else ""))
+    if r.ipsec_pqc.get("available"):
+        L.append(f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}")
+    if r.nss.get("available"):
+        L.append(f"   NSS:           {r.nss.get('version')}  (PQC-capable: {r.nss.get('pqc_capable')})")
     L.append("")
 
     L.append(C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)"))
@@ -926,13 +1807,15 @@ def render_text(r: Report) -> str:
 
     if r.per_algo:
         L.append(C.wrap(C.BOLD, "7. Per-algorithm production verdict"))
-        for algo, v in r.per_algo.items():
+        for key, v in r.per_algo.items():
             tier_s = _tier_label(v["tier"])
             extra = ""
             if "rate_per_core" in v:
                 extra = f" - {v['rate_per_core']:.1f} {v['metric']}/core, ~{v['rate_host_estimate']:.0f} host"
-            L.append(f"   {algo:<20} {tier_s:<14}{extra}")
+            L.append(f"   {key:<22} {tier_s:<14}{extra}")
             L.append(f"     {v.get('reason','')}")
+            for note in v.get("notes", []):
+                L.append(C.wrap(C.YELLOW, f"     note: {note}"))
         L.append("")
 
     if r.production_estimate:
@@ -944,13 +1827,27 @@ def render_text(r: Report) -> str:
             L.append(f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}")
         if "slh_dsa_sha2_128s_signatures_per_sec" in e:
             L.append(f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}")
-        if "concurrent_connections_at_50pct_mem" in e:
-            L.append(f"   Concurrent connections:           ~{e['concurrent_connections_at_50pct_mem']:,}  ({e.get('assumptions','')})")
+        if "concurrent_connections_realistic" in e:
+            L.append(f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)")
+        if "concurrent_connections_theoretical_max" in e:
+            L.append(f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)")
+        if "assumptions" in e:
+            L.append(f"   ({e['assumptions']})")
+        L.append("")
+
+    if r.trust_store.get("available"):
+        L.append(C.wrap(C.BOLD, "9. Trust store inventory"))
+        L.append(f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}")
+        L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
+        L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
+        L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
         L.append("")
 
     L.append(sub)
     L.append(f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}")
     L.append(f"           {r.verdict_reason}")
+    if r.verdict_caveat:
+        L.append(C.wrap(C.YELLOW, f"  CAVEAT:  {r.verdict_caveat}"))
     L.append(sub)
     return "\n".join(L)
 
@@ -1032,7 +1929,35 @@ def main() -> int:
     ap.add_argument("--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/")
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
+    ap.add_argument("--scan-trust-store", action="store_true",
+                    help="walk system trust store dirs and count PQC / hybrid certs (slow)")
+    ap.add_argument("--scan-packages", action="store_true",
+                    help="enumerate installed packages with bundled crypto (RHEL/Fedora)")
+    ap.add_argument("--host-mount", metavar="PATH", default="",
+                    help="prefix for /proc /sys /dev /etc reads (DaemonSet pattern)")
+    ap.add_argument("--ansible", action="store_true",
+                    help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0")
+    ap.add_argument("--aggregate", metavar="DIR",
+                    help="aggregate every *.json in DIR into a fleet rollup; exits when done")
+    ap.add_argument("--aggregate-format", choices=["json", "csv"], default="json",
+                    help="output format for --aggregate (default: json)")
+    ap.add_argument("--version", action="version",
+                    version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})")
     args = ap.parse_args()
+
+    # --aggregate is a top-level alternate mode; bail before per-host probing.
+    if args.aggregate:
+        d = Path(args.aggregate)
+        if not d.is_dir():
+            print(f"--aggregate: {d} is not a directory", file=sys.stderr)
+            return 2
+        body, code = run_aggregator(d, output=args.aggregate_format)
+        print(body)
+        return code
+
+    global HOST_PREFIX
+    if args.host_mount:
+        HOST_PREFIX = args.host_mount.rstrip("/")
 
     C.configure(sys.stdout.isatty() and not args.no_color and not args.json and not args.markdown)
 
@@ -1043,26 +1968,49 @@ def main() -> int:
     isa_feat, isa_score = detect_isa(arch, flags)
     isa_t, isa_reason = isa_tier(arch, isa_score, flags)
     mem_t, mem_reason = memory_tier(total_gb)
+    runtime_env = detect_runtime_environment()
     accels = detect_accelerators()
+    accels.extend(detect_network_hsms())
     pkcs11 = detect_pkcs11_modules()
     kcrypto = detect_kernel_crypto_hw()
     ktls = detect_ktls()
     fips = detect_fips_mode()
     tpm = detect_tpm_pqc()
     osinfo = openssl_capability()
+    ssh_info = detect_ssh_pqc()
+    ipsec_info = detect_ipsec_pqc()
+    nss_info = detect_nss()
+    kernel_info = detect_kernel_info()
+    fips_conflict = fips_pqc_conflict_check(fips, osinfo)
+    trust_store_info: dict[str, Any] = {}
+    if getattr(args, "scan_trust_store", False):
+        trust_store_info = scan_trust_store()
+    packages_info: dict[str, Any] = {}
+    if getattr(args, "scan_packages", False):
+        packages_info = scan_packages()
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
+    hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
+    hsm_pqc_capable = any(a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels)
+    hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
     bench: dict[str, Any] = {}
     membw: float | None = None
+    membw_method = ""
     if args.bench:
         bench = run_benchmarks(seconds=args.seconds, threads=max(args.threads, 1))
-        membw = memory_bandwidth_probe()
+        membw, membw_method = memory_bandwidth_probe()
 
     cores_for_estimate = physical or logical or 1
-    palg = per_algo_verdict(bench, cores_for_estimate) if bench else {}
+    palg = per_algo_verdict(bench, cores_for_estimate, mem_bw_gb_s=membw) if bench else {}
     pest = production_estimate(palg, total_gb) if palg else {}
-    verdict, why, code = overall_verdict(isa_t, mem_t, dedicated, palg)
+    verdict, why, code, caveat = overall_verdict(isa_t, mem_t, dedicated, palg)
     why = f"{why} ISA: {isa_reason}. Memory: {mem_reason}."
+
+    # replace_required: poor ISA tier AND no PQC silicon AND no PQC-capable
+    # accelerator.  Used by fleet planners to count hosts that cannot be
+    # made PQC-ready in software regardless of OpenSSL version.
+    accel_pqc_present = any(a.get("pqc_capable") for a in accels)
+    replace_required = (isa_t == "poor") and not dedicated and not accel_pqc_present
 
     r = Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1080,6 +2028,7 @@ def main() -> int:
         isa_tier=isa_t,
         isa_reason=isa_reason,
         accelerators=accels,
+        hsm_present_but_not_pqc=hsm_present_but_not_pqc,
         pkcs11_modules=pkcs11,
         kernel_crypto_hw=kcrypto,
         ktls_supported=ktls,
@@ -1087,11 +2036,22 @@ def main() -> int:
         openssl=osinfo,
         tpm_pqc=tpm,
         memory_bandwidth_gb_s=membw,
+        memory_bandwidth_method=membw_method,
+        ssh_pqc=ssh_info,
+        ipsec_pqc=ipsec_info,
+        nss=nss_info,
+        kernel_info=kernel_info,
+        fips_pqc_conflict=fips_conflict,
+        trust_store=trust_store_info,
+        runtime_environment=runtime_env,
+        packages=packages_info,
+        replace_required=replace_required,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,
         verdict=verdict,
         verdict_reason=why,
+        verdict_caveat=caveat,
         exit_code=code,
     )
 
@@ -1102,6 +2062,12 @@ def main() -> int:
         fp = d / f"{r.hostname}-{ts}.json"
         fp.write_text(json.dumps(asdict(r), indent=2))
 
+    if args.ansible:
+        # Ansible's set_fact / register patterns expect a top-level
+        # ansible_facts wrapper.  The task must always exit 0 or Ansible
+        # will mark the play as failed regardless of the report content.
+        print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
+        return 0
     if args.json:
         print(json.dumps(asdict(r), indent=2))
     elif args.markdown:
