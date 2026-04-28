@@ -195,12 +195,39 @@ DEVICE_HINTS: list[tuple[str, str, str]] = [
     ("/dev/nvidia0",        "NVIDIA GPU (general-purpose)",       "gpu"),
 ]
 
-PKCS11_SEARCH: list[str] = [
-    "/usr/lib64/pkcs11", "/usr/lib/pkcs11",
-    "/usr/lib/x86_64-linux-gnu/pkcs11", "/usr/lib/aarch64-linux-gnu/pkcs11",
-    "/usr/local/lib/pkcs11", "/opt/cloudhsm/lib", "/opt/Thales/PKCS11",
-    "/opt/utimaco/Software/PKCS11",
+# PKCS#11 module search paths per distro family.  Vendor paths
+# (/opt/cloudhsm/lib, /opt/Thales/..., /opt/utimaco/...) are always
+# searched because they're not OS-distribution conventions — they ship
+# with HSM client packages installed by the operator.  Architecture-
+# specific paths (x86_64-linux-gnu, aarch64-linux-gnu) are Debian
+# multiarch and only exist there.
+_PKCS11_PATHS_BY_FAMILY: dict[str, list[str]] = {
+    "rhel": [
+        "/usr/lib64/pkcs11", "/usr/lib/pkcs11",
+        "/usr/local/lib/pkcs11",
+    ],
+    "debian": [
+        "/usr/lib/x86_64-linux-gnu/pkcs11", "/usr/lib/aarch64-linux-gnu/pkcs11",
+        "/usr/lib/pkcs11", "/usr/lib/softhsm",
+        "/var/lib/softhsm/tokens",
+        "/usr/local/lib/pkcs11",
+    ],
+    "suse":   ["/usr/lib64/pkcs11", "/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "arch":   ["/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "alpine": ["/usr/lib/pkcs11"],
+    "macos":  ["/opt/homebrew/lib/pkcs11", "/usr/local/lib/pkcs11"],
+}
+_VENDOR_PKCS11_PATHS: list[str] = [
+    "/opt/cloudhsm/lib", "/opt/Thales/PKCS11", "/opt/utimaco/Software/PKCS11",
 ]
+
+
+def _pkcs11_search_paths(family: str) -> list[str]:
+    """Compose the PKCS#11 search list dynamically per family.  Distro
+    paths first, then vendor-installed HSM client paths.  Saves time
+    on hosts where Debian-multiarch paths don't exist (RHEL) and vice
+    versa, and produces tighter output."""
+    return _PKCS11_PATHS_BY_FAMILY.get(family, []) + _VENDOR_PKCS11_PATHS
 
 # ---------------------------------------------------------------------------
 # NIST PQC parameter sizes (bytes) and per-algorithm production thresholds
@@ -602,10 +629,13 @@ def detect_accelerators() -> list[dict[str, Any]]:
     return out
 
 
-def detect_pkcs11_modules() -> list[str]:
+def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
+    """Walk the family-appropriate PKCS#11 directories plus the always-
+    on vendor paths.  Returns a sorted, de-duplicated list of *.so and
+    *.dylib module file paths."""
     found: set[str] = set()
-    for d in PKCS11_SEARCH:
-        p = Path(d)
+    for d in _pkcs11_search_paths(family):
+        p = host_path(d)
         if not p.is_dir():
             continue
         for sub in p.rglob("*.so"):
@@ -863,28 +893,74 @@ def parse_ssh_kex(text: str) -> dict[str, Any]:
     return {"available": True, "kex_count": len(kexes), "pqc_kex": pqc}
 
 
-def detect_ssh_pqc() -> dict[str, Any]:
+def parse_ssh_version(text: str) -> str | None:
+    """Parse `ssh -V` (printed to stderr).  Format:
+        OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026"""
+    m = re.search(r"OpenSSH_([^\s,]+)", text)
+    return m.group(1) if m else None
+
+
+def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
     if not shutil.which("ssh"):
-        return {"available": False, "reason": "ssh not on PATH"}
+        return {"available": False,
+                "reason": f"ssh not on PATH ({_install_hint('ssh', family)})"}
+    # ssh -V writes to stderr, captured via _run's stderr merge.
+    _, ver_out = _run(["ssh", "-V"], timeout=3)
+    version = parse_ssh_version(ver_out)
     rc, out = _run(["ssh", "-Q", "kex"], timeout=5)
     if rc != 0:
-        return {"available": False, "reason": f"ssh -Q kex failed (rc={rc})"}
-    return parse_ssh_kex(out)
+        return {"available": False, "version": version,
+                "reason": f"ssh -Q kex failed (rc={rc})"}
+    parsed = parse_ssh_kex(out)
+    parsed["version"] = version
+    return parsed
 
 
-def detect_ipsec_pqc() -> dict[str, Any]:
-    """Look for ML-KEM / Kyber tokens in `swanctl --list-algs`."""
-    if not shutil.which("swanctl"):
-        return {"available": False, "reason": "swanctl not on PATH"}
-    rc, out = _run(["swanctl", "--list-algs"], timeout=10)
-    if rc != 0:
-        return {"available": False, "reason": f"swanctl --list-algs failed (rc={rc})"}
-    pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", out, re.IGNORECASE)
-    return {
-        "available": True,
-        "pqc": bool(pqc_match),
-        "evidence": pqc_match.group(0) if pqc_match else None,
-    }
+def parse_libreswan_version(text: str) -> str | None:
+    """Parse `ipsec --version` for the Libreswan release string.  Format:
+        Linux Libreswan 4.15 (netkey) on 5.14.0-..."""
+    m = re.search(r"Libreswan\s+(\S+)", text)
+    return m.group(1) if m else None
+
+
+def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
+    """Detect IPsec PQC support across the two major implementations.
+
+    strongSwan exposes algorithms via `swanctl --list-algs`; Libreswan
+    (more common on RHEL) does not have a single equivalent — it
+    advertises supported KE methods through the `ipsec` command's
+    config-validation output, but PQC support there is still
+    pre-release as of early 2026.  We report both implementations
+    when present so customers know which stack the host runs."""
+    out: dict[str, Any] = {"available": False}
+    if shutil.which("swanctl"):
+        rc, sw_out = _run(["swanctl", "--list-algs"], timeout=10)
+        if rc == 0:
+            pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", sw_out, re.IGNORECASE)
+            out.update({
+                "available": True,
+                "implementation": "strongswan",
+                "pqc": bool(pqc_match),
+                "evidence": pqc_match.group(0) if pqc_match else None,
+            })
+            return out
+        out["reason"] = f"swanctl --list-algs failed (rc={rc})"
+    if shutil.which("ipsec"):
+        rc, ip_out = _run(["ipsec", "--version"], timeout=5)
+        if rc == 0 and "Libreswan" in ip_out:
+            out.update({
+                "available": True,
+                "implementation": "libreswan",
+                "version": parse_libreswan_version(ip_out),
+                "pqc": False,
+                "note": "Libreswan PQC support is pre-release as of 2026; "
+                        "verify against upstream release notes.",
+            })
+            return out
+    if not out.get("reason"):
+        out["reason"] = (f"neither swanctl nor ipsec on PATH "
+                         f"({_install_hint('swanctl', family)})")
+    return out
 
 
 # Mozilla NSS 3.108 (Aug 2025) added hybrid PQC TLS support; earlier
@@ -927,7 +1003,8 @@ def detect_nss() -> dict[str, Any]:
                 "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
                 "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
             }
-    return {"available": False, "reason": "neither certutil nor rpm available"}
+    return {"available": False,
+            "reason": "neither certutil nor a package manager that can query nss is on PATH"}
 
 
 # ---------------------------------------------------------------------------
@@ -1901,7 +1978,60 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
 # OpenSSL capability inspection
 # ---------------------------------------------------------------------------
 
-def openssl_capability() -> dict[str, Any]:
+def openssl_upgrade_path(version_tuple: list[int] | None,
+                         os_release: dict[str, Any] | None) -> str | None:
+    """Family-aware hint for getting a PQC-capable OpenSSL on this host.
+
+    Empty when OpenSSL is already 3.5+ (nothing to upgrade) or when we
+    cannot resolve the distro.  Strings deliberately stop at fact —
+    the field architect plans the upgrade, the script just inventories.
+    """
+    if version_tuple and tuple(version_tuple[:2]) >= (3, 5):
+        return None
+    if not os_release:
+        return None
+    family = os_release.get("family", "unknown")
+    id_ = os_release.get("id", "unknown")
+    ver = (os_release.get("version_id") or "").split(".")
+    major = ver[0] if ver and ver[0] else None
+
+    if family == "rhel":
+        if id_ == "rhel" and major and int(major) <= 9:
+            return ("RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "
+                    "RHEL 10 or a Red Hat-supported channel with newer crypto.")
+        if id_ == "fedora" and major and int(major) < 41:
+            return f"Fedora {major} predates OpenSSL 3.5; upgrade to Fedora 41 or newer."
+        if id_ in {"rocky", "almalinux", "centos", "ol"} and major and int(major) <= 9:
+            return ("EL9-class distributions ship OpenSSL 3.0/3.2; PQC requires "
+                    "the EL10 release of this distribution or a backport channel.")
+    elif family == "debian":
+        if id_ == "debian":
+            if major == "12":
+                return ("Debian 12 (bookworm) ships OpenSSL 3.0; OpenSSL 3.5 is "
+                        "available in trixie or bookworm-backports.")
+            if major and int(major) < 12:
+                return ("Pre-bookworm Debian ships OpenSSL 1.1.x; upgrade to "
+                        "Debian 12 + backports or newer.")
+        elif id_ == "ubuntu":
+            if major == "24":
+                return ("Ubuntu 24.04 LTS main ships OpenSSL 3.0; OpenSSL 3.5 is "
+                        "available in universe — `apt install libssl3` from a "
+                        "newer channel — or upgrade to 25.10.")
+            if major and int(major) < 24:
+                return ("Ubuntu pre-24.04 LTS predates OpenSSL 3.5; upgrade to "
+                        "24.04 LTS (universe) or 25.10.")
+    elif family == "suse":
+        return ("SLES 15 SP6 ships OpenSSL 3.0; OpenSSL 3.5 is available via "
+                "SUSE Package Hub.  Verify FIPS validation status before swapping.")
+    elif family == "alpine":
+        return ("Alpine ships OpenSSL via the apk repository.  Edge channel "
+                "carries 3.5+; verify against the host's apk repo configuration.")
+    elif family == "arch":
+        return "Arch rolls forward; `pacman -Syu` should bring OpenSSL 3.5+."
+    return None
+
+
+def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     out: dict[str, Any] = {"available": True}
@@ -1920,6 +2050,7 @@ def openssl_capability() -> dict[str, Any]:
     out["tls_pqc_groups"] = sorted({g for g in re.findall(r"\b(?:X25519MLKEM\d+|MLKEM\d+|SecP\d+r1MLKEM\d+|X448MLKEM\d+)\b", groups)}) if rc == 0 else []
     rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
     out["providers"] = sorted({m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}) if rc == 0 else []
+    out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
     return out
 
 
@@ -2585,16 +2716,17 @@ def main() -> int:
     runtime_env = detect_runtime_environment()
     accels = detect_accelerators()
     accels.extend(detect_network_hsms())
-    pkcs11 = detect_pkcs11_modules()
+    os_release = detect_os()
+    pkcs11 = detect_pkcs11_modules(os_release.get("family", "unknown"))
     kcrypto = detect_kernel_crypto_hw()
     ktls = detect_ktls()
     fips = detect_fips_mode()
     tpm = detect_tpm_pqc()
-    osinfo = openssl_capability()
-    ssh_info = detect_ssh_pqc()
-    ipsec_info = detect_ipsec_pqc()
+    family = os_release.get("family", "unknown")
+    osinfo = openssl_capability(os_release)
+    ssh_info = detect_ssh_pqc(family)
+    ipsec_info = detect_ipsec_pqc(family)
     nss_info = detect_nss()
-    os_release = detect_os()
     kernel_info = detect_kernel_info(os_release)
     fips = interpret_fips(fips, osinfo, os_release)
     fips_conflict = fips_pqc_conflict_check(fips, osinfo)

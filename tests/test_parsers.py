@@ -951,3 +951,85 @@ def test_interpret_fips_arch_alpine_explicitly_uncertified() -> None:
         )
         assert out["distribution_certified"] is False
         assert "FIPS-validated" in out["notes"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §4: PKCS#11 search paths per family
+# ---------------------------------------------------------------------------
+
+def test_pkcs11_search_paths_debian_includes_multiarch() -> None:
+    paths = pr._pkcs11_search_paths("debian")
+    assert "/usr/lib/x86_64-linux-gnu/pkcs11" in paths
+    assert "/usr/lib/softhsm" in paths
+
+
+def test_pkcs11_search_paths_rhel_excludes_debian_specific() -> None:
+    paths = pr._pkcs11_search_paths("rhel")
+    assert "/usr/lib64/pkcs11" in paths
+    assert "/usr/lib/x86_64-linux-gnu/pkcs11" not in paths
+
+
+def test_pkcs11_search_paths_always_include_vendor() -> None:
+    """Vendor HSM client paths (/opt/cloudhsm, /opt/Thales, /opt/utimaco)
+    are searched on every family."""
+    for fam in ("rhel", "debian", "suse", "arch", "alpine"):
+        paths = pr._pkcs11_search_paths(fam)
+        assert "/opt/cloudhsm/lib" in paths
+        assert "/opt/Thales/PKCS11" in paths
+        assert "/opt/utimaco/Software/PKCS11" in paths
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §6: OpenSSL upgrade-path hints per family
+# ---------------------------------------------------------------------------
+
+def test_openssl_upgrade_path_already_pqc_capable_returns_none() -> None:
+    osr = {"family": "rhel", "id": "rhel", "version_id": "10.0"}
+    assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
+
+
+def test_openssl_upgrade_path_rhel9() -> None:
+    osr = {"family": "rhel", "id": "rhel", "version_id": "9.6"}
+    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
+    assert msg is not None
+    assert "RHEL 10" in msg
+
+
+def test_openssl_upgrade_path_debian12() -> None:
+    osr = {"family": "debian", "id": "debian", "version_id": "12"}
+    msg = pr.openssl_upgrade_path([3, 0, 0], osr)
+    assert msg is not None
+    assert "trixie" in msg or "backports" in msg
+
+
+def test_openssl_upgrade_path_ubuntu_2404() -> None:
+    osr = {"family": "debian", "id": "ubuntu", "version_id": "24.04"}
+    msg = pr.openssl_upgrade_path([3, 0, 0], osr)
+    assert msg is not None
+    assert "universe" in msg or "25.10" in msg
+
+
+def test_openssl_upgrade_path_no_os_release() -> None:
+    assert pr.openssl_upgrade_path([3, 0, 0], None) is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §7: SSH version + Libreswan parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_ssh_version_standard_format() -> None:
+    text = "OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026\n"
+    assert pr.parse_ssh_version(text) == "9.9p1"
+
+
+def test_parse_ssh_version_no_match() -> None:
+    assert pr.parse_ssh_version("garbage output") is None
+
+
+def test_parse_libreswan_version() -> None:
+    text = "Linux Libreswan 4.15 (netkey) on 5.14.0-503.21.1.el9_5.x86_64\n"
+    assert pr.parse_libreswan_version(text) == "4.15"
+
+
+def test_parse_libreswan_version_no_match() -> None:
+    assert pr.parse_libreswan_version("strongSwan 5.9.13 swanctl") is None
