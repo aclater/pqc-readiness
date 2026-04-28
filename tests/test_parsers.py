@@ -442,29 +442,28 @@ def test_parse_cgroup_for_container_bare_metal() -> None:
 def test_parse_rpm_packages() -> None:
     text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
     out = pr.parse_rpm_packages(text)
-    assert ("openssl", "3.5.5") in out
-    assert ("java-21-openjdk", "21.0.5") in out
+    assert {"name": "openssl", "version": "3.5.5"} in out
+    assert {"name": "java-21-openjdk", "version": "21.0.5"} in out
     assert len(out) == 4
 
 
-def test_classify_bundled_crypto_finds_jdk_and_node_dedupes() -> None:
+def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
     pkgs = [
-        ("openssl", "3.5.5"),
-        ("java-21-openjdk", "21.0.5"),
-        ("java-21-openjdk-headless", "21.0.5"),
-        ("nodejs", "22.10.0"),
-        ("python3", "3.13.5"),
-        ("nss", "3.122.1"),
+        {"name": "openssl",                  "version": "3.5.5"},
+        {"name": "java-21-openjdk",          "version": "21.0.5"},
+        {"name": "java-21-openjdk-headless", "version": "21.0.5"},
+        {"name": "nodejs",                   "version": "22.10.0"},
+        {"name": "python3",                  "version": "3.13.5"},
+        {"name": "nss",                      "version": "3.122.1"},
     ]
-    out = pr.classify_bundled_crypto(pkgs)
+    out = pr.classify_bundled_crypto(pkgs, family="rhel")
     names = sorted(p["package"] for p in out)
-    # java-21-openjdk-headless matches via prefix; both jdk packages dedupe by exact name
     assert "java-21-openjdk" in names
     assert "java-21-openjdk-headless" in names
     assert "nodejs" in names
     assert "python3" in names
     # openssl + nss are not in the bundled-crypto allowlist (they ARE the
-    # system crypto, not a bundled override)
+    # system crypto, not a bundled override).
     assert "openssl" not in names
     assert "nss" not in names
 
@@ -790,3 +789,165 @@ def test_parse_os_release_strips_quotes_and_comments() -> None:
     assert parsed["id"] == "rhel"
     assert parsed["version_id"] == "9.6"
     assert parsed["pretty_name"] == "Red Hat Enterprise Linux 9.6 (Plow)"
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: per-family package parsers + classification
+# ---------------------------------------------------------------------------
+
+def test_parse_dpkg_packages_normalises_to_dicts() -> None:
+    text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
+    out = pr.parse_dpkg_packages(text)
+    names = {e["name"] for e in out}
+    assert "openjdk-21-jdk" in names
+    assert "libbcprov-java" in names
+    assert "nodejs" in names
+    # Same shape as rpm/pacman/apk parsers — dicts, not tuples.
+    assert all({"name", "version"} <= set(e.keys()) for e in out)
+
+
+def test_parse_pacman_packages() -> None:
+    text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
+    out = pr.parse_pacman_packages(text)
+    by_name = {e["name"]: e["version"] for e in out}
+    assert by_name["jdk21-openjdk"] == "21.0.5.u11-1"
+    assert by_name["nodejs"] == "22.11.0-1"
+
+
+def test_parse_apk_packages_handles_release_suffix() -> None:
+    text = (FIXTURES / "packages" / "apk-info-sample.txt").read_text()
+    out = pr.parse_apk_packages(text)
+    by_name = {e["name"]: e["version"] for e in out}
+    # `openjdk21-jdk-21.0.5_p11-r0` — name ends at jdk-21.0.5 boundary.
+    assert "openjdk21-jdk" in by_name
+    assert by_name["openjdk21-jdk"].endswith("-r0")
+    assert by_name["nodejs"].endswith("-r0")
+    assert "openssl" in by_name
+
+
+def test_classify_bundled_crypto_debian_finds_distinct_names() -> None:
+    text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
+    pkgs = pr.parse_dpkg_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="debian")
+    names = {p["package"] for p in out}
+    # Debian uses openjdk-XX-jdk / openjdk-XX-jre; the regex catches all four.
+    assert "openjdk-21-jdk" in names
+    assert "openjdk-21-jre" in names
+    assert "libbcprov-java" in names
+    # nodejs without -ng suffix
+    assert "nodejs" in names
+    assert "rustc" in names
+    assert "firefox-esr" in names
+    # Not bundled crypto:
+    assert "openssl" not in names
+    assert "libssl3" not in names
+    assert "libnss3" not in names
+
+
+def test_classify_bundled_crypto_arch_uses_arch_naming() -> None:
+    text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
+    pkgs = pr.parse_pacman_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="arch")
+    names = {p["package"] for p in out}
+    # Arch ships `jdk21-openjdk` (vs. RHEL `java-21-openjdk`, Debian
+    # `openjdk-21-jdk`).  The family-specific regex must match it.
+    assert "jdk21-openjdk" in names
+    assert "go" in names
+    assert "nodejs" in names
+    assert "rust" in names
+    assert "firefox" in names
+    # `python` (Arch) — not `python3`.  The Arch regex anchors to `^python$`.
+    assert "python" in names
+
+
+def test_classify_bundled_crypto_alpine_uses_alpine_naming() -> None:
+    text = (FIXTURES / "packages" / "apk-info-sample.txt").read_text()
+    pkgs = pr.parse_apk_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="alpine")
+    names = {p["package"] for p in out}
+    assert "openjdk21-jdk" in names
+    assert "go" in names
+    assert "python3" in names
+
+
+def test_classify_bundled_crypto_unknown_family_is_empty() -> None:
+    pkgs = [{"name": "openjdk-21-jdk", "version": "21.0.5"}]
+    assert pr.classify_bundled_crypto(pkgs, family="unknown") == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: install hints
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("binary, family, expected_substring", [
+    ("lspci",       "rhel",   "dnf install"),
+    ("lspci",       "debian", "apt-get install"),
+    ("lspci",       "suse",   "zypper install"),
+    ("lspci",       "arch",   "pacman -S"),
+    ("lspci",       "alpine", "apk add"),
+    ("tpm2_getcap", "rhel",   "tpm2-tools"),
+    ("tpm2_getcap", "debian", "tpm2-tools"),
+    ("tpm2_getcap", "suse",   "tpm2.0-tools"),  # SUSE name
+    ("certutil",    "debian", "libnss3-tools"),  # Debian name differs
+    ("certutil",    "rhel",   "nss-tools"),
+])
+def test_install_hint_per_family(binary: str, family: str, expected_substring: str) -> None:
+    hint = pr._install_hint(binary, family)
+    assert expected_substring in hint
+
+
+def test_install_hint_unknown_family_falls_back() -> None:
+    assert "openssl" in pr._install_hint("openssl", "unknown")
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: FIPS interpretation
+# ---------------------------------------------------------------------------
+
+def test_interpret_fips_rhel_active_provider_certified() -> None:
+    fips = {"kernel": True, "openssl_provider": True}
+    osr = {"family": "rhel", "id": "rhel"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is True
+    assert "Red Hat" in out["distribution_certified_source"]
+    assert "RHEL" in out["notes"]
+
+
+def test_interpret_fips_debian_no_certification_claim() -> None:
+    """Debian main has no certified provider — even with fips_enabled=1
+    we must not claim certification."""
+    fips = {"kernel": True, "openssl_provider": False}
+    osr = {"family": "debian", "id": "debian"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is False
+    assert out["distribution_certified_source"] is None
+    assert "third-party" in out["notes"]
+
+
+def test_interpret_fips_ubuntu_pro_with_active_provider() -> None:
+    """Ubuntu + active provider implies Ubuntu Pro (Universe doesn't ship one).
+    distribution_certified is True with an explicit assumption note."""
+    fips = {"kernel": True, "openssl_provider": True}
+    osr = {"family": "debian", "id": "ubuntu"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is True
+    assert "Ubuntu Pro" in out["distribution_certified_source"]
+
+
+def test_interpret_fips_kernel_off_no_certification() -> None:
+    """fips_enabled=0 must never produce distribution_certified=True."""
+    fips = {"kernel": False, "openssl_provider": True}
+    osr = {"family": "rhel", "id": "rhel"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is False
+
+
+def test_interpret_fips_arch_alpine_explicitly_uncertified() -> None:
+    for fam in ("arch", "alpine"):
+        out = pr.interpret_fips(
+            {"kernel": True, "openssl_provider": True},
+            {},
+            {"family": fam, "id": fam},
+        )
+        assert out["distribution_certified"] is False
+        assert "FIPS-validated" in out["notes"]
