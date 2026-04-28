@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
 """pqc-readiness: assess host suitability for Post-Quantum Cryptography.
 
 Determines whether on-chip ISA features accelerate NIST PQC primitives
@@ -49,6 +50,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+SCRIPT_VERSION = "2.0.0"
 SCHEMA_VERSION = "1.0"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
@@ -249,9 +251,14 @@ ALGO_NOTES: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 
 class C:
-    BOLD = "\033[1m"; DIM = "\033[2m"; RESET = "\033[0m"
-    GREEN = "\033[32m"; YELLOW = "\033[33m"; RED = "\033[31m"
-    CYAN = "\033[36m"; MAGENTA = "\033[35m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    CYAN = "\033[36m"
+    MAGENTA = "\033[35m"
     enabled = False
 
     @classmethod
@@ -1934,6 +1941,8 @@ def main() -> int:
                     help="aggregate every *.json in DIR into a fleet rollup; exits when done")
     ap.add_argument("--aggregate-format", choices=["json", "csv"], default="json",
                     help="output format for --aggregate (default: json)")
+    ap.add_argument("--version", action="version",
+                    version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})")
     args = ap.parse_args()
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
