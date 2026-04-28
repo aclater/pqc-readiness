@@ -2853,6 +2853,465 @@ def overall_verdict(
 
 
 # ---------------------------------------------------------------------------
+# Algorithm recommendation engine
+# ---------------------------------------------------------------------------
+#
+# `recommend()` is a pure function over (Report, policy, role).  It does
+# NOT consult network or disk; everything it needs is already on the
+# Report.  The policy-to-preference mapping is a single declarative dict
+# (POLICY_PREFERENCES) so that authority position changes can be made
+# without touching the engine.  The authoritative document for each
+# policy is cited in `docs/recommendation-policies.md`.
+#
+# Five policy modes, four full and one composite:
+#   cnsa-2.0      US National Security Systems / NSA-aligned.  Pure PQC
+#                 preferred; hybrid permitted only where a protocol
+#                 mandates it (IKEv2).
+#   nist-civilian US federal civilian / FCEB.  ML-KEM, ML-DSA, SLH-DSA
+#                 per FIPS 203/204/205.  Hybrid permitted, not required.
+#   eu-anssi-bsi  EU public sector under ANSSI / BSI.  Hybrid actively
+#                 recommended throughout the migration period.
+#   commercial    No specific compliance regime.  Both pure and hybrid
+#                 acceptable; hybrid suggested for long-confidentiality
+#                 (HNDL-relevant) data.
+#   auto          Side-by-side recommendation under all four real
+#                 policies, with no single "preferred" answer.
+#
+# Roles:
+#   tls-server        fully implemented
+#   tls-client        stub: returns {"implemented": False, ...}
+#   signing-service   stub: returns {"implemented": False, ...}
+#   firmware-signing  stub: returns {"implemented": False, ...}
+#
+# The non-tls-server roles are intentionally stubs — see issue #13
+# acceptance criteria, which scope the first cut to tls-server.
+
+POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
+    "cnsa-2.0": {
+        "name": "CNSA 2.0",
+        "authority": "NSA / CNSA 2.0 (US National Security Systems)",
+        "hybrid_policy": "discouraged",
+        "hybrid_allowed_for": ["ikev2"],
+        "kem_primary": "ML-KEM-1024",
+        "sig_primary": "ML-DSA-87",
+        "hash_primary": "SHA-384",
+        "requires_fips": True,
+        "citation": (
+            "CNSA 2.0 specifies ML-KEM-1024 and ML-DSA-87 for National "
+            "Security Systems.  Pure PQC is preferred; hybrid is "
+            "permitted only where a protocol mandates it (e.g., IKEv2)."
+        ),
+        "source": (
+            "NSA CSA / CSI on Commercial National Security Algorithm "
+            "Suite 2.0 (CNSA 2.0 advisory and FAQ)"
+        ),
+    },
+    "nist-civilian": {
+        "name": "NIST civilian / FCEB",
+        "authority": "NIST FIPS 203 / 204 / 205 (US federal civilian)",
+        "hybrid_policy": "permitted",
+        "hybrid_allowed_for": ["tls-server", "tls-client", "ikev2"],
+        "kem_primary": "ML-KEM-768",
+        "sig_primary": "ML-DSA-65",
+        "hash_primary": "SHA-256",
+        "requires_fips": True,
+        "citation": (
+            "NIST FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), and FIPS 205 "
+            "(SLH-DSA) standardize the civilian PQC suite.  Hybrid is "
+            "permitted under SP 800-56C Rev. 2; it is not required."
+        ),
+        "source": (
+            "NIST FIPS 203 / 204 / 205, NIST IR 8547, "
+            "NIST SP 800-56C Rev. 2, NIST SP 800-227"
+        ),
+    },
+    "eu-anssi-bsi": {
+        "name": "ANSSI / BSI hybrid",
+        "authority": "ANSSI (FR) and BSI (DE) PQC migration guidance",
+        "hybrid_policy": "recommended",
+        "hybrid_allowed_for": [
+            "tls-server",
+            "tls-client",
+            "ikev2",
+            "signing-service",
+        ],
+        "kem_primary": "ML-KEM-768",
+        "sig_primary": "ML-DSA-65",
+        "hash_primary": "SHA-256",
+        "requires_fips": False,
+        "citation": (
+            "ANSSI and BSI both recommend deploying PQC alongside a "
+            "classical primitive (hybrid) during the migration period.  "
+            "Pure-PQC deployments are discouraged until confidence in "
+            "the new primitives matures."
+        ),
+        "source": "ANSSI position on PQC migration; BSI guidance on PQC",
+    },
+    "commercial": {
+        "name": "Commercial / no specific regime",
+        "authority": "no specific compliance regime",
+        "hybrid_policy": "either",
+        "hybrid_allowed_for": [
+            "tls-server",
+            "tls-client",
+            "ikev2",
+            "signing-service",
+        ],
+        "kem_primary": "ML-KEM-768",
+        "sig_primary": "ML-DSA-65",
+        "hash_primary": "SHA-256",
+        "requires_fips": False,
+        "citation": (
+            "Outside a specific compliance regime, both pure-PQC and "
+            "hybrid deployments are acceptable.  Hybrid is suggested "
+            "for data with long-confidentiality requirements (HNDL)."
+        ),
+        "source": "no single source — see policy guidance documentation",
+    },
+}
+
+VALID_POLICIES = ("cnsa-2.0", "nist-civilian", "eu-anssi-bsi", "commercial")
+VALID_ROLES = ("tls-server", "tls-client", "signing-service", "firmware-signing")
+
+
+def _accel_pqc_capable(accelerators: list[dict[str, Any]]) -> bool:
+    return any(a.get("pqc_capable") for a in (accelerators or []))
+
+
+def _isa_supports_large_params(isa_tier_str: str, has_pqc_accel: bool) -> bool:
+    """ISA tier 'excellent', or any tier with a PQC-capable accelerator,
+    can carry the larger parameter sets (ML-KEM-1024 / ML-DSA-87) at
+    typical service SLOs."""
+    return isa_tier_str == "excellent" or has_pqc_accel
+
+
+def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
+    pref = POLICY_PREFERENCES[policy]
+    isa = (r.isa_tier or "unknown").lower()
+    accel_pqc = _accel_pqc_capable(r.accelerators)
+    fips_kernel = bool((r.fips or {}).get("kernel"))
+    openssl = r.openssl or {}
+    tls_groups = openssl.get("tls_groups") or {}
+    hybrid_groups = list(tls_groups.get("hybrid") or [])
+    pure_groups = list(tls_groups.get("pure_pqc") or [])
+    openssl_version = openssl.get("version") or ""
+    kernel_release = (r.kernel_info or {}).get("release") or ""
+
+    caveats: list[str] = []
+
+    # KEM choice -----------------------------------------------------------
+    if policy == "cnsa-2.0":
+        kem_chosen = "ML-KEM-1024"
+        if _isa_supports_large_params(isa, accel_pqc):
+            kem_reason = (
+                "ML-KEM-1024 per CNSA 2.0; ISA tier and/or PQC accelerator "
+                "supports the larger parameter set"
+            )
+        else:
+            kem_reason = "ML-KEM-1024 mandated by CNSA 2.0"
+            caveats.append(
+                f"Policy mandates ML-KEM-1024 but host ISA tier is '{isa}' "
+                "and no PQC-capable accelerator is present; encapsulation "
+                "throughput will be lower than ML-KEM-768.  Add a PQC "
+                "accelerator or accept the slower path."
+            )
+    elif policy == "eu-anssi-bsi":
+        kem_chosen = "ML-KEM-768"
+        kem_reason = (
+            "ML-KEM-768 deployed in hybrid; ANSSI and BSI both recommend "
+            "hybrid during the migration period"
+        )
+    elif policy == "nist-civilian":
+        kem_chosen = "ML-KEM-768"
+        if _isa_supports_large_params(isa, accel_pqc):
+            kem_reason = (
+                "ML-KEM-768 per FIPS 203; ISA tier could support ML-KEM-1024 "
+                "if compliance scope demands it"
+            )
+        else:
+            kem_reason = (
+                "ML-KEM-768 per FIPS 203; balanced for civilian deployments"
+            )
+    else:  # commercial
+        kem_chosen = "ML-KEM-768"
+        kem_reason = (
+            "ML-KEM-768 — broadly interoperable default for commercial "
+            "deployments; consider hybrid for long-confidentiality data"
+        )
+
+    # Hybrid vs pure for the KEM ------------------------------------------
+    if pref["hybrid_policy"] == "recommended":
+        kem_mode = "hybrid"
+    elif pref["hybrid_policy"] == "discouraged":
+        # CNSA 2.0: pure preferred.  Hybrid is permitted only where the
+        # protocol mandates it (IKEv2).  TLS server is not IKEv2.
+        kem_mode = "pure"
+    else:
+        # nist-civilian / commercial: pure default; hybrid is permitted.
+        kem_mode = "pure"
+
+    # Capability check on advertised TLS 1.3 groups -----------------------
+    if openssl.get("available"):
+        if kem_mode == "hybrid" and not hybrid_groups:
+            caveats.append(
+                "No TLS 1.3 hybrid groups are advertised by this OpenSSL "
+                "build.  Upgrade OpenSSL or load the relevant provider "
+                "before deploying a hybrid TLS server."
+            )
+        elif kem_mode == "pure" and not pure_groups:
+            caveats.append(
+                "No TLS 1.3 pure-PQC groups are advertised by this "
+                "OpenSSL build.  Upgrade OpenSSL or load the relevant "
+                "provider before deploying pure-PQC TLS."
+            )
+    else:
+        caveats.append(
+            "OpenSSL was not detected on this host; the recommended "
+            "algorithms cannot be served via TLS until an OpenSSL build "
+            "with TLS 1.3 PQC group support is installed."
+        )
+
+    # Signature choice ----------------------------------------------------
+    if policy == "cnsa-2.0":
+        sig_chosen = "ML-DSA-87"
+        if _isa_supports_large_params(isa, accel_pqc):
+            sig_reason = (
+                "ML-DSA-87 per CNSA 2.0; ISA tier supports the signing "
+                "latency at typical service SLOs"
+            )
+        else:
+            sig_reason = "ML-DSA-87 mandated by CNSA 2.0"
+            caveats.append(
+                f"Policy mandates ML-DSA-87 but host ISA tier is '{isa}' "
+                "without a PQC accelerator; ML-DSA-87 sign p99 latency "
+                "may exceed typical service SLOs.  Consider a hardware "
+                "accelerator or accept the slower path."
+            )
+    else:
+        sig_chosen = "ML-DSA-65"
+        if isa == "good":
+            sig_reason = (
+                "ML-DSA-65 over ML-DSA-87 because ISA tier is 'good' not "
+                "'excellent'; ML-DSA-87 sign p99 latency will likely "
+                "exceed typical service SLOs"
+            )
+        elif isa in ("poor", "marginal", "adequate"):
+            sig_reason = (
+                f"ML-DSA-65 because ISA tier is '{isa}' without a PQC "
+                "accelerator; ML-DSA-87 sign p99 latency would likely "
+                "exceed typical SLOs"
+            )
+        elif isa == "excellent":
+            sig_reason = (
+                "ML-DSA-65 — balanced default for civilian/commercial "
+                "deployments; ISA tier could support ML-DSA-87 if "
+                "compliance scope demands it"
+            )
+        else:
+            sig_reason = (
+                "ML-DSA-65 — balanced default for civilian/commercial "
+                "deployments"
+            )
+
+    # Hash ----------------------------------------------------------------
+    hash_chosen = pref["hash_primary"]
+    hash_reason = f"{hash_chosen} aligned with {pref['name']} guidance"
+
+    # FIPS state caveats --------------------------------------------------
+    if pref["requires_fips"] and not fips_kernel:
+        caveats.append(
+            f"Kernel FIPS mode is not enabled.  {pref['name']} requires "
+            "use of FIPS-validated cryptographic modules; enable kernel "
+            "FIPS mode and load a FIPS-validated provider before going "
+            "to production."
+        )
+
+    # Build the recommendation record ------------------------------------
+    return {
+        "role": "tls-server",
+        "policy": policy,
+        "policy_authority": pref["authority"],
+        "policy_basis": pref["citation"],
+        "policy_source": pref["source"],
+        "implemented": True,
+        "kem": {
+            "algorithm": kem_chosen,
+            "mode": kem_mode,
+            "reason": kem_reason,
+        },
+        "signature": {
+            "algorithm": sig_chosen,
+            "reason": sig_reason,
+        },
+        "hash": {
+            "algorithm": hash_chosen,
+            "reason": hash_reason,
+        },
+        "host_capability_inputs": {
+            "isa_tier": isa,
+            "pqc_accelerator_present": accel_pqc,
+            "fips_kernel": fips_kernel,
+            "openssl_version": openssl_version,
+            "kernel_release": kernel_release,
+        },
+        "caveats": caveats,
+    }
+
+
+def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
+    """Placeholder for roles not yet fully implemented.  Returns the
+    policy basis so the JSON shape is consistent across roles, but
+    leaves the algorithm fields empty.
+
+    TODO(#13): expand to fully implement tls-client, signing-service,
+    and firmware-signing.  Each has its own SLO profile (e.g.,
+    firmware-signing tolerates SLH-DSA; tls-client cares about
+    handshake size more than throughput)."""
+    pref = POLICY_PREFERENCES[policy]
+    return {
+        "role": role,
+        "policy": policy,
+        "policy_authority": pref["authority"],
+        "policy_basis": pref["citation"],
+        "policy_source": pref["source"],
+        "implemented": False,
+        "note": (
+            f"Recommendations for role={role!r} are not yet implemented.  "
+            "Only role='tls-server' is supported in this revision."
+        ),
+        "host_capability_inputs": {
+            "isa_tier": (r.isa_tier or "unknown").lower(),
+            "pqc_accelerator_present": _accel_pqc_capable(r.accelerators),
+        },
+        "caveats": [],
+    }
+
+
+def _recommend_one(r: Report, policy: str, role: str) -> dict[str, Any]:
+    if role == "tls-server":
+        return _recommend_tls_server(r, policy)
+    return _recommend_stub(r, policy, role)
+
+
+def recommend(
+    r: Report,
+    policy: str = "auto",
+    role: str = "tls-server",
+) -> dict[str, Any]:
+    """Produce a host-specific PQC algorithm recommendation.
+
+    Pure function over (Report, policy, role).  Returns a record that
+    contains the recommendation AND the policy basis as separate fields,
+    so downstream tooling can audit the chain of reasoning without
+    re-deriving it.
+
+    policy='auto' emits one recommendation per real policy in
+    POLICY_PREFERENCES, side by side, with no single 'preferred' answer.
+    """
+    if role not in VALID_ROLES:
+        raise ValueError(
+            f"unknown role {role!r}; valid roles: {', '.join(VALID_ROLES)}"
+        )
+    if policy == "auto":
+        return {
+            "role": role,
+            "mode": "auto",
+            "hostname": r.hostname,
+            "generated_at": r.generated_at,
+            "recommendations": {
+                p: _recommend_one(r, p, role) for p in VALID_POLICIES
+            },
+        }
+    if policy not in POLICY_PREFERENCES:
+        raise ValueError(
+            f"unknown policy {policy!r}; valid policies: "
+            f"{', '.join(VALID_POLICIES)} (or 'auto')"
+        )
+    return {
+        "role": role,
+        "mode": "single",
+        "policy": policy,
+        "hostname": r.hostname,
+        "generated_at": r.generated_at,
+        "recommendations": {policy: _recommend_one(r, policy, role)},
+    }
+
+
+def _render_recommendation_block(rec: dict[str, Any]) -> list[str]:
+    """Render a single per-policy recommendation as plain-text lines."""
+    L: list[str] = []
+    L.append(f"Policy: {rec['policy']} ({rec['policy_authority']})")
+    if not rec.get("implemented", False):
+        L.append(f"  {rec.get('note', 'not implemented')}")
+        return L
+    kem = rec["kem"]
+    sig = rec["signature"]
+    h = rec["hash"]
+    L.append(f"  KEM:        {kem['algorithm']} ({kem['mode']})")
+    L.append(f"              Reason: {kem['reason']}")
+    L.append(f"  Signature:  {sig['algorithm']}")
+    L.append(f"              Reason: {sig['reason']}")
+    L.append(f"  Hash:       {h['algorithm']}")
+    L.append(f"              Reason: {h['reason']}")
+    L.append(f"  Policy basis: {rec['policy_basis']}")
+    L.append(f"  Source:       {rec['policy_source']}")
+    if rec["caveats"]:
+        L.append("  Caveats:")
+        for c in rec["caveats"]:
+            L.append(f"    - {c}")
+    return L
+
+
+def render_recommendation_text(report: Report, rec: dict[str, Any]) -> str:
+    L: list[str] = []
+    L.append(f"PQC algorithm recommendation — {report.hostname or 'unknown'}")
+    L.append(f"Role: {rec['role']}")
+    L.append(f"Mode: {rec['mode']}")
+    L.append("")
+    for _, sub in rec["recommendations"].items():
+        L.extend(_render_recommendation_block(sub))
+        L.append("")
+    return "\n".join(L).rstrip() + "\n"
+
+
+def render_recommendation_markdown(report: Report, rec: dict[str, Any]) -> str:
+    L: list[str] = []
+    L.append(f"# PQC algorithm recommendation — {report.hostname or 'unknown'}")
+    L.append("")
+    L.append(f"_Generated {report.generated_at}_")
+    L.append("")
+    L.append(f"**Role:** `{rec['role']}` &nbsp;·&nbsp; **Mode:** `{rec['mode']}`")
+    L.append("")
+    for _, sub in rec["recommendations"].items():
+        L.append(f"## Policy: `{sub['policy']}` — {sub['policy_authority']}")
+        L.append("")
+        if not sub.get("implemented", False):
+            L.append(f"> {sub.get('note', 'not implemented')}")
+            L.append("")
+            continue
+        kem = sub["kem"]
+        sig = sub["signature"]
+        h = sub["hash"]
+        L.append("| Primitive | Algorithm | Reason |")
+        L.append("|-----------|-----------|--------|")
+        L.append(f"| KEM ({kem['mode']}) | `{kem['algorithm']}` | {kem['reason']} |")
+        L.append(f"| Signature | `{sig['algorithm']}` | {sig['reason']} |")
+        L.append(f"| Hash | `{h['algorithm']}` | {h['reason']} |")
+        L.append("")
+        L.append(f"**Policy basis:** {sub['policy_basis']}")
+        L.append("")
+        L.append(f"**Source:** {sub['policy_source']}")
+        L.append("")
+        if sub["caveats"]:
+            L.append("**Caveats:**")
+            L.append("")
+            for c in sub["caveats"]:
+                L.append(f"- {c}")
+            L.append("")
+    return "\n".join(L).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
 # Renderers
 # ---------------------------------------------------------------------------
 
@@ -3742,6 +4201,32 @@ def main() -> int:
         help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0",
     )
     ap.add_argument(
+        "--recommend",
+        action="store_true",
+        help=(
+            "emit a host-specific PQC algorithm recommendation under the "
+            "selected policy and role, instead of the readiness report"
+        ),
+    )
+    ap.add_argument(
+        "--policy",
+        choices=[*VALID_POLICIES, "auto"],
+        default="auto",
+        help=(
+            "compliance context for --recommend; 'auto' (default) emits "
+            "all policies side by side"
+        ),
+    )
+    ap.add_argument(
+        "--role",
+        choices=list(VALID_ROLES),
+        default="tls-server",
+        help=(
+            "role for --recommend (only 'tls-server' is fully implemented; "
+            "other roles return a stub response)"
+        ),
+    )
+    ap.add_argument(
         "--aggregate",
         metavar="DIR",
         help="aggregate every *.json in DIR into a fleet rollup; exits when done",
@@ -3911,6 +4396,15 @@ def main() -> int:
         # ansible_facts wrapper.  The task must always exit 0 or Ansible
         # will mark the play as failed regardless of the report content.
         print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
+        return 0
+    if args.recommend:
+        rec = recommend(r, policy=args.policy, role=args.role)
+        if args.json:
+            print(json.dumps(rec, indent=2))
+        elif args.markdown:
+            print(render_recommendation_markdown(r, rec))
+        else:
+            print(render_recommendation_text(r, rec))
         return 0
     if args.json:
         print(json.dumps(asdict(r), indent=2))
