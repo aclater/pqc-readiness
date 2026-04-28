@@ -884,13 +884,53 @@ def detect_network_hsms() -> list[dict[str, Any]]:
 # OpenSSH / strongSwan / NSS PQC capability
 # ---------------------------------------------------------------------------
 
+# OpenSSH PQC kex names embed both a PQC token (mlkem*, kyber*, sntrup*)
+# and — so far, always — a classical token (nistp*, x25519, x448).  Pure
+# PQC SSH kex is not yet in OpenSSH as of 2026; the pure_pqc bucket below
+# is reserved for the day a `mlkem768-sha256`-style name ships.
+# No word-boundary anchors here — OpenSSH concatenates the PQC and
+# classical tokens with no separator (e.g. `mlkem768x25519-sha256`),
+# and `\b` on the leading side would suppress the classical match
+# because the boundary between two word characters does not exist.
+_PQC_SSH_TOKEN_RE = re.compile(r"(?:mlkem\d+|kyber\d+|sntrup\d+)", re.IGNORECASE)
+_CLASSICAL_SSH_TOKEN_RE = re.compile(
+    r"(?:nistp\d+|x25519|x448|secp\d+r1)", re.IGNORECASE,
+)
+
+
+def classify_ssh_kex(pqc_kex: list[str]) -> dict[str, list[str]]:
+    """Split detected PQC-relevant SSH kex algorithms into pure-PQC and
+    hybrid buckets.  A name that contains both a PQC and a classical
+    token is hybrid; PQC-token-only names are pure PQC.  As of 2026 every
+    shipped OpenSSH PQC kex is hybrid, but the pure_pqc bucket exists so
+    future RFC-adopted pure-PQC kex are surfaced the day they arrive."""
+    pure: set[str] = set()
+    hybrid: set[str] = set()
+    for k in pqc_kex:
+        if not _PQC_SSH_TOKEN_RE.search(k):
+            continue
+        if _CLASSICAL_SSH_TOKEN_RE.search(k):
+            hybrid.add(k)
+        else:
+            pure.add(k)
+    return {"pure_pqc": sorted(pure), "hybrid": sorted(hybrid)}
+
+
 def parse_ssh_kex(text: str) -> dict[str, Any]:
-    """Parse `ssh -Q kex` output.  Returns a dict with the full count and
-    the subset of PQC-relevant kex algorithms (ML-KEM hybrids and the
-    older sntrup761 NTRU Prime hybrid)."""
+    """Parse `ssh -Q kex` output.  Returns a dict with the full kex
+    count, the flat PQC subset (ML-KEM hybrids and the older sntrup761
+    NTRU Prime hybrid), and a `kex_groups` split into pure_pqc / hybrid.
+
+    The flat `pqc_kex` list is preserved for back-compat with consumers
+    that already key off it; new consumers should prefer `kex_groups`."""
     kexes = [line.strip() for line in text.splitlines() if line.strip()]
-    pqc = sorted({k for k in kexes if re.search(r"\b(?:mlkem|sntrup)", k, re.IGNORECASE)})
-    return {"available": True, "kex_count": len(kexes), "pqc_kex": pqc}
+    pqc = sorted({k for k in kexes if _PQC_SSH_TOKEN_RE.search(k)})
+    return {
+        "available": True,
+        "kex_count": len(kexes),
+        "pqc_kex": pqc,
+        "kex_groups": classify_ssh_kex(pqc),
+    }
 
 
 def parse_ssh_version(text: str) -> str | None:
@@ -2031,6 +2071,91 @@ def openssl_upgrade_path(version_tuple: list[int] | None,
     return None
 
 
+# TLS group classification.
+#
+# Pure PQC groups expose a single PQC KEM with no classical fallback;
+# hybrid groups concatenate a classical group with a PQC KEM (the IETF
+# transitional design — draft-ietf-tls-hybrid-design).  OpenSSL 3.5
+# ships X25519MLKEM768 as the default and clients/servers negotiating
+# PQC today are almost always using a hybrid; the distinction matters
+# for compliance reporting and for transitional-deployment guidance.
+#
+# Anything that matches a recognised classical group name (named EC
+# curves, FFDHE groups, brainpool) is bucketed as "classical".  Names
+# that match no catalog are dropped rather than silently miscategorised.
+_PURE_PQC_TLS_GROUP_RE = re.compile(r"^MLKEM\d+$")
+_HYBRID_TLS_GROUP_RE = re.compile(
+    r"^(?:X(?:25519|448)MLKEM\d+|SecP\d+r1MLKEM\d+)$"
+)
+_CLASSICAL_TLS_GROUP_RE = re.compile(
+    r"^(?:secp\d+[kr]\d+|prime\d+v\d+|x25519|x448|ffdhe\d+|"
+    r"brainpoolP\d+r\d+(?:tls13)?|sect\d+\w+)$",
+    re.IGNORECASE,
+)
+
+
+def parse_openssl_tls_groups(text: str) -> list[str]:
+    """Extract canonical group identifiers from `openssl list -tls-groups`.
+
+    OpenSSL emits this list in two formats depending on flags / version:
+
+      Colon-separated (current `-tls1_3` form, single line):
+          secp256r1:secp384r1:x25519:MLKEM768:X25519MLKEM768
+
+      One-per-line with optional alias info in parens (older form):
+          secp256r1 (P-256, prime256v1)
+          MLKEM768
+          X25519MLKEM768
+
+    We accept both.  Header lines like `TLS 1.3 group support:` end with
+    `:` and contain whitespace — those are dropped before tokenisation.
+    Ordering is preserved so callers can surface OpenSSL's preference
+    order if desired.
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # Header rows: end with `:` AND have inner whitespace (e.g.
+        # "TLS 1.3 group support:").  Group rows in either format do
+        # not match this shape.
+        if s.endswith(":") and " " in s:
+            continue
+        for tok in s.split(":"):
+            tok = tok.strip()
+            if not tok:
+                continue
+            # Alias-form rows include trailing parenthesised info; take
+            # the leading whitespace-delimited token only.
+            head = tok.split()[0]
+            if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]+", head):
+                out.append(head)
+    return out
+
+
+def classify_tls_groups(group_names: list[str]) -> dict[str, list[str]]:
+    """Split a flat list of TLS group names into pure_pqc / hybrid /
+    classical buckets.  Names that match no catalog are dropped (rather
+    than lumped into classical) so the report stays honest about what
+    we don't recognise yet.  Each bucket is returned sorted and deduped."""
+    pure: set[str] = set()
+    hybrid: set[str] = set()
+    classical: set[str] = set()
+    for name in group_names:
+        if _HYBRID_TLS_GROUP_RE.match(name):
+            hybrid.add(name)
+        elif _PURE_PQC_TLS_GROUP_RE.match(name):
+            pure.add(name)
+        elif _CLASSICAL_TLS_GROUP_RE.match(name):
+            classical.add(name)
+    return {
+        "pure_pqc":  sorted(pure),
+        "hybrid":    sorted(hybrid),
+        "classical": sorted(classical),
+    }
+
+
 def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
@@ -2047,7 +2172,13 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     rc, groups = _run(["openssl", "list", "-tls-groups", "-tls1_3"], timeout=5)
     if rc != 0:
         rc, groups = _run(["openssl", "list", "-tls-groups"], timeout=5)
-    out["tls_pqc_groups"] = sorted({g for g in re.findall(r"\b(?:X25519MLKEM\d+|MLKEM\d+|SecP\d+r1MLKEM\d+|X448MLKEM\d+)\b", groups)}) if rc == 0 else []
+    all_group_names = parse_openssl_tls_groups(groups) if rc == 0 else []
+    classified = classify_tls_groups(all_group_names)
+    out["tls_groups"] = classified
+    # Back-compat: tls_pqc_groups was historically the pure-PQC + hybrid
+    # union.  Aggregator/JSON consumers may key off it; new consumers
+    # should prefer the explicit tls_groups split above.
+    out["tls_pqc_groups"] = sorted(set(classified["pure_pqc"]) | set(classified["hybrid"]))
     rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
     out["providers"] = sorted({m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}) if rc == 0 else []
     out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
@@ -2244,6 +2375,7 @@ def per_algo_verdict(
     bench: dict[str, Any],
     cores: int,
     mem_bw_gb_s: float | None = None,
+    tls_hybrid_available: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Score each entry in ALGO_THRESHOLDS against measured rates.
 
@@ -2256,6 +2388,11 @@ def per_algo_verdict(
     bandwidth falls below SLH_DSA_MEM_BANDWIDTH_FLOOR_GB_S.  The
     downgrade is only applied when mem_bw_gb_s is non-None (the probe
     actually ran); a missing measurement does not trigger it.
+
+    When `tls_hybrid_available` is True, ML-KEM verdicts get a
+    transitional-deployment note pointing at the hybrid TLS groups —
+    the IETF-recommended path while pure PQC interop is still
+    stabilising.
     """
     out: dict[str, dict[str, Any]] = {}
     pqc = bench.get("pqc") if bench.get("available") else None
@@ -2263,6 +2400,13 @@ def per_algo_verdict(
         algo = key.split("/", 1)[0]
         bench_algo = (pqc or {}).get(algo)
         notes = list(ALGO_NOTES.get(algo, []))
+        if tls_hybrid_available and algo.startswith("ML-KEM"):
+            notes.append(
+                "Hybrid TLS groups (e.g. X25519MLKEM768, SecP256r1MLKEM768) "
+                "are exposed by OpenSSL — preferred over pure PQC for "
+                "transitional deployments where peer interoperability "
+                "and PQC-stack maturity are still in flux."
+            )
         if not bench_algo or op not in bench_algo:
             out[key] = {
                 "algorithm": algo,
@@ -2479,6 +2623,13 @@ def render_text(r: Report) -> str:
     if r.ssh_pqc.get("available"):
         pqc = r.ssh_pqc.get("pqc_kex") or []
         L.append(f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)" + (f": {', '.join(pqc)}" if pqc else ""))
+        kg = r.ssh_pqc.get("kex_groups") or {}
+        hyb = kg.get("hybrid") or []
+        pure = kg.get("pure_pqc") or []
+        if hyb:
+            L.append(f"     hybrid:    {', '.join(hyb)}")
+        if pure:
+            L.append(f"     pure PQC:  {', '.join(pure)}")
     if r.ipsec_pqc.get("available"):
         L.append(f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}")
     if r.nss.get("available"):
@@ -2493,10 +2644,19 @@ def render_text(r: Report) -> str:
         L.append(f"   PQC native:    {'yes (>=3.5)' if r.openssl.get('pqc_native') else 'no'}")
         kems = r.openssl.get("kem_algorithms") or []
         sigs = r.openssl.get("sig_algorithms") or []
-        groups = r.openssl.get("tls_pqc_groups") or []
         L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
         L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
-        L.append(f"   TLS PQC groups:{(' ' + ', '.join(groups)) if groups else ' not exposed'}")
+        tg = r.openssl.get("tls_groups") or {}
+        hybrid = tg.get("hybrid") or []
+        pure = tg.get("pure_pqc") or []
+        classical = tg.get("classical") or []
+        if not (hybrid or pure):
+            L.append("   TLS PQC groups: not exposed")
+        else:
+            L.append(f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}")
+            L.append(f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}")
+        if classical:
+            L.append(f"   TLS classical groups:    {len(classical)} detected")
     L.append("")
 
     L.append(C.wrap(C.BOLD, "5. NIST PQC parameter sizes (bytes)"))
@@ -2635,7 +2795,11 @@ def render_markdown(r: Report) -> str:
         L.append(f"- Version: `{r.openssl.get('version')}`")
         L.append(f"- KEM algorithms: {', '.join(r.openssl.get('kem_algorithms') or []) or '_none_'}")
         L.append(f"- Signature algorithms: {', '.join(r.openssl.get('sig_algorithms') or []) or '_none_'}")
-        L.append(f"- TLS 1.3 PQC groups: {', '.join(r.openssl.get('tls_pqc_groups') or []) or '_none_'}")
+        tg_md = r.openssl.get("tls_groups") or {}
+        hybrid_md = tg_md.get("hybrid") or []
+        pure_md = tg_md.get("pure_pqc") or []
+        L.append(f"- TLS 1.3 hybrid groups: {', '.join(hybrid_md) or '_none_'}")
+        L.append(f"- TLS 1.3 pure PQC groups: {', '.join(pure_md) or '_none_'}")
         L.append("")
     if r.per_algo:
         L.append("## Per-algorithm verdict")
@@ -2756,7 +2920,13 @@ def main() -> int:
         membw, membw_method = memory_bandwidth_probe()
 
     cores_for_estimate = physical or logical or 1
-    palg = per_algo_verdict(bench, cores_for_estimate, mem_bw_gb_s=membw) if bench else {}
+    tls_hybrid_avail = bool((osinfo.get("tls_groups") or {}).get("hybrid"))
+    palg = per_algo_verdict(
+        bench,
+        cores_for_estimate,
+        mem_bw_gb_s=membw,
+        tls_hybrid_available=tls_hybrid_avail,
+    ) if bench else {}
     pest = production_estimate(palg, total_gb) if palg else {}
     verdict, why, code, caveat = overall_verdict(isa_t, mem_t, dedicated, palg)
     why = f"{why} ISA: {isa_reason}. Memory: {mem_reason}."

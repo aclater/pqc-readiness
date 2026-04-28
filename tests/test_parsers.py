@@ -1094,3 +1094,200 @@ def test_detect_os_unknown_when_nothing_present(tmp_path, monkeypatch) -> None:
     assert out["family"] == "unknown"
     # pretty_name still populated from platform.system() + release().
     assert out["pretty_name"]
+
+
+# ---------------------------------------------------------------------------
+# TLS group classification — hybrid vs pure PQC vs classical
+# ---------------------------------------------------------------------------
+
+# Realistic OpenSSL 3.5 `openssl list -tls-groups -tls1_3` output:
+# classical EC and FFDHE groups, pure-PQC ML-KEM-{512,768,1024}, and the
+# IETF hybrid groups (X25519+ML-KEM-768, P-256+ML-KEM-768, P-384+ML-KEM-
+# 1024).  Includes a couple of trailing alias lines and an unrecognised
+# experimental group to verify the classifier drops unknowns rather
+# than miscategorising them.
+_TLS_GROUPS_OUTPUT = (
+    "  TLS 1.3 group support:\n"
+    "secp256r1 (P-256, prime256v1)\n"
+    "secp384r1\n"
+    "secp521r1\n"
+    "x25519\n"
+    "x448\n"
+    "ffdhe2048\n"
+    "ffdhe3072\n"
+    "brainpoolP256r1tls13\n"
+    "MLKEM512\n"
+    "MLKEM768\n"
+    "MLKEM1024\n"
+    "X25519MLKEM768\n"
+    "SecP256r1MLKEM768\n"
+    "SecP384r1MLKEM1024\n"
+    "X448MLKEM1024\n"
+    "experimental-not-a-real-group\n"
+)
+
+
+def test_parse_openssl_tls_groups_extracts_first_token() -> None:
+    names = pr.parse_openssl_tls_groups(_TLS_GROUPS_OUTPUT)
+    # Header line "TLS 1.3 group support:" should not be a group name.
+    assert "TLS" not in names
+    assert "secp256r1" in names
+    assert "MLKEM768" in names
+    assert "X25519MLKEM768" in names
+
+
+def test_parse_openssl_tls_groups_colon_separated_form() -> None:
+    """OpenSSL 3.5's `list -tls-groups -tls1_3` emits a single colon-
+    separated line.  That's what runs in production today; the parser
+    must accept this form (regression — the first cut only handled the
+    one-per-line alias form)."""
+    text = ("secp256r1:secp384r1:x25519:ffdhe2048:MLKEM512:MLKEM768:"
+            "MLKEM1024:SecP256r1MLKEM768:X25519MLKEM768:SecP384r1MLKEM1024\n")
+    names = pr.parse_openssl_tls_groups(text)
+    assert "secp256r1" in names
+    assert "MLKEM768" in names
+    assert "X25519MLKEM768" in names
+    out = pr.classify_tls_groups(names)
+    assert "X25519MLKEM768" in out["hybrid"]
+    assert "MLKEM768" in out["pure_pqc"]
+    assert "secp256r1" in out["classical"]
+
+
+def test_classify_tls_groups_splits_hybrid_pure_classical() -> None:
+    names = pr.parse_openssl_tls_groups(_TLS_GROUPS_OUTPUT)
+    out = pr.classify_tls_groups(names)
+    assert out["pure_pqc"] == ["MLKEM1024", "MLKEM512", "MLKEM768"]
+    assert out["hybrid"] == [
+        "SecP256r1MLKEM768", "SecP384r1MLKEM1024",
+        "X25519MLKEM768", "X448MLKEM1024",
+    ]
+    # Classical bucket: named EC curves + FFDHE + brainpool.
+    assert "secp256r1" in out["classical"]
+    assert "x25519" in out["classical"]
+    assert "ffdhe2048" in out["classical"]
+    assert "brainpoolP256r1tls13" in out["classical"]
+    # Unrecognised experimental name MUST be dropped, not lumped into
+    # classical — keeps the report honest about what we don't know.
+    flat = out["pure_pqc"] + out["hybrid"] + out["classical"]
+    assert "experimental-not-a-real-group" not in flat
+
+
+def test_classify_tls_groups_pure_mlkem_not_misclassified_as_hybrid() -> None:
+    """Regression: the old single regex matched `MLKEM768` and
+    `X25519MLKEM768` together.  The new classifier must put MLKEM768
+    in pure_pqc only."""
+    out = pr.classify_tls_groups(["MLKEM768", "X25519MLKEM768"])
+    assert out["pure_pqc"] == ["MLKEM768"]
+    assert out["hybrid"] == ["X25519MLKEM768"]
+
+
+def test_classify_tls_groups_empty_input_returns_empty_buckets() -> None:
+    out = pr.classify_tls_groups([])
+    assert out == {"pure_pqc": [], "hybrid": [], "classical": []}
+
+
+# ---------------------------------------------------------------------------
+# SSH KEX classification
+# ---------------------------------------------------------------------------
+
+def test_classify_ssh_kex_marks_mlkem_x25519_as_hybrid() -> None:
+    """OpenSSH 9.x ships mlkem768x25519-sha256 and mlkem768nistp256-
+    sha256 as the PQC kex options; both embed a classical group token
+    and must classify as hybrid, not pure_pqc."""
+    out = pr.classify_ssh_kex([
+        "mlkem768x25519-sha256",
+        "mlkem768nistp256-sha256",
+        "mlkem1024nistp384-sha384",
+        "sntrup761x25519-sha512",
+    ])
+    assert out["hybrid"] == [
+        "mlkem1024nistp384-sha384",
+        "mlkem768nistp256-sha256",
+        "mlkem768x25519-sha256",
+        "sntrup761x25519-sha512",
+    ]
+    assert out["pure_pqc"] == []
+
+
+def test_classify_ssh_kex_recognises_pure_pqc_when_no_classical_token() -> None:
+    """If a future OpenSSH ships a pure-PQC kex (no classical token),
+    it must surface in pure_pqc rather than being silently dropped or
+    miscategorised."""
+    out = pr.classify_ssh_kex(["mlkem768-sha256", "kyber768-sha256"])
+    assert out["pure_pqc"] == ["kyber768-sha256", "mlkem768-sha256"]
+    assert out["hybrid"] == []
+
+
+def test_parse_ssh_kex_emits_kex_groups_and_back_compat_pqc_kex() -> None:
+    """parse_ssh_kex must populate the new `kex_groups` split AND keep
+    the flat `pqc_kex` list so downstream consumers that already key
+    off it don't break."""
+    text = (
+        "curve25519-sha256\n"
+        "ecdh-sha2-nistp256\n"
+        "mlkem768x25519-sha256\n"
+        "sntrup761x25519-sha512\n"
+        "diffie-hellman-group14-sha256\n"
+    )
+    out = pr.parse_ssh_kex(text)
+    assert out["available"] is True
+    assert out["kex_count"] == 5
+    assert out["pqc_kex"] == [
+        "mlkem768x25519-sha256", "sntrup761x25519-sha512",
+    ]
+    assert out["kex_groups"]["hybrid"] == [
+        "mlkem768x25519-sha256", "sntrup761x25519-sha512",
+    ]
+    assert out["kex_groups"]["pure_pqc"] == []
+
+
+# ---------------------------------------------------------------------------
+# per_algo_verdict — hybrid availability surfaces in ML-KEM notes
+# ---------------------------------------------------------------------------
+
+def test_per_algo_verdict_emits_hybrid_note_for_ml_kem_when_available() -> None:
+    """When OpenSSL exposes hybrid TLS groups, the ML-KEM verdict notes
+    must point at hybrid as the preferred transitional path — that's
+    the operational guidance #9 calls out."""
+    bench = {
+        "available": True,
+        "pqc": {"ML-KEM-768": {"decaps/s": 30000.0}},
+    }
+    out = pr.per_algo_verdict(
+        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=True,
+    )
+    notes_joined = " ".join(out["ML-KEM-768"]["notes"])
+    assert "hybrid" in notes_joined.lower()
+    assert "transitional" in notes_joined.lower()
+
+
+def test_per_algo_verdict_no_hybrid_note_when_unavailable() -> None:
+    """A host without hybrid TLS groups must NOT get the hybrid note —
+    surfacing it would imply availability and mislead the operator."""
+    bench = {
+        "available": True,
+        "pqc": {"ML-KEM-768": {"decaps/s": 30000.0}},
+    }
+    out = pr.per_algo_verdict(
+        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=False,
+    )
+    notes_joined = " ".join(out["ML-KEM-768"]["notes"])
+    assert "hybrid" not in notes_joined.lower()
+
+
+def test_per_algo_verdict_hybrid_note_does_not_attach_to_signatures() -> None:
+    """The hybrid note is a TLS KEM concern, not a signature concern.
+    It must not appear on ML-DSA / SLH-DSA verdicts."""
+    bench = {
+        "available": True,
+        "pqc": {
+            "ML-DSA-65": {"sign/s": 1000.0, "verify/s": 5000.0},
+            "SLH-DSA-SHA2-128s": {"sign/s": 3.0},
+        },
+    }
+    out = pr.per_algo_verdict(
+        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=True,
+    )
+    for key in ("ML-DSA-65", "SLH-DSA-SHA2-128s"):
+        notes = " ".join(out[key]["notes"])
+        assert "hybrid" not in notes.lower(), f"hybrid note leaked into {key}"
