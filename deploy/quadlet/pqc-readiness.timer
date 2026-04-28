@@ -1,0 +1,14 @@
+[Unit]
+Description=Run pqc-readiness probe periodically
+Documentation=https://github.com/aclater/pqc-readiness
+
+[Timer]
+# Once a day on a 5-minute random spread to avoid herd effects across
+# fleet hosts that boot together.
+OnCalendar=daily
+RandomizedDelaySec=5m
+Persistent=true
+Unit=pqc-readiness.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,195 @@
+# SPDX-License-Identifier: Apache-2.0
+# OpenShift DaemonSet manifest for pqc-readiness fleet inventory.
+#
+# Strategy: a CronJob would be more natural for a recurring probe than a
+# DaemonSet, but per the v2 spec we ship a DaemonSet so each node has a
+# long-lived inventory pod that re-runs the probe on a schedule via an
+# in-pod sleep loop.  This keeps the SCC + ServiceAccount + RBAC
+# footprint static rather than churning per probe cycle.
+#
+# Apply:
+#   oc apply -f deploy/openshift/serviceaccount.yaml
+#   oc apply -f deploy/openshift/scc.yaml
+#   oc apply -f deploy/openshift/daemonset.yaml
+#
+# The pod runs as a non-root UID with the minimum SCC needed.  It mounts
+# /proc /sys /dev /etc read-only via hostPath; --host-mount /host tells
+# the probe to redirect those reads to the bind-mounted host paths.
+# Output goes to a hostPath volume — operators may swap to a PVC by
+# changing the readiness-output volume.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pqc-readiness
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    app.kubernetes.io/component: probe
+---
+# Custom SCC: based on hostmount-anyuid (which permits hostPath) but
+# narrowed — no privilege escalation, drop ALL capabilities, run as
+# specific non-root UID, no host network.  hostPID is required so the
+# probe sees the real /proc/1/cgroup of the node, not the pod's.
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: pqc-readiness-scc
+  annotations:
+    kubernetes.io/description: >-
+      Read-only host inspection: hostPID + hostPath ro mounts of /proc
+      /sys /dev /etc.  Non-root, no capabilities, no host network.
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: []
+defaultAddCapabilities: []
+requiredDropCapabilities:
+  - ALL
+fsGroup:
+  type: MustRunAs
+  ranges:
+    - min: 0
+      max: 0
+runAsUser:
+  type: MustRunAs
+  uid: 1001
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - hostPath
+  - projected
+  - secret
+users:
+  - system:serviceaccount:pqc-readiness:pqc-readiness
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pqc-readiness
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    app.kubernetes.io/component: probe
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pqc-readiness
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pqc-readiness
+        app.kubernetes.io/component: probe
+    spec:
+      serviceAccountName: pqc-readiness
+      hostPID: true
+      automountServiceAccountToken: false
+      tolerations:
+        # Probe every node, including control plane and tainted workers.
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          image: ghcr.io/aclater/pqc-readiness:v2
+          imagePullPolicy: IfNotPresent
+          # Re-runs the probe every PQC_PROBE_INTERVAL seconds; default
+          # 1 hour.  Each iteration writes a timestamped JSON to the
+          # output volume.  Operators aggregate across the fleet by
+          # collecting these files and feeding them to
+          # `pqc-readiness --aggregate <dir>`.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              interval="${PQC_PROBE_INTERVAL:-3600}"
+              while true; do
+                /usr/local/bin/pqc-readiness \
+                  --host-mount /host \
+                  --bench --seconds 1 \
+                  --save --quiet \
+                  || true
+                sleep "$interval"
+              done
+          env:
+            - name: PQC_PROBE_INTERVAL
+              value: "3600"
+            - name: HOME
+              value: /var/lib/pqc-readiness
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: host-dev
+              mountPath: /host/dev
+              readOnly: true
+            - name: host-etc
+              mountPath: /host/etc
+              readOnly: true
+            - name: readiness-output
+              mountPath: /var/lib/pqc-readiness
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory
+        # Output: hostPath today.  Swap to a PVC bound to RWX storage
+        # (e.g. NFS, CephFS) for centralized aggregation across the
+        # fleet without per-node collection.
+        - name: readiness-output
+          hostPath:
+            path: /var/lib/pqc-readiness
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
