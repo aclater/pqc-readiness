@@ -537,3 +537,192 @@ def test_host_path_prefix_redirects_kernel_namespaces() -> None:
         assert str(pr.host_path("/tmp/foo")) == "/tmp/foo"
     finally:
         pr.HOST_PREFIX = saved
+
+
+# ---------------------------------------------------------------------------
+# parse_proc_crypto_cnsa — symmetric/hash detection for CNSA 2.0
+# ---------------------------------------------------------------------------
+
+# Realistic /proc/crypto fragment: AES-NI cipher with 256-bit max keysize,
+# SHA-384/SHA-512 with hardware-accel drivers (-avx2 / -ssse3), plus a
+# software-only sha256 to confirm the hardware-suffix gate works.
+_PROC_CRYPTO_CNSA_HW = (
+    "name         : aes\n"
+    "driver       : aes-aesni\n"
+    "module       : aesni_intel\n"
+    "priority     : 300\n"
+    "refcnt       : 1\n"
+    "selftest     : passed\n"
+    "internal     : no\n"
+    "type         : cipher\n"
+    "blocksize    : 16\n"
+    "min keysize  : 16\n"
+    "max keysize  : 32\n"
+    "\n"
+    "name         : sha384\n"
+    "driver       : sha384-avx2\n"
+    "module       : sha512_ssse3\n"
+    "priority     : 170\n"
+    "type         : shash\n"
+    "blocksize    : 128\n"
+    "digestsize   : 48\n"
+    "\n"
+    "name         : sha512\n"
+    "driver       : sha512-avx2\n"
+    "module       : sha512_ssse3\n"
+    "priority     : 170\n"
+    "type         : shash\n"
+    "blocksize    : 128\n"
+    "digestsize   : 64\n"
+    "\n"
+    "name         : sha256\n"
+    "driver       : sha256-generic\n"
+    "module       : kernel\n"
+    "priority     : 100\n"
+    "type         : shash\n"
+    "blocksize    : 64\n"
+    "digestsize   : 32\n"
+    "\n"
+)
+
+
+def test_parse_proc_crypto_cnsa_finds_aes_256_and_hw_hashes() -> None:
+    out = pr.parse_proc_crypto_cnsa(_PROC_CRYPTO_CNSA_HW)
+    assert out["aes_256"] is True
+    assert out["sha_384_hw_driver"] == "sha384-avx2"
+    assert out["sha_512_hw_driver"] == "sha512-avx2"
+
+
+def test_parse_proc_crypto_cnsa_rejects_software_only_hashes() -> None:
+    """SHA-384/512 with a generic / software driver must NOT count as
+    hardware-accelerated for CNSA purposes — that's the whole point of
+    the hash check."""
+    text = (
+        "name         : aes\n"
+        "driver       : aes-generic\n"
+        "max keysize  : 32\n"
+        "\n"
+        "name         : sha384\n"
+        "driver       : sha384-generic\n"
+        "\n"
+        "name         : sha512\n"
+        "driver       : sha512-generic\n"
+        "\n"
+    )
+    out = pr.parse_proc_crypto_cnsa(text)
+    assert out["aes_256"] is True
+    assert out["sha_384_hw_driver"] is None
+    assert out["sha_512_hw_driver"] is None
+
+
+def test_parse_proc_crypto_cnsa_aes_below_256_not_compliant() -> None:
+    """A hypothetical AES driver capped at 192-bit keys must not register
+    as AES-256.  Not common in practice, but the parser should not
+    silently round up."""
+    text = (
+        "name         : aes\n"
+        "driver       : aes-weird\n"
+        "min keysize  : 16\n"
+        "max keysize  : 24\n"
+        "\n"
+    )
+    out = pr.parse_proc_crypto_cnsa(text)
+    assert out["aes_256"] is False
+
+
+# ---------------------------------------------------------------------------
+# evaluate_cnsa_2_0 — overall compliance classifier
+# ---------------------------------------------------------------------------
+
+def test_evaluate_cnsa_2_0_fully_compliant() -> None:
+    openssl = {
+        "available": True,
+        "kem_algorithms": ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"],
+        "sig_algorithms": ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"],
+    }
+    out = pr.evaluate_cnsa_2_0(openssl, _PROC_CRYPTO_CNSA_HW)
+    assert out["status"] == "compliant"
+    assert out["kem_compliant"] is True
+    assert out["signature_compliant"] is True
+    assert out["symmetric_compliant"] is True
+    assert out["hash_compliant"] is True
+    # No gap notes when fully compliant.
+    assert out["notes"] == []
+    # Requirements echoed back so consumers can verify the version of
+    # CNSA 2.0 the report was scored against.
+    assert out["requirements"]["kem"] == ["ML-KEM-1024"]
+    assert out["requirements"]["signature"] == ["ML-DSA-87"]
+
+
+def test_evaluate_cnsa_2_0_partial_when_only_ml_kem_768_present() -> None:
+    """A host with ML-KEM-768/ML-DSA-65 (the popular defaults) is
+    explicitly NOT CNSA 2.0 compliant — the suite mandates the larger
+    parameter sets."""
+    openssl = {
+        "available": True,
+        "kem_algorithms": ["ML-KEM-768"],
+        "sig_algorithms": ["ML-DSA-65"],
+    }
+    out = pr.evaluate_cnsa_2_0(openssl, _PROC_CRYPTO_CNSA_HW)
+    assert out["status"] == "partial"
+    assert out["kem_compliant"] is False
+    assert out["signature_compliant"] is False
+    assert out["symmetric_compliant"] is True
+    assert out["hash_compliant"] is True
+    notes_joined = " ".join(out["notes"])
+    assert "ML-KEM-1024" in notes_joined
+    assert "ML-DSA-87" in notes_joined
+
+
+def test_evaluate_cnsa_2_0_non_compliant_when_nothing_present() -> None:
+    """Old OpenSSL with no PQC, kernel without hardware SHA — every
+    field is checked and every field is False → non_compliant."""
+    openssl = {
+        "available": True,
+        "kem_algorithms": [],
+        "sig_algorithms": [],
+    }
+    proc_crypto = (
+        "name         : sha384\n"
+        "driver       : sha384-generic\n"
+        "\n"
+        "name         : sha512\n"
+        "driver       : sha512-generic\n"
+        "\n"
+    )
+    out = pr.evaluate_cnsa_2_0(openssl, proc_crypto)
+    assert out["status"] == "non_compliant"
+    assert out["kem_compliant"] is False
+    assert out["signature_compliant"] is False
+    assert out["symmetric_compliant"] is False
+    assert out["hash_compliant"] is False
+
+
+def test_evaluate_cnsa_2_0_unknown_when_no_detection_inputs() -> None:
+    """openssl absent AND /proc/crypto absent — there is no evidence
+    either way, so the verdict must be 'unknown', NOT 'non_compliant'.
+    A vacuous False on every field is exactly the failure mode the
+    status field must distinguish from a real audit."""
+    out = pr.evaluate_cnsa_2_0({"available": False, "reason": "openssl missing"}, None)
+    assert out["status"] == "unknown"
+    notes_joined = " ".join(out["notes"])
+    assert "OpenSSL not available" in notes_joined
+    assert "/proc/crypto not available" in notes_joined
+
+
+def test_evaluate_cnsa_2_0_partial_when_only_one_input_available() -> None:
+    """openssl says yes to ML-KEM-1024/ML-DSA-87 but /proc/crypto is
+    unavailable.  Status must reflect that some evidence exists — partial,
+    not unknown — and notes must explain why sym/hash read as False."""
+    openssl = {
+        "available": True,
+        "kem_algorithms": ["ML-KEM-1024"],
+        "sig_algorithms": ["ML-DSA-87"],
+    }
+    out = pr.evaluate_cnsa_2_0(openssl, None)
+    assert out["status"] == "partial"
+    assert out["kem_compliant"] is True
+    assert out["signature_compliant"] is True
+    assert out["symmetric_compliant"] is False
+    assert out["hash_compliant"] is False
+    assert any("/proc/crypto not available" in n for n in out["notes"])
