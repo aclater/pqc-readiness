@@ -20,6 +20,7 @@ Usage:
     pqc-readiness --bench                   run PQC + classical microbench
     pqc-readiness --threads N               include N-way scaling test
     pqc-readiness --check TIER              exit nonzero if verdict < TIER
+    pqc-readiness --check cnsa-2.0          exit nonzero if not CNSA 2.0 compliant
     pqc-readiness --save                    write JSON to ~/.cache/pqc-readiness/
     pqc-readiness --quiet                   print only the verdict line
     pqc-readiness --no-color                disable ANSI color
@@ -31,7 +32,7 @@ Exit codes:
     1  Good       - software PQC fast enough for production
     2  Marginal   - works, but plan for an accelerator at scale
     3  Poor       - software-only and too slow for production
-    4  --check TIER threshold not met
+    4  --check threshold not met (TIER below floor, or cnsa-2.0 not compliant)
 """
 from __future__ import annotations
 
@@ -315,6 +316,7 @@ class Report:
     nss: dict[str, Any] = field(default_factory=dict)
     kernel_info: dict[str, Any] = field(default_factory=dict)
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
+    cnsa_2_0: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
     packages: dict[str, Any] = field(default_factory=dict)
@@ -1030,6 +1032,184 @@ def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> di
             "does not include ML-KEM/ML-DSA as of this writing.  Audit provider "
             "configuration before claiming PQC support in a FIPS-mandated environment."
         ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# CNSA 2.0 compliance (NSA Commercial National Security Algorithm Suite 2.0)
+# ---------------------------------------------------------------------------
+# CNSA 2.0 is the NSA's mandatory algorithm suite for U.S. National Security
+# Systems with full deployment required by 2035.  Federal customers (and any
+# defence-supply-chain customer) ask "are we CNSA 2.0 compliant?".  The suite
+# is locked to the highest-security NIST PQC parameter sets (ML-KEM-1024,
+# ML-DSA-87) plus AES-256 and SHA-384/512 — note the 1024 / 87 selections,
+# not the more common ML-KEM-768 / ML-DSA-65 most stacks default to today.
+#
+# Source: NSA CSA "Announcing the Commercial National Security Algorithm
+# Suite 2.0" (Sept 2022) plus the NSA timeline updates published since.
+# https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF
+#
+# Updates as CNSA evolves are a one-line edit in this dict.
+CNSA_2_0_REQUIREMENTS: dict[str, list[str]] = {
+    "kem":       ["ML-KEM-1024"],
+    "signature": ["ML-DSA-87"],
+    "symmetric": ["AES-256"],
+    "hash":      ["SHA-384", "SHA-512"],
+}
+
+# Driver-name suffixes that indicate a hardware-accelerated /proc/crypto
+# entry — matches the same set used by detect_kernel_crypto_hw() so the
+# CNSA hash check stays consistent with the rest of the report.
+_HW_DRIVER_SUFFIXES: tuple[str, ...] = (
+    "-ni", "-ce", "-ssse3", "-avx2", "-avx", "-arm64-ce", "-arm64",
+    "-aesni", "-pclmul", "-sha-ce", "-sha-ni", "_asm", "-paes",
+)
+
+
+def parse_proc_crypto_cnsa(text: str) -> dict[str, Any]:
+    """Inspect /proc/crypto blocks for CNSA 2.0 symmetric and hash inputs.
+
+    Returns:
+        {
+            "aes_256":            bool,        # AES cipher with 256-bit key
+            "sha_384_hw_driver":  str | None,  # name of HW-accel driver
+            "sha_512_hw_driver":  str | None,
+        }
+
+    AES-256 is detected as any /proc/crypto block whose `name` mentions
+    `aes` and whose `max keysize` is >= 32 (256 bits).  SHA-384/SHA-512
+    are reported only when the matching block's `driver` ends in a known
+    hardware-accel suffix — software-only fallbacks do not satisfy CNSA.
+    """
+    blocks: list[dict[str, str]] = []
+    cur: dict[str, str] = {}
+    # Trailing empty entry forces flush of the final block.
+    for line in text.splitlines() + [""]:
+        if not line.strip():
+            if cur:
+                blocks.append(cur)
+                cur = {}
+            continue
+        m = re.match(r"^\s*([^:]+?)\s*:\s*(.*)$", line)
+        if m:
+            cur[m.group(1).strip().lower()] = m.group(2).strip()
+    aes_256 = False
+    sha_384_hw: str | None = None
+    sha_512_hw: str | None = None
+    for b in blocks:
+        name = b.get("name", "").lower()
+        driver = b.get("driver", "")
+        if "aes" in name:
+            try:
+                if int(b.get("max keysize", "0")) >= 32:
+                    aes_256 = True
+            except ValueError:
+                pass
+        if name == "sha384" and sha_384_hw is None:
+            if any(s in driver for s in _HW_DRIVER_SUFFIXES):
+                sha_384_hw = driver
+        if name == "sha512" and sha_512_hw is None:
+            if any(s in driver for s in _HW_DRIVER_SUFFIXES):
+                sha_512_hw = driver
+    return {
+        "aes_256": aes_256,
+        "sha_384_hw_driver": sha_384_hw,
+        "sha_512_hw_driver": sha_512_hw,
+    }
+
+
+def evaluate_cnsa_2_0(
+    openssl: dict[str, Any],
+    proc_crypto_text: str | None,
+) -> dict[str, Any]:
+    """Classify the host against CNSA 2.0.
+
+    Returns a dict matching the cnsa_2_0 report schema:
+        status:               "compliant" | "partial" | "non_compliant" | "unknown"
+        kem_compliant:        bool   # ML-KEM-1024 detected and usable
+        signature_compliant:  bool   # ML-DSA-87 detected and usable
+        symmetric_compliant:  bool   # AES-256 in /proc/crypto
+        hash_compliant:       bool   # SHA-384 AND SHA-512 hardware-accelerated
+        notes:                list[str]   # human-readable gap explanations
+        requirements:         dict        # declarative copy of CNSA_2_0_REQUIREMENTS
+
+    Each compliance bool is True only when affirmative evidence was found.
+    A False reading covers both "checked and missing" and "could not check"
+    — the reason is captured in `notes` so a human reading the report can
+    distinguish a genuinely non-compliant host from one we lack the
+    detection inputs for.  When NO underlying detection produced evidence
+    (openssl absent AND /proc/crypto absent), status is "unknown" rather
+    than "non_compliant" so callers do not act on a vacuously-False reading.
+    """
+    notes: list[str] = []
+    openssl_known = bool(openssl.get("available"))
+    proc_known = proc_crypto_text is not None
+
+    kem = openssl_known and "ML-KEM-1024" in (openssl.get("kem_algorithms") or [])
+    sig = openssl_known and "ML-DSA-87" in (openssl.get("sig_algorithms") or [])
+    if not openssl_known:
+        notes.append(
+            "OpenSSL not available; cannot verify ML-KEM-1024 (KEM) or "
+            "ML-DSA-87 (signature) availability."
+        )
+    else:
+        if not kem:
+            notes.append(
+                "ML-KEM-1024 is not exposed by OpenSSL.  CNSA 2.0 mandates "
+                "ML-KEM-1024 (not ML-KEM-768) for asymmetric key establishment."
+            )
+        if not sig:
+            notes.append(
+                "ML-DSA-87 is not exposed by OpenSSL.  CNSA 2.0 mandates "
+                "ML-DSA-87 (not ML-DSA-65) for asymmetric signatures."
+            )
+
+    if proc_known:
+        pc = parse_proc_crypto_cnsa(proc_crypto_text or "")
+        sym = bool(pc["aes_256"])
+        hash_ok = bool(pc["sha_384_hw_driver"]) and bool(pc["sha_512_hw_driver"])
+        if not sym:
+            notes.append(
+                "AES-256 not found in /proc/crypto (no AES driver block "
+                "with max keysize >= 32 bytes)."
+            )
+        if not hash_ok:
+            missing: list[str] = []
+            if not pc["sha_384_hw_driver"]:
+                missing.append("SHA-384")
+            if not pc["sha_512_hw_driver"]:
+                missing.append("SHA-512")
+            notes.append(
+                f"{' and '.join(missing)} not hardware-accelerated in "
+                "/proc/crypto.  CNSA 2.0 mandates SHA-384 and SHA-512; "
+                "software-only kernel fallbacks do not satisfy the suite."
+            )
+    else:
+        sym = False
+        hash_ok = False
+        notes.append(
+            "/proc/crypto not available; cannot verify AES-256 (symmetric) "
+            "or hardware-accelerated SHA-384/SHA-512 (hash)."
+        )
+
+    fields = (kem, sig, sym, hash_ok)
+    if not openssl_known and not proc_known:
+        status = "unknown"
+    elif all(fields):
+        status = "compliant"
+    elif not any(fields):
+        status = "non_compliant"
+    else:
+        status = "partial"
+
+    return {
+        "status": status,
+        "kem_compliant": kem,
+        "signature_compliant": sig,
+        "symmetric_compliant": sym,
+        "hash_compliant": hash_ok,
+        "notes": notes,
+        "requirements": {k: list(v) for k, v in CNSA_2_0_REQUIREMENTS.items()},
     }
 
 
@@ -1843,6 +2023,24 @@ def render_text(r: Report) -> str:
         L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
         L.append("")
 
+    if r.cnsa_2_0:
+        L.append(C.wrap(C.BOLD, "10. CNSA 2.0 compliance (NSA national security suite)"))
+        status = r.cnsa_2_0.get("status", "unknown")
+        status_color = {
+            "compliant":     C.GREEN,
+            "partial":       C.YELLOW,
+            "non_compliant": C.RED,
+            "unknown":       C.DIM,
+        }.get(status, C.DIM)
+        L.append(f"   Status:                 {C.wrap(status_color, status.upper())}")
+        L.append(f"   ML-KEM-1024 (KEM):      {'yes' if r.cnsa_2_0.get('kem_compliant') else 'no'}")
+        L.append(f"   ML-DSA-87  (signature): {'yes' if r.cnsa_2_0.get('signature_compliant') else 'no'}")
+        L.append(f"   AES-256    (symmetric): {'yes' if r.cnsa_2_0.get('symmetric_compliant') else 'no'}")
+        L.append(f"   SHA-384/512 (hash, hw): {'yes' if r.cnsa_2_0.get('hash_compliant') else 'no'}")
+        for note in r.cnsa_2_0.get("notes") or []:
+            L.append(C.wrap(C.YELLOW, f"   note: {note}"))
+        L.append("")
+
     L.append(sub)
     L.append(f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}")
     L.append(f"           {r.verdict_reason}")
@@ -1924,8 +2122,9 @@ def main() -> int:
     ap.add_argument("--bench", action="store_true", help="run PQC + classical microbench")
     ap.add_argument("--threads", type=int, default=1, help="add an N-way scaling test")
     ap.add_argument("--seconds", type=int, default=1, help="seconds per benchmark op")
-    ap.add_argument("--check", choices=["excellent", "good", "marginal", "poor"],
-                    help="exit nonzero if verdict is below TIER")
+    ap.add_argument("--check",
+                    choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
+                    help="exit 4 if verdict is below TIER, or if cnsa-2.0 status != compliant")
     ap.add_argument("--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/")
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
@@ -1982,6 +2181,13 @@ def main() -> int:
     nss_info = detect_nss()
     kernel_info = detect_kernel_info()
     fips_conflict = fips_pqc_conflict_check(fips, osinfo)
+    proc_crypto_text: str | None = None
+    if is_linux():
+        try:
+            proc_crypto_text = host_path("/proc/crypto").read_text()
+        except OSError:
+            proc_crypto_text = None
+    cnsa_2_0 = evaluate_cnsa_2_0(osinfo, proc_crypto_text)
     trust_store_info: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
         trust_store_info = scan_trust_store()
@@ -2042,6 +2248,7 @@ def main() -> int:
         nss=nss_info,
         kernel_info=kernel_info,
         fips_pqc_conflict=fips_conflict,
+        cnsa_2_0=cnsa_2_0,
         trust_store=trust_store_info,
         runtime_environment=runtime_env,
         packages=packages_info,
@@ -2077,7 +2284,10 @@ def main() -> int:
     else:
         print(render_text(r))
 
-    if args.check:
+    if args.check == "cnsa-2.0":
+        if r.cnsa_2_0.get("status") != "compliant":
+            return 4
+    elif args.check:
         rank = {"poor": 0, "marginal": 1, "good": 2, "excellent": 3}
         cur = "excellent" if r.exit_code == 0 else "good" if r.exit_code == 1 else "marginal" if r.exit_code == 2 else "poor"
         if rank[cur] < rank[args.check]:
