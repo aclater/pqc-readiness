@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Reject third-party product references on PRs.  See CONTRIBUTING.md
+# "Third-party product references" for the underlying policy.
+
+name: no-third-party-refs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: scan working tree for third-party product references
+        run: bash scripts/check-no-third-party-refs.sh
