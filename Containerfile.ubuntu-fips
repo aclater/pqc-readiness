@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Containerfile.ubuntu-fips — STUB.
+#
+# Intentionally empty pending a customer ask for Ubuntu Pro FIPS
+# coverage.  Once we have:
+#   - A confirmed Ubuntu Pro entitlement on the build host (or a CI
+#     runner that can attach one),
+#   - The exact FIPS-validated OpenSSL package set Canonical ships
+#     under Ubuntu Pro FIPS for 24.04 LTS, and
+#   - A clear customer requirement that the probe must run inside an
+#     Ubuntu Pro FIPS environment rather than just be aware of one,
+#
+# this file should be filled in with a build that:
+#   1. FROM ubuntu:24.04 (or pro:24.04 if/when published)
+#   2. Attaches Ubuntu Pro FIPS via `pro attach <token>` and enables
+#      the fips-updates service
+#   3. Installs python3 + python3-numpy + openssl from the FIPS channel
+#   4. Same non-root UID 1001 + Python healthcheck pattern as the
+#      other two Containerfiles
+#
+# Until then, customers needing FIPS posture should use either:
+#   - Containerfile.ubi10 (Red Hat-validated FIPS provider, ML-KEM/
+#     ML-DSA not yet in the validated set as of RHEL 10.0), or
+#   - A bare-metal Ubuntu Pro FIPS host running pqc-readiness directly
+#     (the script reports fips.distribution_certified=True with the
+#     Ubuntu Pro source attribution when an active provider is
+#     detected on Ubuntu).
+#
+# Tracking: open a GitHub issue with the customer's specific FIPS
+# requirements before implementing.

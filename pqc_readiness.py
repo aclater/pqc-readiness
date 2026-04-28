@@ -49,7 +49,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCRIPT_VERSION = "2.0.0"
 SCHEMA_VERSION = "1.0"
@@ -64,7 +64,13 @@ HOST_PREFIX: str = ""
 # Path namespaces that should be redirected through HOST_PREFIX when set.
 # Paths outside these namespaces (binary lookups, /opt/..., /tmp/...) are
 # left alone — they belong to the running container, not the host kernel.
-_HOST_NAMESPACES = ("/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share")
+# /usr/lib/os-release is enumerated explicitly because /etc/os-release is
+# a symlink to it on most modern distros (Fedora, Debian, Ubuntu, Arch);
+# bind-mounting only /etc would dangle the symlink in the container.
+_HOST_NAMESPACES = (
+    "/proc", "/sys", "/dev", "/etc", "/var/lib/dpkg", "/usr/share",
+    "/usr/lib/os-release",
+)
 
 
 def host_path(p: str) -> Path:
@@ -189,12 +195,39 @@ DEVICE_HINTS: list[tuple[str, str, str]] = [
     ("/dev/nvidia0",        "NVIDIA GPU (general-purpose)",       "gpu"),
 ]
 
-PKCS11_SEARCH: list[str] = [
-    "/usr/lib64/pkcs11", "/usr/lib/pkcs11",
-    "/usr/lib/x86_64-linux-gnu/pkcs11", "/usr/lib/aarch64-linux-gnu/pkcs11",
-    "/usr/local/lib/pkcs11", "/opt/cloudhsm/lib", "/opt/Thales/PKCS11",
-    "/opt/utimaco/Software/PKCS11",
+# PKCS#11 module search paths per distro family.  Vendor paths
+# (/opt/cloudhsm/lib, /opt/Thales/..., /opt/utimaco/...) are always
+# searched because they're not OS-distribution conventions — they ship
+# with HSM client packages installed by the operator.  Architecture-
+# specific paths (x86_64-linux-gnu, aarch64-linux-gnu) are Debian
+# multiarch and only exist there.
+_PKCS11_PATHS_BY_FAMILY: dict[str, list[str]] = {
+    "rhel": [
+        "/usr/lib64/pkcs11", "/usr/lib/pkcs11",
+        "/usr/local/lib/pkcs11",
+    ],
+    "debian": [
+        "/usr/lib/x86_64-linux-gnu/pkcs11", "/usr/lib/aarch64-linux-gnu/pkcs11",
+        "/usr/lib/pkcs11", "/usr/lib/softhsm",
+        "/var/lib/softhsm/tokens",
+        "/usr/local/lib/pkcs11",
+    ],
+    "suse":   ["/usr/lib64/pkcs11", "/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "arch":   ["/usr/lib/pkcs11", "/usr/local/lib/pkcs11"],
+    "alpine": ["/usr/lib/pkcs11"],
+    "macos":  ["/opt/homebrew/lib/pkcs11", "/usr/local/lib/pkcs11"],
+}
+_VENDOR_PKCS11_PATHS: list[str] = [
+    "/opt/cloudhsm/lib", "/opt/Thales/PKCS11", "/opt/utimaco/Software/PKCS11",
 ]
+
+
+def _pkcs11_search_paths(family: str) -> list[str]:
+    """Compose the PKCS#11 search list dynamically per family.  Distro
+    paths first, then vendor-installed HSM client paths.  Saves time
+    on hosts where Debian-multiarch paths don't exist (RHEL) and vice
+    versa, and produces tighter output."""
+    return _PKCS11_PATHS_BY_FAMILY.get(family, []) + _VENDOR_PKCS11_PATHS
 
 # ---------------------------------------------------------------------------
 # NIST PQC parameter sizes (bytes) and per-algorithm production thresholds
@@ -321,6 +354,7 @@ class Report:
     runtime_environment: dict[str, Any] = field(default_factory=dict)
     packages: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
+    os_release: dict[str, Any] = field(default_factory=dict)
     benchmark: dict[str, Any] = field(default_factory=dict)
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -595,10 +629,13 @@ def detect_accelerators() -> list[dict[str, Any]]:
     return out
 
 
-def detect_pkcs11_modules() -> list[str]:
+def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
+    """Walk the family-appropriate PKCS#11 directories plus the always-
+    on vendor paths.  Returns a sorted, de-duplicated list of *.so and
+    *.dylib module file paths."""
     found: set[str] = set()
-    for d in PKCS11_SEARCH:
-        p = Path(d)
+    for d in _pkcs11_search_paths(family):
+        p = host_path(d)
         if not p.is_dir():
             continue
         for sub in p.rglob("*.so"):
@@ -856,28 +893,74 @@ def parse_ssh_kex(text: str) -> dict[str, Any]:
     return {"available": True, "kex_count": len(kexes), "pqc_kex": pqc}
 
 
-def detect_ssh_pqc() -> dict[str, Any]:
+def parse_ssh_version(text: str) -> str | None:
+    """Parse `ssh -V` (printed to stderr).  Format:
+        OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026"""
+    m = re.search(r"OpenSSH_([^\s,]+)", text)
+    return m.group(1) if m else None
+
+
+def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
     if not shutil.which("ssh"):
-        return {"available": False, "reason": "ssh not on PATH"}
+        return {"available": False,
+                "reason": f"ssh not on PATH ({_install_hint('ssh', family)})"}
+    # ssh -V writes to stderr, captured via _run's stderr merge.
+    _, ver_out = _run(["ssh", "-V"], timeout=3)
+    version = parse_ssh_version(ver_out)
     rc, out = _run(["ssh", "-Q", "kex"], timeout=5)
     if rc != 0:
-        return {"available": False, "reason": f"ssh -Q kex failed (rc={rc})"}
-    return parse_ssh_kex(out)
+        return {"available": False, "version": version,
+                "reason": f"ssh -Q kex failed (rc={rc})"}
+    parsed = parse_ssh_kex(out)
+    parsed["version"] = version
+    return parsed
 
 
-def detect_ipsec_pqc() -> dict[str, Any]:
-    """Look for ML-KEM / Kyber tokens in `swanctl --list-algs`."""
-    if not shutil.which("swanctl"):
-        return {"available": False, "reason": "swanctl not on PATH"}
-    rc, out = _run(["swanctl", "--list-algs"], timeout=10)
-    if rc != 0:
-        return {"available": False, "reason": f"swanctl --list-algs failed (rc={rc})"}
-    pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", out, re.IGNORECASE)
-    return {
-        "available": True,
-        "pqc": bool(pqc_match),
-        "evidence": pqc_match.group(0) if pqc_match else None,
-    }
+def parse_libreswan_version(text: str) -> str | None:
+    """Parse `ipsec --version` for the Libreswan release string.  Format:
+        Linux Libreswan 4.15 (netkey) on 5.14.0-..."""
+    m = re.search(r"Libreswan\s+(\S+)", text)
+    return m.group(1) if m else None
+
+
+def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
+    """Detect IPsec PQC support across the two major implementations.
+
+    strongSwan exposes algorithms via `swanctl --list-algs`; Libreswan
+    (more common on RHEL) does not have a single equivalent — it
+    advertises supported KE methods through the `ipsec` command's
+    config-validation output, but PQC support there is still
+    pre-release as of early 2026.  We report both implementations
+    when present so customers know which stack the host runs."""
+    out: dict[str, Any] = {"available": False}
+    if shutil.which("swanctl"):
+        rc, sw_out = _run(["swanctl", "--list-algs"], timeout=10)
+        if rc == 0:
+            pqc_match = re.search(r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", sw_out, re.IGNORECASE)
+            out.update({
+                "available": True,
+                "implementation": "strongswan",
+                "pqc": bool(pqc_match),
+                "evidence": pqc_match.group(0) if pqc_match else None,
+            })
+            return out
+        out["reason"] = f"swanctl --list-algs failed (rc={rc})"
+    if shutil.which("ipsec"):
+        rc, ip_out = _run(["ipsec", "--version"], timeout=5)
+        if rc == 0 and "Libreswan" in ip_out:
+            out.update({
+                "available": True,
+                "implementation": "libreswan",
+                "version": parse_libreswan_version(ip_out),
+                "pqc": False,
+                "note": "Libreswan PQC support is pre-release as of 2026; "
+                        "verify against upstream release notes.",
+            })
+            return out
+    if not out.get("reason"):
+        out["reason"] = (f"neither swanctl nor ipsec on PATH "
+                         f"({_install_hint('swanctl', family)})")
+    return out
 
 
 # Mozilla NSS 3.108 (Aug 2025) added hybrid PQC TLS support; earlier
@@ -920,7 +1003,226 @@ def detect_nss() -> dict[str, Any]:
                 "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
                 "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
             }
-    return {"available": False, "reason": "neither certutil nor rpm available"}
+    return {"available": False,
+            "reason": "neither certutil nor a package manager that can query nss is on PATH"}
+
+
+# ---------------------------------------------------------------------------
+# OS identity (single source of truth for distro family / package manager)
+# ---------------------------------------------------------------------------
+#
+# Linux distros vary in tool names, package layout, and FIPS posture.  Rather
+# than peppering checks throughout the codebase (`if "rhel" in ... else if
+# "ubuntu" in ...`), every distro-conditional path resolves through the dict
+# returned by detect_os().  /etc/os-release is the freedesktop standard and
+# is present on every modern Linux distro; we fall back to legacy distro
+# files only when it's missing.
+
+OS_FAMILY_BY_ID: dict[str, str] = {
+    # rhel family
+    "rhel": "rhel", "fedora": "rhel", "centos": "rhel", "rocky": "rhel",
+    "almalinux": "rhel", "ol": "rhel", "amzn": "rhel",
+    # debian family
+    "debian": "debian", "ubuntu": "debian", "linuxmint": "debian",
+    "pop": "debian", "kali": "debian", "raspbian": "debian",
+    "neon": "debian", "elementary": "debian",
+    # suse family
+    "sles": "suse", "opensuse-leap": "suse", "opensuse-tumbleweed": "suse",
+    "sled": "suse",
+    # arch family
+    "arch": "arch", "manjaro": "arch", "endeavouros": "arch", "garuda": "arch",
+    # alpine
+    "alpine": "alpine",
+}
+
+# When `ID` is not in the table above, fall back to checking each token in
+# `ID_LIKE` against the same map.  Ubuntu derivatives, for instance, may
+# self-identify as `ID=foo ID_LIKE="ubuntu debian"` — we resolve to debian.
+
+PKG_MANAGER_ORDER: dict[str, list[str]] = {
+    # First entry that is on PATH wins.  apt-get is preferred over apt for
+    # scripting (apt's CLI is explicitly not stable for scripts per the
+    # apt(8) manpage).  microdnf only when dnf is absent (UBI minimal).
+    "rhel":   ["dnf", "microdnf", "yum"],
+    "debian": ["apt-get", "apt"],
+    "suse":   ["zypper"],
+    "arch":   ["pacman"],
+    "alpine": ["apk"],
+}
+
+
+def parse_os_release(text: str) -> dict[str, Any]:
+    """Parse /etc/os-release content into the canonical os_release dict.
+
+    /etc/os-release is `KEY=value` per line, values optionally wrapped in
+    single or double quotes.  We extract ID, ID_LIKE, VERSION_ID,
+    VERSION_CODENAME, PRETTY_NAME, then resolve family from ID first and
+    fall back to ID_LIKE tokens.  Returns a dict with package_manager=None
+    — the caller (`detect_os`) fills that in by probing PATH because we
+    cannot do I/O from a pure parser used in unit tests.
+    """
+    raw: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        v = v.strip()
+        if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+            v = v[1:-1]
+        raw[k.strip()] = v
+    id_ = raw.get("ID", "").lower().strip()
+    id_like = [t.lower() for t in raw.get("ID_LIKE", "").split() if t]
+    family = OS_FAMILY_BY_ID.get(id_, "")
+    if not family:
+        for tok in id_like:
+            if tok in OS_FAMILY_BY_ID:
+                family = OS_FAMILY_BY_ID[tok]
+                break
+    return {
+        "family": family or "unknown",
+        "id": id_ or "unknown",
+        "version_id": raw.get("VERSION_ID") or None,
+        "version_codename": raw.get("VERSION_CODENAME") or None,
+        "pretty_name": raw.get("PRETTY_NAME") or None,
+        "package_manager": None,
+    }
+
+
+def _resolve_package_manager(family: str) -> str | None:
+    for tool in PKG_MANAGER_ORDER.get(family, []):
+        if shutil.which(tool):
+            return tool
+    return None
+
+
+def detect_os() -> dict[str, Any]:
+    """Single source of truth for distro identity.  Returns:
+
+        family            rhel / debian / suse / arch / alpine / macos / unknown
+        id                rhel / fedora / ubuntu / debian / sles / ... / macos
+        version_id        e.g. "9.6", "24.04", "44"
+        version_codename  e.g. "jammy", "bookworm", or None
+        pretty_name       full string from os-release / sysctl
+        package_manager   first tool on PATH for this family, or None
+    """
+    if is_macos():
+        ver = _sysctl("kern.osproductversion") or platform.mac_ver()[0]
+        return {
+            "family": "macos",
+            "id": "macos",
+            "version_id": ver or None,
+            "version_codename": None,
+            "pretty_name": f"macOS {ver}".rstrip() if ver else "macOS",
+            "package_manager": "brew" if shutil.which("brew") else None,
+        }
+    # /etc/os-release is the freedesktop standard.  On most modern
+    # distros it's a symlink to /usr/lib/os-release; in containerised
+    # invocations the symlink can dangle when /usr/lib is not host-
+    # mounted, so we try both paths explicitly.
+    for candidate in ("/etc/os-release", "/usr/lib/os-release"):
+        p = host_path(candidate)
+        try:
+            text = p.read_text()
+        except OSError:
+            continue
+        out = parse_os_release(text)
+        out["package_manager"] = _resolve_package_manager(out["family"])
+        return out
+    # Legacy fallbacks — only triggered when /etc/os-release is missing.
+    if host_path("/etc/redhat-release").exists():
+        rh = parse_redhat_release(host_path("/etc/redhat-release").read_text())
+        return {
+            "family": "rhel",
+            "id": rh.get("distro", "").lower().split()[0] or "rhel",
+            "version_id": rh.get("version"),
+            "version_codename": None,
+            "pretty_name": rh.get("raw"),
+            "package_manager": _resolve_package_manager("rhel"),
+        }
+    if host_path("/etc/debian_version").exists():
+        try:
+            deb_ver: str | None = host_path("/etc/debian_version").read_text().strip()
+        except OSError:
+            deb_ver = None
+        return {
+            "family": "debian", "id": "debian",
+            "version_id": deb_ver, "version_codename": None,
+            "pretty_name": f"Debian {deb_ver}" if deb_ver else "Debian",
+            "package_manager": _resolve_package_manager("debian"),
+        }
+    if host_path("/etc/SuSE-release").exists():
+        return {
+            "family": "suse", "id": "suse",
+            "version_id": None, "version_codename": None,
+            "pretty_name": "SUSE Linux (legacy /etc/SuSE-release)",
+            "package_manager": _resolve_package_manager("suse"),
+        }
+    return {
+        "family": "unknown", "id": "unknown",
+        "version_id": None, "version_codename": None,
+        "pretty_name": f"{platform.system()} {platform.release()}".strip(),
+        "package_manager": None,
+    }
+
+
+# Per-family install-hint table for missing tools.  Used in error
+# messages so a Debian customer doesn't see `dnf install pciutils` and a
+# RHEL customer doesn't see `apt-get install pciutils`.  Keys are the
+# *binary* name, not the package name — the packages all happen to
+# match the binary on these distros.
+_INSTALL_HINT_BY_FAMILY: dict[str, dict[str, str]] = {
+    "rhel":   {
+        "lspci":      "dnf install pciutils",
+        "tpm2_getcap": "dnf install tpm2-tools",
+        "swanctl":    "dnf install strongswan",
+        "ssh":        "dnf install openssh-clients",
+        "certutil":   "dnf install nss-tools",
+        "rpm":        "(should already be present on RHEL/Fedora)",
+        "dpkg-query": "n/a — RHEL uses rpm",
+    },
+    "debian": {
+        "lspci":      "apt-get install pciutils",
+        "tpm2_getcap": "apt-get install tpm2-tools",
+        "swanctl":    "apt-get install strongswan-swanctl",
+        "ssh":        "apt-get install openssh-client",
+        "certutil":   "apt-get install libnss3-tools",
+        "dpkg-query": "(should already be present on Debian/Ubuntu)",
+        "rpm":        "n/a — Debian uses dpkg",
+    },
+    "suse":   {
+        "lspci":      "zypper install pciutils",
+        "tpm2_getcap": "zypper install tpm2.0-tools",
+        "swanctl":    "zypper install strongswan",
+        "ssh":        "zypper install openssh-clients",
+        "certutil":   "zypper install mozilla-nss-tools",
+        "rpm":        "(should already be present on SLES/openSUSE)",
+    },
+    "arch":   {
+        "lspci":      "pacman -S pciutils",
+        "tpm2_getcap": "pacman -S tpm2-tools",
+        "swanctl":    "pacman -S strongswan",
+        "ssh":        "pacman -S openssh",
+        "certutil":   "pacman -S nss",
+        "pacman":     "(should already be present on Arch)",
+    },
+    "alpine": {
+        "lspci":      "apk add pciutils",
+        "tpm2_getcap": "apk add tpm2-tools",
+        "swanctl":    "apk add strongswan",
+        "ssh":        "apk add openssh-client",
+        "certutil":   "apk add nss-tools",
+        "apk":        "(should already be present on Alpine)",
+    },
+}
+
+
+def _install_hint(binary: str, family: str) -> str:
+    """Return a family-correct 'how to install <binary>' fragment for
+    inclusion in error messages.  Falls back to a generic instruction
+    when the family or binary is not in the table."""
+    table = _INSTALL_HINT_BY_FAMILY.get(family, {})
+    return table.get(binary, f"install the package providing {binary}")
 
 
 # ---------------------------------------------------------------------------
@@ -970,28 +1272,30 @@ def parse_proc_crypto_pqc(text: str) -> list[str]:
     return out
 
 
-def detect_kernel_info() -> dict[str, Any]:
+def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Kernel-specific facts.  Distro identity (ID, VERSION_ID, pretty
+    name) lives in detect_os() / Report.os_release; this function used to
+    duplicate that and now consumes the precomputed dict for backward
+    compatibility — `os_release_id` and `os_release_version_id` are kept
+    on the kernel_info dict so existing aggregator/CSV consumers don't
+    break when they read either location."""
     info: dict[str, Any] = {
         "release": platform.release(),
         "system": platform.system(),
     }
     if not is_linux():
         return info
+    if os_release:
+        if os_release.get("id") and os_release["id"] != "unknown":
+            info["os_release_id"] = os_release["id"]
+        if os_release.get("version_id"):
+            info["os_release_version_id"] = os_release["version_id"]
+    # /etc/redhat-release is retained as a legacy hint — modern distros
+    # are sourced via os_release above.
     rh = host_path("/etc/redhat-release")
     if rh.exists():
         try:
             info["redhat_release"] = parse_redhat_release(rh.read_text())
-        except OSError:
-            pass
-    osr = host_path("/etc/os-release")
-    if osr.exists():
-        try:
-            text = osr.read_text()
-            for line in text.splitlines():
-                if line.startswith("ID="):
-                    info["os_release_id"] = line.split("=", 1)[1].strip().strip('"')
-                elif line.startswith("VERSION_ID="):
-                    info["os_release_version_id"] = line.split("=", 1)[1].strip().strip('"')
         except OSError:
             pass
     try:
@@ -1004,6 +1308,79 @@ def detect_kernel_info() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # FIPS / PQC interaction warning
 # ---------------------------------------------------------------------------
+
+# Family-specific notes appended to fips dict by interpret_fips().  The
+# strings deliberately stop short of declaring the host FIPS-compliant —
+# the script can detect what is enabled, but only the customer's
+# compliance team can declare the certification valid for their use.
+_FIPS_NOTES_BY_FAMILY: dict[str, str] = {
+    "rhel": (
+        "RHEL ships a Red Hat-validated FIPS provider.  ML-KEM/ML-DSA "
+        "are not yet in the FIPS-validated set as of RHEL 10.0 — verify "
+        "against the latest Red Hat FIPS bulletin before relying on PQC "
+        "in FIPS-mandated workflows."
+    ),
+    "debian": (
+        "Debian main does not ship a FIPS-certified OpenSSL provider.  "
+        "If fips_enabled=1 here, a third-party module is in use — verify "
+        "its certification status independently."
+    ),
+    "suse": (
+        "SUSE ships a separately-validated FIPS module via SUSE Linux "
+        "Enterprise.  ML-KEM/ML-DSA are not yet covered as of SLES 15 "
+        "SP6; verify against the latest SUSE FIPS bulletin."
+    ),
+    "arch":   "Arch does not provide a FIPS-validated OpenSSL build.",
+    "alpine": "Alpine does not provide a FIPS-validated OpenSSL build.",
+    "macos":  "macOS does not expose Linux-style FIPS mode; this field reflects OpenSSL provider state only.",
+    "unknown": "Cannot determine distribution-specific FIPS posture.",
+}
+
+# Distribution-vendor-certified FIPS provider sources, keyed by os_release.
+# When the kernel reports fips_enabled=1 AND OpenSSL has an active fips
+# provider AND the os_release matches one of these signatures, we set
+# fips.distribution_certified=True with the vendor source attribution.
+_DISTRO_CERTIFIED_FIPS: list[tuple[str, str | None, str]] = [
+    # (family, id_match_or_None, vendor_source_label)
+    ("rhel",   None,    "Red Hat-validated FIPS provider"),
+    ("suse",   None,    "SUSE Linux Enterprise FIPS module"),
+    # Ubuntu Pro ships a Canonical-built FIPS provider.  We can't
+    # distinguish Ubuntu Pro from regular Ubuntu purely from os_release,
+    # but the presence of an active FIPS provider on Ubuntu strongly
+    # implies Pro (Universe/Main do not ship one).
+    ("debian", "ubuntu", "Ubuntu Pro FIPS (Canonical) — assumed from active provider"),
+]
+
+
+def interpret_fips(fips: dict[str, Any], openssl: dict[str, Any],
+                   os_release: dict[str, Any]) -> dict[str, Any]:
+    """Augment the fips dict with family-aware certification context.
+
+    distribution_certified is True only when the script has affirmative
+    evidence of a vendor-certified FIPS provider being active: kernel
+    fips_enabled=1 AND an active OpenSSL FIPS provider AND the
+    os_release matches a known certified family.  Unknown / Debian /
+    Arch / Alpine never claim certification — the script cannot verify
+    a third-party FIPS module.
+    """
+    out = dict(fips)
+    family = os_release.get("family", "unknown")
+    id_ = os_release.get("id", "unknown")
+    has_provider = bool(fips.get("openssl_provider"))
+    kernel_on = bool(fips.get("kernel"))
+
+    out["distribution_certified"] = False
+    out["distribution_certified_source"] = None
+    if has_provider and kernel_on:
+        for fam, id_match, source in _DISTRO_CERTIFIED_FIPS:
+            if family == fam and (id_match is None or id_ == id_match):
+                out["distribution_certified"] = True
+                out["distribution_certified_source"] = source
+                break
+
+    out["notes"] = _FIPS_NOTES_BY_FAMILY.get(family, _FIPS_NOTES_BY_FAMILY["unknown"])
+    return out
+
 
 def fips_pqc_conflict_check(fips: dict[str, Any], openssl: dict[str, Any]) -> dict[str, Any]:
     """Detect the case where a host is in kernel FIPS mode AND OpenSSL is
@@ -1309,71 +1686,186 @@ def detect_runtime_environment() -> dict[str, Any]:
 # Bundled-crypto package inventory (--scan-packages)
 # ---------------------------------------------------------------------------
 
-# Package names whose binaries / runtimes bundle their own crypto
-# implementation rather than relying solely on system OpenSSL.  This is
-# rough but useful when scoping "what would break" for a PQC migration.
-BUNDLED_CRYPTO_PACKAGES: dict[str, str] = {
-    # JVM ships its own SunJCE + may include Bouncy Castle providers
-    "java-21-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
-    "java-17-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
-    "java-11-openjdk":   "Java JCE provider (SunJCE / Bouncy Castle)",
-    "java-1.8.0-openjdk": "Java JCE provider (SunJCE / Bouncy Castle)",
-    # Go static binaries embed crypto/tls; behavior depends on GODEBUG
-    "golang":            "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)",
-    "go":                "Go runtime (crypto/tls embedded)",
-    # Node.js dynamically links system OpenSSL but ships its own version
-    "nodejs":            "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)",
-    "rust":              "Rust toolchain (rustls embeds ring or openssl-sys)",
-    "cargo":             "Rust toolchain (rustls embeds ring or openssl-sys)",
-    # Browsers / mail clients embed NSS or BoringSSL
-    "firefox":           "Firefox (embeds NSS — separate PQC roadmap from system OpenSSL)",
-    "thunderbird":       "Thunderbird (embeds NSS)",
-    "chromium":          "Chromium (embeds BoringSSL)",
-    # Python ships its own ssl module but links system OpenSSL
-    "python3":           "Python ssl module (links system OpenSSL; verify version)",
+# Per-family regex catalogues for runtimes and applications that bundle
+# their own crypto implementation rather than relying solely on system
+# OpenSSL.  Each entry: (compiled regex matched against the package
+# name, hint string surfaced in the report).  Per-family because package
+# names diverge sharply: RHEL `java-21-openjdk` vs Debian `openjdk-21-jdk`
+# vs SUSE `java-21-openjdk` vs Arch `jdk-openjdk` vs Alpine `openjdk21`.
+BUNDLED_CRYPTO_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
+    "rhel": [
+        (r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$",
+         "Java JCE provider (SunJCE / Bouncy Castle)"),
+        (r"^bouncycastle", "Bouncy Castle (separate provider)"),
+        (r"^(golang|go)(-bin)?$",
+         "Go runtime (crypto/tls embedded; GODEBUG=fips140=on for FIPS)"),
+        (r"^nodejs$",
+         "Node.js (bundled OpenSSL build; --openssl-config controls FIPS)"),
+        (r"^(rust|cargo|rustc)$",
+         "Rust toolchain (rustls embeds ring or openssl-sys)"),
+        (r"^firefox$",      "Firefox (embeds NSS — separate PQC roadmap)"),
+        (r"^thunderbird$",  "Thunderbird (embeds NSS)"),
+        (r"^chromium$",     "Chromium (embeds BoringSSL)"),
+        (r"^python3$",      "Python ssl module (links system OpenSSL)"),
+    ],
+    "debian": [
+        (r"^openjdk-\d+-(jdk|jre)(-headless)?$",
+         "Java JCE provider (SunJCE / Bouncy Castle)"),
+        (r"^libbcprov-java$",
+         "Bouncy Castle Java library"),
+        (r"^golang-(go|\d+(\.\d+)?-go)$",
+         "Go runtime (crypto/tls embedded)"),
+        (r"^nodejs$",
+         "Node.js (bundled OpenSSL build)"),
+        (r"^(rustc|cargo)$",
+         "Rust toolchain (rustls embeds ring or openssl-sys)"),
+        (r"^firefox(-esr)?$", "Firefox (embeds NSS)"),
+        (r"^thunderbird$",    "Thunderbird (embeds NSS)"),
+        (r"^chromium$",       "Chromium (embeds BoringSSL)"),
+        (r"^python3$",        "Python ssl module (links system OpenSSL)"),
+    ],
+    "suse": [
+        (r"^java-\d+(\.\d+\.\d+)?-openjdk(-headless|-devel)?$",
+         "Java JCE provider"),
+        (r"^go(1\.\d+)?$",          "Go runtime"),
+        (r"^nodejs(\d+)?$",         "Node.js"),
+        (r"^(rust|cargo)$",         "Rust toolchain"),
+        (r"^MozillaFirefox$",       "Firefox (embeds NSS)"),
+        (r"^MozillaThunderbird$",   "Thunderbird (embeds NSS)"),
+        (r"^chromium$",             "Chromium (embeds BoringSSL)"),
+        (r"^python3$",              "Python ssl module"),
+    ],
+    "arch": [
+        (r"^jdk\d+-openjdk$",  "Java JCE provider"),
+        (r"^go$",              "Go runtime"),
+        (r"^nodejs$",          "Node.js"),
+        (r"^rust$",            "Rust toolchain"),
+        (r"^firefox$",         "Firefox (embeds NSS)"),
+        (r"^thunderbird$",     "Thunderbird"),
+        (r"^chromium$",        "Chromium"),
+        (r"^python$",          "Python"),
+    ],
+    "alpine": [
+        (r"^openjdk\d+(-jdk|-jre)?$", "Java JCE provider"),
+        (r"^go$",                     "Go runtime"),
+        (r"^nodejs$",                 "Node.js"),
+        (r"^rust$",                   "Rust toolchain"),
+        (r"^firefox$",                "Firefox"),
+        (r"^chromium$",               "Chromium"),
+        (r"^python3$",                "Python"),
+    ],
 }
 
 
-def parse_rpm_packages(text: str) -> list[tuple[str, str]]:
-    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` output."""
-    out: list[tuple[str, str]] = []
+def parse_rpm_packages(text: str) -> list[dict[str, str]]:
+    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` output into
+    [{"name", "version"}, ...]."""
+    out: list[dict[str, str]] = []
     for line in text.splitlines():
         parts = line.strip().split(None, 1)
         if len(parts) == 2:
-            out.append((parts[0], parts[1]))
+            out.append({"name": parts[0], "version": parts[1]})
     return out
 
 
-def classify_bundled_crypto(pkgs: list[tuple[str, str]]) -> list[dict[str, str]]:
-    """Filter the package list to known bundled-crypto entries.  Used by
-    --scan-packages to surface 'what would break' beyond system OpenSSL."""
+def parse_dpkg_packages(text: str) -> list[dict[str, str]]:
+    """Parse `dpkg-query -W -f='${Package} ${Version}\\n'` output."""
+    out: list[dict[str, str]] = []
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            out.append({"name": parts[0], "version": parts[1]})
+    return out
+
+
+def parse_pacman_packages(text: str) -> list[dict[str, str]]:
+    """Parse `pacman -Q` output (`name version` per line)."""
+    out: list[dict[str, str]] = []
+    for line in text.splitlines():
+        parts = line.strip().split(None, 1)
+        if len(parts) == 2:
+            out.append({"name": parts[0], "version": parts[1]})
+    return out
+
+
+def parse_apk_packages(text: str) -> list[dict[str, str]]:
+    """Parse `apk info -v` output.  Each line is `name-VERSION-rRELEASE`
+    (e.g. `openssl-3.5.5-r0`).  We split on the LAST hyphen-followed-by-
+    digits which is robustly the version boundary."""
+    out: list[dict[str, str]] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        # Walk back from the end: the version+release suffix is two
+        # hyphen-separated segments at the tail (`<ver>-r<rel>`).
+        m = re.match(r"^(.+)-(\d[^-]*-r\d+)$", s)
+        if not m:
+            # Fallback: single trailing version segment.
+            m = re.match(r"^(.+)-(\d[^-]*)$", s)
+            if not m:
+                continue
+        out.append({"name": m.group(1), "version": m.group(2)})
+    return out
+
+
+def classify_bundled_crypto(pkgs: list[dict[str, str]], family: str) -> list[dict[str, str]]:
+    """Match each installed package against the family's bundled-crypto
+    regex catalogue.  First-match wins per package (so a package can
+    appear in only one row even if multiple regexes match).  De-dupes on
+    package name across multi-arch installs (i686 + x86_64)."""
+    patterns = [(re.compile(p), hint) for p, hint in BUNDLED_CRYPTO_BY_FAMILY.get(family, [])]
     seen: set[str] = set()
     out: list[dict[str, str]] = []
-    for name, ver in pkgs:
-        for needle, hint in BUNDLED_CRYPTO_PACKAGES.items():
-            if name == needle or name.startswith(needle + "-"):
-                if name in seen:
-                    continue
+    for entry in pkgs:
+        name = entry["name"]
+        if name in seen:
+            continue
+        for pat, hint in patterns:
+            if pat.match(name):
                 seen.add(name)
-                out.append({"package": name, "version": ver, "note": hint})
+                out.append({"package": name, "version": entry["version"], "note": hint})
                 break
     return out
 
 
-def scan_packages() -> dict[str, Any]:
-    if not shutil.which("rpm"):
-        return {"available": False, "reason": "rpm not on PATH (RHEL/Fedora only today)"}
-    rc, out = _run(
-        ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
-        timeout=30,
-    )
+# Per-family commands for --scan-packages.  The first tuple element is the
+# argv to invoke; the second is the parser to apply.  When the family has
+# no entry (or the tool is missing on PATH), scan_packages reports
+# unavailable rather than guessing.
+PACKAGE_QUERY_BY_FAMILY: dict[
+    str, tuple[list[str], Callable[[str], list[dict[str, str]]]]
+] = {
+    "rhel":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
+    "suse":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
+    "debian": (["dpkg-query", "-W",  "-f=${Package} ${Version}\\n"],            parse_dpkg_packages),
+    "arch":   (["pacman",     "-Q"],                                            parse_pacman_packages),
+    "alpine": (["apk",        "info", "-v"],                                    parse_apk_packages),
+}
+
+
+def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Family-aware package inventory.  Returns the same shape regardless
+    of which tool produced it: {available, total_packages, bundled_crypto},
+    so consumers don't have to special-case rpm/dpkg/pacman/apk output."""
+    family = (os_release or {}).get("family", "unknown")
+    plan = PACKAGE_QUERY_BY_FAMILY.get(family)
+    if plan is None:
+        return {"available": False,
+                "reason": f"no package-query tool registered for family={family}"}
+    argv, parser = plan
+    if not shutil.which(argv[0]):
+        return {"available": False,
+                "reason": f"{argv[0]} not on PATH ({_install_hint(argv[0], family)})"}
+    rc, out = _run(argv, timeout=30)
     if rc != 0:
-        return {"available": False, "reason": f"rpm -qa failed (rc={rc})"}
-    pkgs = parse_rpm_packages(out)
+        return {"available": False, "reason": f"{argv[0]} failed (rc={rc})"}
+    pkgs = parser(out)
     return {
         "available": True,
+        "package_manager": argv[0],
         "total_packages": len(pkgs),
-        "bundled_crypto": classify_bundled_crypto(pkgs),
+        "bundled_crypto": classify_bundled_crypto(pkgs, family),
     }
 
 
@@ -1486,7 +1978,60 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
 # OpenSSL capability inspection
 # ---------------------------------------------------------------------------
 
-def openssl_capability() -> dict[str, Any]:
+def openssl_upgrade_path(version_tuple: list[int] | None,
+                         os_release: dict[str, Any] | None) -> str | None:
+    """Family-aware hint for getting a PQC-capable OpenSSL on this host.
+
+    Empty when OpenSSL is already 3.5+ (nothing to upgrade) or when we
+    cannot resolve the distro.  Strings deliberately stop at fact —
+    the field architect plans the upgrade, the script just inventories.
+    """
+    if version_tuple and tuple(version_tuple[:2]) >= (3, 5):
+        return None
+    if not os_release:
+        return None
+    family = os_release.get("family", "unknown")
+    id_ = os_release.get("id", "unknown")
+    ver = (os_release.get("version_id") or "").split(".")
+    major = ver[0] if ver and ver[0] else None
+
+    if family == "rhel":
+        if id_ == "rhel" and major and int(major) <= 9:
+            return ("RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "
+                    "RHEL 10 or a Red Hat-supported channel with newer crypto.")
+        if id_ == "fedora" and major and int(major) < 41:
+            return f"Fedora {major} predates OpenSSL 3.5; upgrade to Fedora 41 or newer."
+        if id_ in {"rocky", "almalinux", "centos", "ol"} and major and int(major) <= 9:
+            return ("EL9-class distributions ship OpenSSL 3.0/3.2; PQC requires "
+                    "the EL10 release of this distribution or a backport channel.")
+    elif family == "debian":
+        if id_ == "debian":
+            if major == "12":
+                return ("Debian 12 (bookworm) ships OpenSSL 3.0; OpenSSL 3.5 is "
+                        "available in trixie or bookworm-backports.")
+            if major and int(major) < 12:
+                return ("Pre-bookworm Debian ships OpenSSL 1.1.x; upgrade to "
+                        "Debian 12 + backports or newer.")
+        elif id_ == "ubuntu":
+            if major == "24":
+                return ("Ubuntu 24.04 LTS main ships OpenSSL 3.0; OpenSSL 3.5 is "
+                        "available in universe — `apt install libssl3` from a "
+                        "newer channel — or upgrade to 25.10.")
+            if major and int(major) < 24:
+                return ("Ubuntu pre-24.04 LTS predates OpenSSL 3.5; upgrade to "
+                        "24.04 LTS (universe) or 25.10.")
+    elif family == "suse":
+        return ("SLES 15 SP6 ships OpenSSL 3.0; OpenSSL 3.5 is available via "
+                "SUSE Package Hub.  Verify FIPS validation status before swapping.")
+    elif family == "alpine":
+        return ("Alpine ships OpenSSL via the apk repository.  Edge channel "
+                "carries 3.5+; verify against the host's apk repo configuration.")
+    elif family == "arch":
+        return "Arch rolls forward; `pacman -Syu` should bring OpenSSL 3.5+."
+    return None
+
+
+def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     out: dict[str, Any] = {"available": True}
@@ -1505,6 +2050,7 @@ def openssl_capability() -> dict[str, Any]:
     out["tls_pqc_groups"] = sorted({g for g in re.findall(r"\b(?:X25519MLKEM\d+|MLKEM\d+|SecP\d+r1MLKEM\d+|X448MLKEM\d+)\b", groups)}) if rc == 0 else []
     rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
     out["providers"] = sorted({m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}) if rc == 0 else []
+    out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
     return out
 
 
@@ -2170,16 +2716,19 @@ def main() -> int:
     runtime_env = detect_runtime_environment()
     accels = detect_accelerators()
     accels.extend(detect_network_hsms())
-    pkcs11 = detect_pkcs11_modules()
+    os_release = detect_os()
+    pkcs11 = detect_pkcs11_modules(os_release.get("family", "unknown"))
     kcrypto = detect_kernel_crypto_hw()
     ktls = detect_ktls()
     fips = detect_fips_mode()
     tpm = detect_tpm_pqc()
-    osinfo = openssl_capability()
-    ssh_info = detect_ssh_pqc()
-    ipsec_info = detect_ipsec_pqc()
+    family = os_release.get("family", "unknown")
+    osinfo = openssl_capability(os_release)
+    ssh_info = detect_ssh_pqc(family)
+    ipsec_info = detect_ipsec_pqc(family)
     nss_info = detect_nss()
-    kernel_info = detect_kernel_info()
+    kernel_info = detect_kernel_info(os_release)
+    fips = interpret_fips(fips, osinfo, os_release)
     fips_conflict = fips_pqc_conflict_check(fips, osinfo)
     proc_crypto_text: str | None = None
     if is_linux():
@@ -2193,7 +2742,7 @@ def main() -> int:
         trust_store_info = scan_trust_store()
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
-        packages_info = scan_packages()
+        packages_info = scan_packages(os_release)
     dedicated = has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
     hsm_pqc_capable = any(a.get("kind") in ("hsm", "network_hsm") and a.get("pqc_capable") for a in accels)
@@ -2221,7 +2770,7 @@ def main() -> int:
     r = Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         hostname=socket.gethostname(),
-        os=f"{platform.system()} {platform.release()}",
+        os=os_release.get("pretty_name") or f"{platform.system()} {platform.release()}",
         arch=arch,
         cpu_model=cpu_model(),
         cpu_freq_mhz=round(cpu_freq_mhz(), 1),
@@ -2253,6 +2802,7 @@ def main() -> int:
         runtime_environment=runtime_env,
         packages=packages_info,
         replace_required=replace_required,
+        os_release=os_release,
         benchmark=bench,
         per_algo=palg,
         production_estimate=pest,

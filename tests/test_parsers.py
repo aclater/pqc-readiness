@@ -442,29 +442,28 @@ def test_parse_cgroup_for_container_bare_metal() -> None:
 def test_parse_rpm_packages() -> None:
     text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
     out = pr.parse_rpm_packages(text)
-    assert ("openssl", "3.5.5") in out
-    assert ("java-21-openjdk", "21.0.5") in out
+    assert {"name": "openssl", "version": "3.5.5"} in out
+    assert {"name": "java-21-openjdk", "version": "21.0.5"} in out
     assert len(out) == 4
 
 
-def test_classify_bundled_crypto_finds_jdk_and_node_dedupes() -> None:
+def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
     pkgs = [
-        ("openssl", "3.5.5"),
-        ("java-21-openjdk", "21.0.5"),
-        ("java-21-openjdk-headless", "21.0.5"),
-        ("nodejs", "22.10.0"),
-        ("python3", "3.13.5"),
-        ("nss", "3.122.1"),
+        {"name": "openssl",                  "version": "3.5.5"},
+        {"name": "java-21-openjdk",          "version": "21.0.5"},
+        {"name": "java-21-openjdk-headless", "version": "21.0.5"},
+        {"name": "nodejs",                   "version": "22.10.0"},
+        {"name": "python3",                  "version": "3.13.5"},
+        {"name": "nss",                      "version": "3.122.1"},
     ]
-    out = pr.classify_bundled_crypto(pkgs)
+    out = pr.classify_bundled_crypto(pkgs, family="rhel")
     names = sorted(p["package"] for p in out)
-    # java-21-openjdk-headless matches via prefix; both jdk packages dedupe by exact name
     assert "java-21-openjdk" in names
     assert "java-21-openjdk-headless" in names
     assert "nodejs" in names
     assert "python3" in names
     # openssl + nss are not in the bundled-crypto allowlist (they ARE the
-    # system crypto, not a bundled override)
+    # system crypto, not a bundled override).
     assert "openssl" not in names
     assert "nss" not in names
 
@@ -726,3 +725,372 @@ def test_evaluate_cnsa_2_0_partial_when_only_one_input_available() -> None:
     assert out["symmetric_compliant"] is False
     assert out["hash_compliant"] is False
     assert any("/proc/crypto not available" in n for n in out["notes"])
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §1: parse_os_release across the supported family matrix
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402  (placed after the existing tests for diff locality)
+
+
+@pytest.mark.parametrize("fixture, expected_family, expected_id, has_codename", [
+    ("rhel-9.txt",      "rhel",   "rhel",   False),
+    ("rhel-10.txt",     "rhel",   "rhel",   False),
+    ("fedora-41.txt",   "rhel",   "fedora", False),
+    ("rocky-9.txt",     "rhel",   "rocky",  False),
+    ("ubuntu-2404.txt", "debian", "ubuntu", True),
+    ("ubuntu-2510.txt", "debian", "ubuntu", True),
+    ("debian-12.txt",   "debian", "debian", True),
+    ("debian-13.txt",   "debian", "debian", True),
+    ("sles-15sp6.txt",  "suse",   "sles",   False),
+    ("arch.txt",        "arch",   "arch",   False),
+    ("alpine-321.txt",  "alpine", "alpine", False),
+])
+def test_parse_os_release_matrix(fixture: str, expected_family: str,
+                                 expected_id: str, has_codename: bool) -> None:
+    text = (FIXTURES / "os-release" / fixture).read_text()
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == expected_family, parsed
+    assert parsed["id"] == expected_id, parsed
+    assert parsed["pretty_name"], "pretty_name should be populated"
+    if has_codename:
+        assert parsed["version_codename"], "expected codename for this distro"
+    # package_manager is always None from the pure parser; resolved by detect_os().
+    assert parsed["package_manager"] is None
+
+
+def test_parse_os_release_resolves_family_via_id_like() -> None:
+    """Unknown ID, but ID_LIKE points at a known family — Rocky/Alma-style
+    derivatives that haven't been added to OS_FAMILY_BY_ID still resolve
+    correctly via ID_LIKE fallback."""
+    text = 'ID=somenewdistro\nID_LIKE="rhel fedora"\nPRETTY_NAME="Some New Distro"\n'
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == "rhel"
+    assert parsed["id"] == "somenewdistro"
+
+
+def test_parse_os_release_unknown_distro() -> None:
+    text = 'ID=alienos\nVERSION_ID=1.0\nPRETTY_NAME="AlienOS 1.0"\n'
+    parsed = pr.parse_os_release(text)
+    assert parsed["family"] == "unknown"
+    assert parsed["id"] == "alienos"
+
+
+def test_parse_os_release_strips_quotes_and_comments() -> None:
+    text = (
+        "# this is a comment\n"
+        'ID="rhel"\n'
+        "VERSION_ID='9.6'\n"
+        "PRETTY_NAME=\"Red Hat Enterprise Linux 9.6 (Plow)\"\n"
+        "\n"
+    )
+    parsed = pr.parse_os_release(text)
+    assert parsed["id"] == "rhel"
+    assert parsed["version_id"] == "9.6"
+    assert parsed["pretty_name"] == "Red Hat Enterprise Linux 9.6 (Plow)"
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: per-family package parsers + classification
+# ---------------------------------------------------------------------------
+
+def test_parse_dpkg_packages_normalises_to_dicts() -> None:
+    text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
+    out = pr.parse_dpkg_packages(text)
+    names = {e["name"] for e in out}
+    assert "openjdk-21-jdk" in names
+    assert "libbcprov-java" in names
+    assert "nodejs" in names
+    # Same shape as rpm/pacman/apk parsers — dicts, not tuples.
+    assert all({"name", "version"} <= set(e.keys()) for e in out)
+
+
+def test_parse_pacman_packages() -> None:
+    text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
+    out = pr.parse_pacman_packages(text)
+    by_name = {e["name"]: e["version"] for e in out}
+    assert by_name["jdk21-openjdk"] == "21.0.5.u11-1"
+    assert by_name["nodejs"] == "22.11.0-1"
+
+
+def test_parse_apk_packages_handles_release_suffix() -> None:
+    text = (FIXTURES / "packages" / "apk-info-sample.txt").read_text()
+    out = pr.parse_apk_packages(text)
+    by_name = {e["name"]: e["version"] for e in out}
+    # `openjdk21-jdk-21.0.5_p11-r0` — name ends at jdk-21.0.5 boundary.
+    assert "openjdk21-jdk" in by_name
+    assert by_name["openjdk21-jdk"].endswith("-r0")
+    assert by_name["nodejs"].endswith("-r0")
+    assert "openssl" in by_name
+
+
+def test_classify_bundled_crypto_debian_finds_distinct_names() -> None:
+    text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
+    pkgs = pr.parse_dpkg_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="debian")
+    names = {p["package"] for p in out}
+    # Debian uses openjdk-XX-jdk / openjdk-XX-jre; the regex catches all four.
+    assert "openjdk-21-jdk" in names
+    assert "openjdk-21-jre" in names
+    assert "libbcprov-java" in names
+    # nodejs without -ng suffix
+    assert "nodejs" in names
+    assert "rustc" in names
+    assert "firefox-esr" in names
+    # Not bundled crypto:
+    assert "openssl" not in names
+    assert "libssl3" not in names
+    assert "libnss3" not in names
+
+
+def test_classify_bundled_crypto_arch_uses_arch_naming() -> None:
+    text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
+    pkgs = pr.parse_pacman_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="arch")
+    names = {p["package"] for p in out}
+    # Arch ships `jdk21-openjdk` (vs. RHEL `java-21-openjdk`, Debian
+    # `openjdk-21-jdk`).  The family-specific regex must match it.
+    assert "jdk21-openjdk" in names
+    assert "go" in names
+    assert "nodejs" in names
+    assert "rust" in names
+    assert "firefox" in names
+    # `python` (Arch) — not `python3`.  The Arch regex anchors to `^python$`.
+    assert "python" in names
+
+
+def test_classify_bundled_crypto_alpine_uses_alpine_naming() -> None:
+    text = (FIXTURES / "packages" / "apk-info-sample.txt").read_text()
+    pkgs = pr.parse_apk_packages(text)
+    out = pr.classify_bundled_crypto(pkgs, family="alpine")
+    names = {p["package"] for p in out}
+    assert "openjdk21-jdk" in names
+    assert "go" in names
+    assert "python3" in names
+
+
+def test_classify_bundled_crypto_unknown_family_is_empty() -> None:
+    pkgs = [{"name": "openjdk-21-jdk", "version": "21.0.5"}]
+    assert pr.classify_bundled_crypto(pkgs, family="unknown") == []
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: install hints
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("binary, family, expected_substring", [
+    ("lspci",       "rhel",   "dnf install"),
+    ("lspci",       "debian", "apt-get install"),
+    ("lspci",       "suse",   "zypper install"),
+    ("lspci",       "arch",   "pacman -S"),
+    ("lspci",       "alpine", "apk add"),
+    ("tpm2_getcap", "rhel",   "tpm2-tools"),
+    ("tpm2_getcap", "debian", "tpm2-tools"),
+    ("tpm2_getcap", "suse",   "tpm2.0-tools"),  # SUSE name
+    ("certutil",    "debian", "libnss3-tools"),  # Debian name differs
+    ("certutil",    "rhel",   "nss-tools"),
+])
+def test_install_hint_per_family(binary: str, family: str, expected_substring: str) -> None:
+    hint = pr._install_hint(binary, family)
+    assert expected_substring in hint
+
+
+def test_install_hint_unknown_family_falls_back() -> None:
+    assert "openssl" in pr._install_hint("openssl", "unknown")
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §2: FIPS interpretation
+# ---------------------------------------------------------------------------
+
+def test_interpret_fips_rhel_active_provider_certified() -> None:
+    fips = {"kernel": True, "openssl_provider": True}
+    osr = {"family": "rhel", "id": "rhel"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is True
+    assert "Red Hat" in out["distribution_certified_source"]
+    assert "RHEL" in out["notes"]
+
+
+def test_interpret_fips_debian_no_certification_claim() -> None:
+    """Debian main has no certified provider — even with fips_enabled=1
+    we must not claim certification."""
+    fips = {"kernel": True, "openssl_provider": False}
+    osr = {"family": "debian", "id": "debian"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is False
+    assert out["distribution_certified_source"] is None
+    assert "third-party" in out["notes"]
+
+
+def test_interpret_fips_ubuntu_pro_with_active_provider() -> None:
+    """Ubuntu + active provider implies Ubuntu Pro (Universe doesn't ship one).
+    distribution_certified is True with an explicit assumption note."""
+    fips = {"kernel": True, "openssl_provider": True}
+    osr = {"family": "debian", "id": "ubuntu"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is True
+    assert "Ubuntu Pro" in out["distribution_certified_source"]
+
+
+def test_interpret_fips_kernel_off_no_certification() -> None:
+    """fips_enabled=0 must never produce distribution_certified=True."""
+    fips = {"kernel": False, "openssl_provider": True}
+    osr = {"family": "rhel", "id": "rhel"}
+    out = pr.interpret_fips(fips, {}, osr)
+    assert out["distribution_certified"] is False
+
+
+def test_interpret_fips_arch_alpine_explicitly_uncertified() -> None:
+    for fam in ("arch", "alpine"):
+        out = pr.interpret_fips(
+            {"kernel": True, "openssl_provider": True},
+            {},
+            {"family": fam, "id": fam},
+        )
+        assert out["distribution_certified"] is False
+        assert "FIPS-validated" in out["notes"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §4: PKCS#11 search paths per family
+# ---------------------------------------------------------------------------
+
+def test_pkcs11_search_paths_debian_includes_multiarch() -> None:
+    paths = pr._pkcs11_search_paths("debian")
+    assert "/usr/lib/x86_64-linux-gnu/pkcs11" in paths
+    assert "/usr/lib/softhsm" in paths
+
+
+def test_pkcs11_search_paths_rhel_excludes_debian_specific() -> None:
+    paths = pr._pkcs11_search_paths("rhel")
+    assert "/usr/lib64/pkcs11" in paths
+    assert "/usr/lib/x86_64-linux-gnu/pkcs11" not in paths
+
+
+def test_pkcs11_search_paths_always_include_vendor() -> None:
+    """Vendor HSM client paths (/opt/cloudhsm, /opt/Thales, /opt/utimaco)
+    are searched on every family."""
+    for fam in ("rhel", "debian", "suse", "arch", "alpine"):
+        paths = pr._pkcs11_search_paths(fam)
+        assert "/opt/cloudhsm/lib" in paths
+        assert "/opt/Thales/PKCS11" in paths
+        assert "/opt/utimaco/Software/PKCS11" in paths
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §6: OpenSSL upgrade-path hints per family
+# ---------------------------------------------------------------------------
+
+def test_openssl_upgrade_path_already_pqc_capable_returns_none() -> None:
+    osr = {"family": "rhel", "id": "rhel", "version_id": "10.0"}
+    assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
+
+
+def test_openssl_upgrade_path_rhel9() -> None:
+    osr = {"family": "rhel", "id": "rhel", "version_id": "9.6"}
+    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
+    assert msg is not None
+    assert "RHEL 10" in msg
+
+
+def test_openssl_upgrade_path_debian12() -> None:
+    osr = {"family": "debian", "id": "debian", "version_id": "12"}
+    msg = pr.openssl_upgrade_path([3, 0, 0], osr)
+    assert msg is not None
+    assert "trixie" in msg or "backports" in msg
+
+
+def test_openssl_upgrade_path_ubuntu_2404() -> None:
+    osr = {"family": "debian", "id": "ubuntu", "version_id": "24.04"}
+    msg = pr.openssl_upgrade_path([3, 0, 0], osr)
+    assert msg is not None
+    assert "universe" in msg or "25.10" in msg
+
+
+def test_openssl_upgrade_path_no_os_release() -> None:
+    assert pr.openssl_upgrade_path([3, 0, 0], None) is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-distro §7: SSH version + Libreswan parsing
+# ---------------------------------------------------------------------------
+
+def test_parse_ssh_version_standard_format() -> None:
+    text = "OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026\n"
+    assert pr.parse_ssh_version(text) == "9.9p1"
+
+
+def test_parse_ssh_version_no_match() -> None:
+    assert pr.parse_ssh_version("garbage output") is None
+
+
+def test_parse_libreswan_version() -> None:
+    text = "Linux Libreswan 4.15 (netkey) on 5.14.0-503.21.1.el9_5.x86_64\n"
+    assert pr.parse_libreswan_version(text) == "4.15"
+
+
+def test_parse_libreswan_version_no_match() -> None:
+    assert pr.parse_libreswan_version("strongSwan 5.9.13 swanctl") is None
+
+
+# ---------------------------------------------------------------------------
+# detect_os() I/O wrapper coverage — exercises HOST_PREFIX redirection
+# and the legacy fallback paths (/etc/redhat-release, /etc/debian_version,
+# /etc/SuSE-release) so the cross-distro contract is exercised end-to-end
+# without requiring a real distro switch.
+# ---------------------------------------------------------------------------
+
+def _stub_host(tmp_path, monkeypatch, files):
+    """Helper: populate tmp_path with the given {relpath: content} dict
+    and point pr.HOST_PREFIX at it for the duration of one test."""
+    for rel, content in files.items():
+        target = tmp_path / rel.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+
+
+def test_detect_os_reads_etc_os_release(tmp_path, monkeypatch) -> None:
+    text = (FIXTURES / "os-release" / "rhel-9.txt").read_text()
+    _stub_host(tmp_path, monkeypatch, {"/etc/os-release": text})
+    out = pr.detect_os()
+    assert out["family"] == "rhel"
+    assert out["id"] == "rhel"
+    assert out["version_id"] == "9.6"
+
+
+def test_detect_os_falls_back_to_usr_lib_os_release(tmp_path, monkeypatch) -> None:
+    """When /etc/os-release is missing, /usr/lib/os-release is the
+    secondary path (Fedora/Debian-style symlink target)."""
+    text = (FIXTURES / "os-release" / "ubuntu-2404.txt").read_text()
+    _stub_host(tmp_path, monkeypatch, {"/usr/lib/os-release": text})
+    out = pr.detect_os()
+    assert out["family"] == "debian"
+    assert out["id"] == "ubuntu"
+
+
+def test_detect_os_falls_back_to_redhat_release(tmp_path, monkeypatch) -> None:
+    """Pre-os-release RHEL-derivatives still have /etc/redhat-release."""
+    _stub_host(tmp_path, monkeypatch, {
+        "/etc/redhat-release": "Red Hat Enterprise Linux release 7.9 (Maipo)\n",
+    })
+    out = pr.detect_os()
+    assert out["family"] == "rhel"
+    assert out["version_id"] == "7.9"
+
+
+def test_detect_os_falls_back_to_debian_version(tmp_path, monkeypatch) -> None:
+    _stub_host(tmp_path, monkeypatch, {"/etc/debian_version": "11.7\n"})
+    out = pr.detect_os()
+    assert out["family"] == "debian"
+    assert out["version_id"] == "11.7"
+
+
+def test_detect_os_unknown_when_nothing_present(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+    out = pr.detect_os()
+    assert out["family"] == "unknown"
+    # pretty_name still populated from platform.system() + release().
+    assert out["pretty_name"]

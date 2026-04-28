@@ -1,0 +1,10 @@
+openssl 3.5.5-1
+jdk21-openjdk 21.0.5.u11-1
+go 2:1.23.4-1
+nodejs 22.11.0-1
+rust 1:1.83.0-1
+firefox 133.0-1
+chromium 131.0.6778.85-1
+python 3.13.0-1
+nss 3.107-1
+ca-certificates 20240618-1

@@ -1,0 +1,12 @@
+openssl-3.5.5-r0
+libssl3-3.5.5-r0
+openjdk21-jre-headless-21.0.5_p11-r0
+openjdk21-jdk-21.0.5_p11-r0
+go-1.23.4-r0
+nodejs-22.11.0-r0
+rust-1.83.0-r0
+firefox-133.0-r0
+chromium-131.0.6778.85-r0
+python3-3.13.0-r0
+nss-tools-3.107-r0
+ca-certificates-bundle-20240705-r0

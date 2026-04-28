@@ -22,6 +22,11 @@ Description=PQC readiness probe (one-shot)
 Documentation=https://github.com/aclater/pqc-readiness
 
 [Container]
+# Default image is the Red Hat UBI 10 build (Containerfile.ubi10).  For
+# Debian/Ubuntu fleets, swap to ghcr.io/aclater/pqc-readiness:v2-debian
+# (built from Containerfile.debian) — the runtime semantics are
+# identical: same script, same flags, same JSON schema, same UID 1001,
+# same /var/lib/pqc-readiness output volume layout.
 Image=ghcr.io/aclater/pqc-readiness:v2
 ContainerName=pqc-readiness
 PodmanArgs=--pid=host
@@ -35,6 +40,10 @@ Volume=/proc:/host/proc:ro
 Volume=/sys:/host/sys:ro
 Volume=/dev:/host/dev:ro
 Volume=/etc:/host/etc:ro
+# /etc/os-release is a symlink to /usr/lib/os-release on Fedora /
+# Debian / Ubuntu / Arch; bind-mount the target explicitly so detect_os()
+# can read host distro identity from inside the container.
+Volume=/usr/lib/os-release:/host/usr/lib/os-release:ro
 Volume=/var/lib/pqc-readiness:/var/lib/pqc-readiness:rw,Z
 
 # SecurityLabelDisable is required because the container_t domain does

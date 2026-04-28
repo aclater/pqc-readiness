@@ -161,6 +161,13 @@ spec:
             - name: host-etc
               mountPath: /host/etc
               readOnly: true
+            # /etc/os-release symlinks to /usr/lib/os-release on most
+            # distros (Fedora, Debian, Ubuntu, Arch); without this
+            # mount detect_os() can't read the host's distro identity
+            # from inside the pod.
+            - name: host-os-release
+              mountPath: /host/usr/lib/os-release
+              readOnly: true
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
               readOnly: false
@@ -183,6 +190,10 @@ spec:
           hostPath:
             path: /etc
             type: Directory
+        - name: host-os-release
+          hostPath:
+            path: /usr/lib/os-release
+            type: File
         # Output: hostPath today.  Swap to a PVC bound to RWX storage
         # (e.g. NFS, CephFS) for centralized aggregation across the
         # fleet without per-node collection.
