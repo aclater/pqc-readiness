@@ -25,7 +25,10 @@ repos:
     hooks:
       - id: mypy
         args: [--strict]
-        additional_dependencies: []
+        # numpy is an optional runtime dep imported lazily by the
+        # memory-bandwidth probe; mypy --strict in the isolated hook
+        # venv needs it to avoid `import-not-found`.
+        additional_dependencies: [numpy]
         files: ^pqc_readiness\.py$
 
   - repo: https://github.com/Yelp/detect-secrets
