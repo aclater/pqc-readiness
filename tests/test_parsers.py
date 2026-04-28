@@ -1033,3 +1033,64 @@ def test_parse_libreswan_version() -> None:
 
 def test_parse_libreswan_version_no_match() -> None:
     assert pr.parse_libreswan_version("strongSwan 5.9.13 swanctl") is None
+
+
+# ---------------------------------------------------------------------------
+# detect_os() I/O wrapper coverage — exercises HOST_PREFIX redirection
+# and the legacy fallback paths (/etc/redhat-release, /etc/debian_version,
+# /etc/SuSE-release) so the cross-distro contract is exercised end-to-end
+# without requiring a real distro switch.
+# ---------------------------------------------------------------------------
+
+def _stub_host(tmp_path, monkeypatch, files):
+    """Helper: populate tmp_path with the given {relpath: content} dict
+    and point pr.HOST_PREFIX at it for the duration of one test."""
+    for rel, content in files.items():
+        target = tmp_path / rel.lstrip("/")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+
+
+def test_detect_os_reads_etc_os_release(tmp_path, monkeypatch) -> None:
+    text = (FIXTURES / "os-release" / "rhel-9.txt").read_text()
+    _stub_host(tmp_path, monkeypatch, {"/etc/os-release": text})
+    out = pr.detect_os()
+    assert out["family"] == "rhel"
+    assert out["id"] == "rhel"
+    assert out["version_id"] == "9.6"
+
+
+def test_detect_os_falls_back_to_usr_lib_os_release(tmp_path, monkeypatch) -> None:
+    """When /etc/os-release is missing, /usr/lib/os-release is the
+    secondary path (Fedora/Debian-style symlink target)."""
+    text = (FIXTURES / "os-release" / "ubuntu-2404.txt").read_text()
+    _stub_host(tmp_path, monkeypatch, {"/usr/lib/os-release": text})
+    out = pr.detect_os()
+    assert out["family"] == "debian"
+    assert out["id"] == "ubuntu"
+
+
+def test_detect_os_falls_back_to_redhat_release(tmp_path, monkeypatch) -> None:
+    """Pre-os-release RHEL-derivatives still have /etc/redhat-release."""
+    _stub_host(tmp_path, monkeypatch, {
+        "/etc/redhat-release": "Red Hat Enterprise Linux release 7.9 (Maipo)\n",
+    })
+    out = pr.detect_os()
+    assert out["family"] == "rhel"
+    assert out["version_id"] == "7.9"
+
+
+def test_detect_os_falls_back_to_debian_version(tmp_path, monkeypatch) -> None:
+    _stub_host(tmp_path, monkeypatch, {"/etc/debian_version": "11.7\n"})
+    out = pr.detect_os()
+    assert out["family"] == "debian"
+    assert out["version_id"] == "11.7"
+
+
+def test_detect_os_unknown_when_nothing_present(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+    out = pr.detect_os()
+    assert out["family"] == "unknown"
+    # pretty_name still populated from platform.system() + release().
+    assert out["pretty_name"]

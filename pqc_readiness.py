@@ -49,7 +49,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 SCRIPT_VERSION = "2.0.0"
 SCHEMA_VERSION = "1.0"
@@ -1142,13 +1142,13 @@ def detect_os() -> dict[str, Any]:
         }
     if host_path("/etc/debian_version").exists():
         try:
-            ver = host_path("/etc/debian_version").read_text().strip()
+            deb_ver: str | None = host_path("/etc/debian_version").read_text().strip()
         except OSError:
-            ver = None
+            deb_ver = None
         return {
             "family": "debian", "id": "debian",
-            "version_id": ver, "version_codename": None,
-            "pretty_name": f"Debian {ver}" if ver else "Debian",
+            "version_id": deb_ver, "version_codename": None,
+            "pretty_name": f"Debian {deb_ver}" if deb_ver else "Debian",
             "package_manager": _resolve_package_manager("debian"),
         }
     if host_path("/etc/SuSE-release").exists():
@@ -1834,7 +1834,7 @@ def classify_bundled_crypto(pkgs: list[dict[str, str]], family: str) -> list[dic
 # no entry (or the tool is missing on PATH), scan_packages reports
 # unavailable rather than guessing.
 PACKAGE_QUERY_BY_FAMILY: dict[
-    str, tuple[list[str], "callable[[str], list[dict[str, str]]]"]  # type: ignore[name-defined]
+    str, tuple[list[str], Callable[[str], list[dict[str, str]]]]
 ] = {
     "rhel":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
     "suse":   (["rpm",        "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"], parse_rpm_packages),
