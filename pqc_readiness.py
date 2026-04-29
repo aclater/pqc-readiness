@@ -5825,6 +5825,30 @@ def _render_text_production_estimate(r: Report) -> list[str]:
     return L
 
 
+def _render_text_trust_store(r: Report) -> list[str]:
+    """Section 9: trust store inventory, conditional on the trust-store
+    scanner having run successfully (r.trust_store['available'])."""
+    if not r.trust_store.get("available"):
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "9. Trust store inventory")]
+    L.append(
+        f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}"
+    )
+    L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
+    L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
+    L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
+    cats = r.trust_store.get("cert_categories") or {}
+    if cats:
+        L.append(
+            "   Categories:       "
+            f"classical={cats.get('classical', 0)}, "
+            f"hybrid_composite={cats.get('hybrid_composite', 0)}, "
+            f"pure_pqc={cats.get('pure_pqc', 0)}"
+        )
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5838,24 +5862,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_tls_handshake(r))
     L.extend(_render_text_per_algo(r))
     L.extend(_render_text_production_estimate(r))
-
-    if r.trust_store.get("available"):
-        L.append(C.wrap(C.BOLD, "9. Trust store inventory"))
-        L.append(
-            f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}"
-        )
-        L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
-        L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
-        L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
-        cats = r.trust_store.get("cert_categories") or {}
-        if cats:
-            L.append(
-                "   Categories:       "
-                f"classical={cats.get('classical', 0)}, "
-                f"hybrid_composite={cats.get('hybrid_composite', 0)}, "
-                f"pure_pqc={cats.get('pure_pqc', 0)}"
-            )
-        L.append("")
+    L.extend(_render_text_trust_store(r))
 
     if r.cnsa_2_0:
         L.append(
