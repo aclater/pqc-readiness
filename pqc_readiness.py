@@ -5734,6 +5734,44 @@ def _render_text_benchmark(r: Report) -> list[str]:
     return L
 
 
+def _render_text_tls_handshake(r: Report) -> list[str]:
+    """Section 6b: TLS-handshake benchmark (loopback). Conditional on
+    r.benchmark_tls_handshake."""
+    if not r.benchmark_tls_handshake:
+        return []
+    b = r.benchmark_tls_handshake
+    L: list[str] = [C.wrap(C.BOLD, "6b. TLS handshake benchmark (loopback)")]
+    if not b.get("available"):
+        L.append(f"   unavailable: {b.get('reason', 'unknown')}")
+    else:
+        L.append(
+            f"   engine: {b.get('engine')}, transport: {b.get('transport')}, "
+            f"{b.get('iterations_per_suite')} handshakes/suite"
+        )
+        for s in b.get("suites") or []:
+            if "error" in s:
+                L.append(
+                    f"   {s.get('label', s.get('role', '?')):<32} error: {s['error']}"
+                )
+                continue
+            if s.get("skipped"):
+                L.append(
+                    f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}"
+                )
+                continue
+            hps = s.get("handshakes_per_sec")
+            ttfb = s.get("ttfb_ms_median")
+            bw = s.get("bytes_on_wire_per_handshake")
+            L.append(
+                f"   {s.get('label', '?'):<32} "
+                f"{hps:>7.1f} hs/s  "
+                f"ttfb={ttfb:>6.2f} ms  "
+                f"wire={bw if bw is not None else '?'} B"
+            )
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5744,38 +5782,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_openssl(r))
     L.extend(_render_text_pqc_sizes(r))
     L.extend(_render_text_benchmark(r))
-
-    if r.benchmark_tls_handshake:
-        L.append(C.wrap(C.BOLD, "6b. TLS handshake benchmark (loopback)"))
-        b = r.benchmark_tls_handshake
-        if not b.get("available"):
-            L.append(f"   unavailable: {b.get('reason', 'unknown')}")
-        else:
-            L.append(
-                f"   engine: {b.get('engine')}, transport: {b.get('transport')}, "
-                f"{b.get('iterations_per_suite')} handshakes/suite"
-            )
-            for s in b.get("suites") or []:
-                if "error" in s:
-                    L.append(
-                        f"   {s.get('label', s.get('role', '?')):<32} error: {s['error']}"
-                    )
-                    continue
-                if s.get("skipped"):
-                    L.append(
-                        f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}"
-                    )
-                    continue
-                hps = s.get("handshakes_per_sec")
-                ttfb = s.get("ttfb_ms_median")
-                bw = s.get("bytes_on_wire_per_handshake")
-                L.append(
-                    f"   {s.get('label', '?'):<32} "
-                    f"{hps:>7.1f} hs/s  "
-                    f"ttfb={ttfb:>6.2f} ms  "
-                    f"wire={bw if bw is not None else '?'} B"
-                )
-        L.append("")
+    L.extend(_render_text_tls_handshake(r))
 
     if r.per_algo:
         L.append(C.wrap(C.BOLD, "7. Per-algorithm production verdict"))
