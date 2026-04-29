@@ -356,6 +356,82 @@ def test_isa_arm_i8mm_weight_is_two() -> None:
     assert pr.ARM_FEATURES["i8mm"][2] == 2
 
 
+# ISA tier vocabulary must match what `--check` accepts.  isa_tier()
+# previously returned "adequate" for AVX2-only x86, ARM without SHA-3,
+# and pre-MSA8 s390x — values that argparse rejected with an error.  See
+# audit issue #39.  The same vocabulary must hold for memory_tier(),
+# which contributes to the same overall verdict that --check gates on.
+_TIER_CHECK_CHOICES = {"excellent", "good", "marginal", "poor"}
+
+
+def test_isa_tier_avx2_only_x86_is_marginal_not_adequate() -> None:
+    """Regression for #39: AVX2-only x86 returned "adequate", which is
+    not a value `--check` accepts.  Must be "marginal"."""
+    flags = {"avx2"}
+    tier, _reason = pr.isa_tier("x86_64", score=4, flags=flags)
+    assert tier == "marginal"
+
+
+def test_isa_tier_arm_without_sha3_is_marginal() -> None:
+    """Regression for #39: ARM without SHA-3 / AES extensions returned
+    "adequate"; must be "marginal"."""
+    tier, _reason = pr.isa_tier("aarch64", score=0, flags=set())
+    assert tier == "marginal"
+
+
+def test_isa_tier_s390x_pre_msa8_is_marginal() -> None:
+    """Regression for #39: s390x with MSA but pre-MSA8 returned
+    "adequate"; must be "marginal"."""
+    tier, _reason = pr.isa_tier("s390x", score=0, flags={"msa"})
+    assert tier == "marginal"
+
+
+def test_memory_tier_mid_range_is_marginal() -> None:
+    """Regression for #39: 4-16 GiB memory returned "adequate"; must be
+    "marginal" so it lines up with the isa_tier vocabulary and the
+    `--check` choices."""
+    tier, _reason = pr.memory_tier(8.0)
+    assert tier == "marginal"
+
+
+def test_isa_tier_return_values_are_subset_of_check_choices() -> None:
+    """Every value isa_tier() can return for a classified architecture
+    must be accepted by `--check`.  Walk every branch of the function
+    and assert the tier is in the documented vocabulary."""
+    cases: list[tuple[str, int, set[str]]] = [
+        # x86_64
+        ("x86_64", 20, {"avx512f", "avx512vbmi", "avx512ifma"}),  # excellent
+        ("x86_64", 8, {"avx2", "aes", "pclmulqdq"}),              # good
+        ("x86_64", 4, {"avx2"}),                                  # marginal
+        ("x86_64", 0, set()),                                     # poor
+        # aarch64
+        ("aarch64", 10, {"sha3", "aes", "sve2"}),                 # excellent
+        ("aarch64", 4, {"sha3", "aes"}),                          # good
+        ("aarch64", 0, set()),                                    # marginal
+        # s390x
+        ("s390x", 0, {"msa", "msa8", "msa9"}),                    # excellent
+        ("s390x", 0, {"msa"}),                                    # marginal
+        ("s390x", 0, set()),                                      # poor
+    ]
+    for arch, score, flags in cases:
+        tier, _ = pr.isa_tier(arch, score, flags)
+        assert tier in _TIER_CHECK_CHOICES, (
+            f"isa_tier({arch!r}, {score}, {flags!r}) returned "
+            f"{tier!r}, which `--check` does not accept"
+        )
+
+
+def test_memory_tier_return_values_are_subset_of_check_choices() -> None:
+    """Every memory_tier() return value must also be in the `--check`
+    vocabulary, since it feeds the same overall verdict."""
+    for gb in (128.0, 32.0, 8.0, 1.0):
+        tier, _ = pr.memory_tier(gb)
+        assert tier in _TIER_CHECK_CHOICES, (
+            f"memory_tier({gb}) returned {tier!r}, which `--check` "
+            "does not accept"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Section 3: per-algorithm verdict notes + memory-bandwidth gating +
 # overall-verdict caveat for missing benchmark
