@@ -5825,6 +5825,39 @@ def _render_text_production_estimate(r: Report) -> list[str]:
     return L
 
 
+def _render_text_cnsa_2_0(r: Report) -> list[str]:
+    """Section 10: CNSA 2.0 compliance, conditional on r.cnsa_2_0 being set."""
+    if not r.cnsa_2_0:
+        return []
+    L: list[str] = [
+        C.wrap(C.BOLD, "10. CNSA 2.0 compliance (NSA national security suite)")
+    ]
+    status = r.cnsa_2_0.get("status", "unknown")
+    status_color = {
+        "compliant": C.GREEN,
+        "partial": C.YELLOW,
+        "non_compliant": C.RED,
+        "unknown": C.DIM,
+    }.get(status, C.DIM)
+    L.append(f"   Status:                 {C.wrap(status_color, status.upper())}")
+    L.append(
+        f"   ML-KEM-1024 (KEM):      {'yes' if r.cnsa_2_0.get('kem_compliant') else 'no'}"
+    )
+    L.append(
+        f"   ML-DSA-87  (signature): {'yes' if r.cnsa_2_0.get('signature_compliant') else 'no'}"
+    )
+    L.append(
+        f"   AES-256    (symmetric): {'yes' if r.cnsa_2_0.get('symmetric_compliant') else 'no'}"
+    )
+    L.append(
+        f"   SHA-384/512 (hash, hw): {'yes' if r.cnsa_2_0.get('hash_compliant') else 'no'}"
+    )
+    for note in r.cnsa_2_0.get("notes") or []:
+        L.append(C.wrap(C.YELLOW, f"   note: {note}"))
+    L.append("")
+    return L
+
+
 def _render_text_trust_store(r: Report) -> list[str]:
     """Section 9: trust store inventory, conditional on the trust-store
     scanner having run successfully (r.trust_store['available'])."""
@@ -5863,34 +5896,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_per_algo(r))
     L.extend(_render_text_production_estimate(r))
     L.extend(_render_text_trust_store(r))
-
-    if r.cnsa_2_0:
-        L.append(
-            C.wrap(C.BOLD, "10. CNSA 2.0 compliance (NSA national security suite)")
-        )
-        status = r.cnsa_2_0.get("status", "unknown")
-        status_color = {
-            "compliant": C.GREEN,
-            "partial": C.YELLOW,
-            "non_compliant": C.RED,
-            "unknown": C.DIM,
-        }.get(status, C.DIM)
-        L.append(f"   Status:                 {C.wrap(status_color, status.upper())}")
-        L.append(
-            f"   ML-KEM-1024 (KEM):      {'yes' if r.cnsa_2_0.get('kem_compliant') else 'no'}"
-        )
-        L.append(
-            f"   ML-DSA-87  (signature): {'yes' if r.cnsa_2_0.get('signature_compliant') else 'no'}"
-        )
-        L.append(
-            f"   AES-256    (symmetric): {'yes' if r.cnsa_2_0.get('symmetric_compliant') else 'no'}"
-        )
-        L.append(
-            f"   SHA-384/512 (hash, hw): {'yes' if r.cnsa_2_0.get('hash_compliant') else 'no'}"
-        )
-        for note in r.cnsa_2_0.get("notes") or []:
-            L.append(C.wrap(C.YELLOW, f"   note: {note}"))
-        L.append("")
+    L.extend(_render_text_cnsa_2_0(r))
 
     L.append(sub)
     L.append(f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}")
