@@ -76,11 +76,16 @@ README in the same PR:
 - Any change to the `--help` text that affects the documented behaviour
   of an existing flag.
 - Any change to exit codes.
+- Any change that affects the `--ansible` output, the privilege /
+  `become` model the script depends on, or the example playbooks under
+  `deploy/ansible/` must keep [`docs/ansible.md`](docs/ansible.md) and
+  the playbooks in sync in the same PR.
 
 The README must, at minimum, name the flag or field and describe its
 purpose in one sentence. Detailed reference may live in a linked file
 under `docs/` (for example `docs/scope.md`,
-`docs/recommendation-policies.md`), but the README must point at it.
+`docs/recommendation-policies.md`, `docs/ansible.md`), but the README
+must point at it.
 
 Verifying coverage locally:
 
