@@ -5772,6 +5772,24 @@ def _render_text_tls_handshake(r: Report) -> list[str]:
     return L
 
 
+def _render_text_per_algo(r: Report) -> list[str]:
+    """Section 7: Per-algorithm production verdict, conditional on r.per_algo."""
+    if not r.per_algo:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "7. Per-algorithm production verdict")]
+    for key, v in r.per_algo.items():
+        tier_s = _tier_label(v["tier"])
+        extra = ""
+        if "rate_per_core" in v:
+            extra = f" - {v['rate_per_core']:.1f} {v['metric']}/core, ~{v['rate_host_estimate']:.0f} host"
+        L.append(f"   {key:<22} {tier_s:<14}{extra}")
+        L.append(f"     {v.get('reason', '')}")
+        for note in v.get("notes", []):
+            L.append(C.wrap(C.YELLOW, f"     note: {note}"))
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5783,19 +5801,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_pqc_sizes(r))
     L.extend(_render_text_benchmark(r))
     L.extend(_render_text_tls_handshake(r))
-
-    if r.per_algo:
-        L.append(C.wrap(C.BOLD, "7. Per-algorithm production verdict"))
-        for key, v in r.per_algo.items():
-            tier_s = _tier_label(v["tier"])
-            extra = ""
-            if "rate_per_core" in v:
-                extra = f" - {v['rate_per_core']:.1f} {v['metric']}/core, ~{v['rate_host_estimate']:.0f} host"
-            L.append(f"   {key:<22} {tier_s:<14}{extra}")
-            L.append(f"     {v.get('reason', '')}")
-            for note in v.get("notes", []):
-                L.append(C.wrap(C.YELLOW, f"     note: {note}"))
-        L.append("")
+    L.extend(_render_text_per_algo(r))
 
     if r.production_estimate:
         L.append(C.wrap(C.BOLD, "8. Production capacity estimate (60% CPU headroom)"))
