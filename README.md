@@ -2,300 +2,217 @@
 
 Host-level Post-Quantum Cryptography readiness assessment.
 
-`pqc-readiness` inspects a host and reports whether it can run NIST PQC
-primitives (ML-KEM, ML-DSA, SLH-DSA) at production speed in software, or
-whether it requires a dedicated cryptographic accelerator. Output is a
-stable JSON schema designed for fleet inventory aggregation.
+`pqc-readiness` inspects a Linux host and reports whether it can run
+NIST PQC primitives (ML-KEM, ML-DSA, SLH-DSA) at production speed in
+software, or whether it requires a dedicated cryptographic accelerator.
+Output is a stable JSON schema designed for fleet inventory aggregation,
+with first-class support for CycloneDX 1.6 CBOM, SPDX 3.0, and SARIF
+2.1.0 so results drop into existing security pipelines.
 
-## Scope
+The tool is intended for field architects and customer infrastructure
+teams during regulated-environment PQC migration engagements. It runs
+on bare-metal Linux, in containers (podman / quadlet), and as a
+privileged DaemonSet on OpenShift.
 
-`pqc-readiness` is a host-level capability and inventory scanner. It
-sits alongside — not in place of — network-level TLS analyzers,
-source-code cryptographic scanners, dependency-scoped scanners, and
-TLS-handshake benchmarking harnesses. See [`docs/scope.md`](docs/scope.md)
-for how each category composes with this project's CBOM, SARIF, and
-SPDX output.
+## Table of contents
 
-## Audience
-
-Field architects and customer infrastructure teams. The tool is intended
-for use during regulated-environment PQC migration engagements. It runs
-on bare metal Linux, in containers (podman/quadlet), and as a privileged
-DaemonSet on OpenShift.
+- [What it detects](#what-it-detects)
+- [Quick start](#quick-start)
+- [Output formats](#output-formats)
+- [CLI flags](#cli-flags)
+- [Exit codes](#exit-codes)
+- [Distribution support](#distribution-support)
+- [Containers and OpenShift](#containers-and-openshift)
+- [Fleet aggregation](#fleet-aggregation)
+- [Scope and adjacent tooling](docs/scope.md)
+- [Documentation](#documentation)
+- [License](#license)
 
 ## What it detects
 
-1. **CPU instruction-set support for PQC** — AVX-512 family (VBMI/IFMA/
-   VAES/GFNI) on x86_64; ARMv8 crypto extensions (SHA-3, SVE2, I8MM) on
-   aarch64; CPACF MSA8/MSA9 and Crypto Express level on s390x.
-2. **Cryptographic accelerators** — PCI HSMs (Marvell, Thales Luna,
-   Utimaco, IBM CEX), DPUs (BlueField, IPU, Pensando), TPMs, network
-   HSMs detected by client config, AWS Nitro, Intel QAT.
+1. **CPU instruction-set support for PQC** — AVX-512 family (VBMI / IFMA
+   / VAES / GFNI) on x86_64; ARMv8 crypto extensions (SHA-3, SVE2, I8MM)
+   on aarch64; CPACF MSA8 / MSA9 and Crypto Express level on s390x.
+2. **Cryptographic accelerators** — PCI HSMs, DPUs (BlueField, IPU,
+   Pensando), TPMs, network HSMs detected by client config, AWS Nitro,
+   Intel QAT.
 3. **OS / library plumbing** — `/proc/crypto` hardware drivers, kernel
    TLS, kernel FIPS mode, OpenSSL ≥ 3.5 PQC algorithms and TLS 1.3
    hybrid groups, OpenSSH `ssh -Q kex`, strongSwan / Libreswan, NSS.
 4. **Production suitability** — per-algorithm tier with measured
-   throughput, host capacity estimate, and a top-level `replace_required`
-   flag for fleet planning.
+   throughput, host capacity estimate, and a top-level
+   `replace_required` flag for fleet planning.
 
 ## Quick start
 
 ```bash
-./pqc-readiness                       # recommended: shell wrapper picks a usable Python
-./pqc_readiness.py                    # equivalent on hosts whose default `python3` is 3.9+
-./pqc-readiness --bench               # include OpenSSL microbench
+./pqc-readiness                       # human-readable text report
+./pqc-readiness --bench               # add OpenSSL microbench
 ./pqc-readiness --json                # stable JSON for aggregation
-./pqc-readiness --cbom                # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
-./pqc-readiness --spdx                # SPDX 3.0 JSON-LD (Security profile)
-./pqc-readiness --sarif               # SARIF 2.1.0 findings (OASIS)
-./pqc-readiness --markdown            # markdown for tickets
 ./pqc-readiness --recommend           # policy-aware algorithm recommendation
-./pqc-readiness --ansible             # ansible_facts wrapper
-./pqc-readiness --aggregate ./out     # roll up many --save outputs
+./pqc-readiness --check excellent     # exit 4 if below tier (CI gating)
+./pqc-readiness --save                # save JSON to ~/.cache/pqc-readiness/
 ./pqc-readiness --version             # script + JSON schema versions
+./pqc-readiness --help                # full flag reference
 ```
 
-The `pqc-readiness` shell wrapper is the recommended invocation form
-because it is RHEL-8-safe: it searches `PATH` for the highest available
-Python 3.9+ (`python3.13` → `python3.9`, then `python3`, then `python`)
-and `exec`s `pqc_readiness.py` with that interpreter. On a host whose
-default `python3` is too old (RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6),
-it prints AppStream guidance instead of a Python `SyntaxError`.
+`pqc-readiness` is a shell wrapper that picks a usable Python 3.9+ from
+`PATH` (`python3.13` … `python3.9`, then `python3` / `python`) and
+`exec`s `pqc_readiness.py`. On hosts whose default `python3` is too old
+(RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6) it prints AppStream guidance
+instead of a `SyntaxError`. Hosts with Python ≥ 3.9 can invoke
+`./pqc_readiness.py` directly; the two are interchangeable. See
+[Distribution support](#distribution-support) for per-distro notes.
 
-Both files ship side by side in the container images at
-`/usr/local/bin/pqc-readiness` (wrapper) and
-`/usr/local/bin/pqc_readiness.py` (script).
+## Output formats
 
-## Flags
+| Flag | Format | Use case |
+| --- | --- | --- |
+| (default) | Coloured text report | Operator console |
+| `--markdown` | Markdown | Pasting into tickets |
+| `--json` | Stable JSON schema | Fleet aggregation, automation |
+| `--cbom` | CycloneDX 1.6 CBOM | NIST IR 8547 inventory pipelines |
+| `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
+| `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
+| `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
+| `--recommend` | Policy-aware recommendation | Algorithm selection per host |
 
-Every flag listed by `./pqc_readiness.py --help` is documented below.
-The list is grouped by purpose; the `--help` text remains the
-authoritative one-line summary.
+`--json`, `--cbom`, `--spdx`, `--sarif`, and `--ansible` are mutually
+exclusive views of the same probe run. Detection logic is shared — a
+new detection rule shows up in every output format without per-renderer
+changes.
 
-### Output format
+**JSON.** Stable, schema-versioned host inventory. The full top-level
+field reference, the `--ansible` wrapper shape, and the
+`--recommend --json` variant are documented in
+[docs/json-output.md](docs/json-output.md). For schema interoperation
+with CycloneDX, see [docs/schema-alignment.md](docs/schema-alignment.md).
+
+**CBOM.** `--cbom` emits a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/)
+Cryptographic Bill of Materials. Each detected source — ISA features,
+accelerators, OpenSSL primitives, OpenSSH KEX, IPsec, PKCS#11 modules,
+trust-store summary — becomes a `cryptographic-asset` component with
+`assetType`, `algorithmProperties` where applicable, and a
+`detectedBy: pqc-readiness@<version>` provenance property. Validates
+against the official CycloneDX 1.6 JSON schema. NIST IR 8547
+([final](https://csrc.nist.gov/pubs/ir/8547/final)) references
+CycloneDX 1.6 as the standard exchange format for cryptographic
+inventory.
+
+**SPDX.** `--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
+JSON-LD document with `core` + `software` + `security` profile
+conformance. The shared canonical asset list is projected as
+`software_Package` / `security_Vulnerability` elements wrapped in a
+`software_Sbom`. JSON-LD is fully type-checked: every `type` and
+property is a term in the canonical SPDX 3.0.1 context, and every
+reference resolves within the document.
+
+**SARIF.** `--sarif` emits [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+findings under stable rule IDs (`pqc-001-…` through `pqc-006-…`),
+each with `helpUri`, severity (`warning` / `error`), and short / full
+descriptions. Findings cover OpenSSL pre-3.5, kernel-FIPS / PQC
+provider conflicts, missing hybrid TLS groups, and HSMs without PQC
+firmware. Validates against the official SARIF 2.1.0 schema.
+
+**Recommendations.** `--recommend` produces a host-specific PQC
+algorithm recommendation under one of four policies (`cnsa-2.0`,
+`nist-civilian`, `eu-anssi-bsi`, `commercial`); `--policy auto`
+(default) emits all four side by side. The authority, source
+document, and engine-encoded position for each policy are catalogued
+in [docs/recommendation-policies.md](docs/recommendation-policies.md).
+The `--recommend --json` document shape is in
+[docs/json-output.md](docs/json-output.md#recommend-json-variant).
+
+**Ansible.** `--ansible` wraps the JSON schema in
+`{ansible_facts: {pqc_readiness: …}}` and always exits 0 so a play
+never marks a host as failed on the verdict. Runnable playbooks
+(`set_fact`, fleet aggregation), the `become` / privilege model, and
+the fact shape downstream tasks rely on are in
+[docs/ansible.md](docs/ansible.md); the playbooks themselves live
+under [`deploy/ansible/`](deploy/ansible/).
+
+## CLI flags
+
+`./pqc_readiness.py --help` is the authoritative one-liner reference.
+Flags below are grouped by purpose.
+
+### Probes and benchmarks
 
 | Flag | Purpose |
 | --- | --- |
-| `--json` | Emit the stable JSON schema (see [JSON output](#json-output---json)). |
-| `--markdown` | Emit a markdown report suitable for pasting into a ticket. |
-| `--cbom` | Emit a CycloneDX 1.6 Cryptographic Bill of Materials (see [CBOM output](#cbom-output---cbom)). |
-| `--spdx` | Emit an SPDX 3.0 JSON-LD document with the Security profile (see [SPDX 3.0 output](#spdx-30-output---spdx)). |
-| `--sarif` | Emit SARIF 2.1.0 findings for security pipelines (see [SARIF output](#sarif-output---sarif)). |
-| `--ansible` | Wrap the JSON schema in `{ansible_facts: {pqc_readiness: ...}}` and exit 0. See [`docs/ansible.md`](docs/ansible.md) for runnable playbooks (`set_fact`, fleet aggregation), the privilege model, and the fact shape downstream tasks can rely on. |
-
-`--json`, `--cbom`, `--spdx`, and `--sarif` are mutually exclusive views
-over the same probe run. The default (no flag) is the human-readable
-text report.
-
-### Benchmarking
-
-| Flag | Purpose |
-| --- | --- |
-| `--bench` | Run the PQC + classical OpenSSL microbenchmark and include results in the output. |
-| `--bench-tls` | Run a loopback TLS 1.3 handshake benchmark covering classical, hybrid, and pure-PQC groups. |
-| `--threads N` | Add an N-way scaling test alongside the single-thread benchmark. |
-| `--seconds N` | Override the per-operation benchmark duration. Larger values reduce variance at the cost of run time. |
-
-Benchmark results land under the `benchmark` and
-`benchmark_tls_handshake` top-level JSON keys. Without `--bench` /
-`--bench-tls`, those keys are still present but empty.
+| `--bench` | OpenSSL microbenchmark (PQC + classical). |
+| `--bench-tls` | Loopback TLS 1.3 handshake bench (classical / hybrid / pure-PQC). |
+| `--threads N` | Add an N-way scaling test alongside the single-thread bench. |
+| `--seconds N` | Override per-operation benchmark duration. Larger values reduce variance at the cost of run time. |
+| `--scan-trust-store` | Walk system trust-store directories; count PQC, hybrid composite, and classical certs. Slower than the default probe. |
+| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: `rpm -qa` (rhel / suse), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. |
+| `--host-mount PATH` | Prefix for `/proc /sys /dev /etc` reads. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 
 ### Recommendation engine
 
 | Flag | Purpose |
 | --- | --- |
-| `--recommend` | Emit a host-specific PQC algorithm recommendation under the selected policy and role, instead of the readiness report. |
-| `--policy {cnsa-2.0,nist-civilian,eu-anssi-bsi,commercial,auto}` | Compliance context for `--recommend`. `auto` (default) emits all policies side by side. |
+| `--recommend` | Emit a host-specific PQC recommendation instead of the readiness report. |
+| `--policy {cnsa-2.0,nist-civilian,eu-anssi-bsi,commercial,auto}` | Compliance context for `--recommend`. `auto` (default) emits all four policies side by side. |
 | `--role {tls-server,tls-client,signing-service,firmware-signing}` | Role for `--recommend`. Only `tls-server` is fully implemented; other roles return a stub response. |
 
-The full policy-to-preference mapping, the issuing authority for each
-policy, and the source documents are catalogued in
-[`docs/recommendation-policies.md`](docs/recommendation-policies.md).
-Updating a policy is a single-place edit in the `POLICY_PREFERENCES`
-table inside `pqc_readiness.py`; the engine itself does not change.
-
-`--recommend` combines with `--json` to produce a machine-readable
-recommendation document with top-level keys `role`, `mode`, `hostname`,
-`generated_at`, and `recommendations`. This is a different schema from
-the readiness `--json`; see [JSON output](#json-output---json).
-
-### Inventory and host probes
+### Output
 
 | Flag | Purpose |
 | --- | --- |
-| `--scan-trust-store` | Walk system trust-store directories and count PQC / hybrid certificates. Slower than the default probe; opt in when an inventory of the trust anchors is needed. |
-| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: `rpm -qa` (rhel/suse), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). All four parsers normalise to the same `[{name, version}, ...]` shape. |
-| `--host-mount PATH` | Prefix for `/proc /sys /dev /etc` reads. Used by the OpenShift DaemonSet pattern: the host filesystem is mounted at `/host` inside the container, and `--host-mount /host` makes the probe inspect the node, not the container. |
-
-Without these flags the probe stays in the fast path and skips the
-trust-store walk and the package enumeration.
-
-### Verbosity, gating, and persistence
-
-| Flag | Purpose |
-| --- | --- |
-| `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. Designed for CI gating. |
-| `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregation path reads exactly this directory layout. |
-| `--quiet` | Print only the verdict line (e.g. `EXCELLENT - software PQC at production speed`). |
-| `--no-color` | Disable ANSI colour in human-readable output. Auto-disabled when stdout is not a TTY. |
+| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--ansible` | See [Output formats](#output-formats). |
+| `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
+| `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
+| `--quiet` | Print only the verdict line. |
+| `--no-color` | Disable ANSI colour. Auto-disabled when stdout is not a TTY. |
 
 ### Aggregation
 
 | Flag | Purpose |
 | --- | --- |
-| `--aggregate DIR` | Aggregate every `*.json` in `DIR` into a fleet rollup; the program exits when done and ignores all other flags. |
+| `--aggregate DIR` | Roll every `*.json` in `DIR` into a fleet rollup. The program exits when done and ignores all other flags. |
 | `--aggregate-format {json,csv}` | Output format for `--aggregate` (default `json`). |
 
-See the [Aggregation](#aggregation-1) section for the rollup schema.
-
-### Miscellaneous
+### Misc
 
 | Flag | Purpose |
 | --- | --- |
 | `--version` | Print the script version and the JSON schema version, then exit. |
-| `-h`, `--help` | Print the help text and exit. |
+| `-h`, `--help` | Print help and exit. |
 
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Excellent — dedicated PQC silicon OR optimized SIMD + ample RAM. |
+| 0 | Excellent — dedicated PQC silicon OR optimised SIMD + ample RAM. |
 | 1 | Good — software PQC fast enough for production. |
-| 2 | Marginal — works, but plan for an accelerator at scale. |
+| 2 | Marginal — works, plan for an accelerator at scale. |
 | 3 | Poor — software-only and too slow for production. |
-| 4 | `--check` threshold not met (TIER below floor, or `cnsa-2.0` not compliant). |
+| 4 | `--check` threshold not met (tier below floor, or `cnsa-2.0` not compliant). |
 
-## JSON output (`--json`)
-
-`--json` emits a stable, schema-versioned document. The `schema_version`
-key changes only when fields are renamed or removed; additive changes
-keep the same version. Aggregation refuses to merge files whose
-`schema_version` does not match the rollup version.
-
-| Top-level key | Description |
-| --- | --- |
-| `schema_version` | Stable schema version string. Bumped on rename/remove, not on additive changes. |
-| `generated_at` | ISO 8601 UTC timestamp of the probe run. |
-| `hostname` | Host's reported hostname. |
-| `os` | OS family token (`linux`, `darwin`). |
-| `arch` | CPU architecture (`x86_64`, `aarch64`, `s390x`, …). |
-| `cpu_model` | CPU model string from `/proc/cpuinfo` or `sysctl`. |
-| `cpu_freq_mhz` | Reported CPU base frequency. |
-| `cores_logical` | Logical core count (SMT siblings included). |
-| `cores_physical` | Physical core count. |
-| `mem_total_gb` | Total system memory in GiB. |
-| `mem_avail_gb` | Available memory in GiB at probe time. |
-| `isa_features` | Map of ISA feature flags relevant to PQC (AVX-512 family, ARMv8 crypto, CPACF MSA, …). |
-| `isa_score` | Numeric ISA score backing the tier classification. |
-| `isa_tier` | Coarse ISA tier (`excellent` / `good` / `marginal` / `poor`). |
-| `isa_reason` | Human-readable explanation for the ISA tier. |
-| `accelerators` | List of detected accelerators (HSMs, DPUs, TPMs, QAT, Nitro, …). |
-| `hsm_present_but_not_pqc` | True when an HSM is detected but it does not advertise PQC primitives. |
-| `pkcs11_modules` | PKCS#11 modules discoverable on the host. |
-| `kernel_crypto_hw` | `/proc/crypto` entries backed by hardware drivers. |
-| `ktls_supported` | Whether kernel TLS is available. |
-| `fips` | Kernel FIPS mode and provider state. |
-| `openssl` | Detected OpenSSL version, PQC algorithm exposure, hybrid TLS group list, and `upgrade_path` suggestion. |
-| `tpm_pqc` | TPM presence and any PQC capability advertised. |
-| `memory_bandwidth_gb_s` | Memory bandwidth measurement (null if not measured). |
-| `memory_bandwidth_method` | How the bandwidth value was obtained, or `not-measured`. |
-| `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
-| `ipsec_pqc` | strongSwan / Libreswan PQC and hybrid IKE state. |
-| `nss` | NSS PQC algorithm exposure. |
-| `kernel_info` | Kernel version, build flags relevant to crypto, and module list. |
-| `fips_pqc_conflict` | Detected when kernel FIPS is on but PQC is exposed only via a non-FIPS provider. |
-| `cnsa_2_0` | CNSA 2.0 compliance summary (algorithm coverage, hash, FIPS state). |
-| `trust_store` | Trust-store summary (count, PQC-capable count, hybrid count). Populated only when `--scan-trust-store` is set. |
-| `runtime_environment` | How the probe is running (bare metal, container, DaemonSet, …). |
-| `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. |
-| `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
-| `os_release` | Parsed `/etc/os-release` (id, version, like-chain). |
-| `benchmark` | Microbenchmark results from `--bench`. Empty when `--bench` is not set. |
-| `benchmark_tls_handshake` | TLS 1.3 handshake bench results from `--bench-tls`. Empty when `--bench-tls` is not set. |
-| `pqc_sizes` | Wire-size and key-size constants for the PQC primitives, used by the recommendation engine and by sizing notes in the human report. |
-| `per_algo` | Per-algorithm tier and reasoning (ML-KEM-512/768/1024, ML-DSA-44/65/87, SLH-DSA variants). |
-| `production_estimate` | Estimated handshakes-per-second / sign-per-second per algorithm given the measured benchmark numbers. |
-| `verdict` | Coarse verdict (`excellent` / `good` / `marginal` / `poor`). |
-| `verdict_reason` | One-line explanation for the verdict. |
-| `verdict_caveat` | Caveat string (e.g. `no-bench`) when the verdict was determined without running OpenSSL primitives. |
-| `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](#exit-codes) table. |
-
-`--ansible` returns a single top-level key `ansible_facts`, whose value
-is `{pqc_readiness: {…the schema above…}}`. See
-[`docs/ansible.md`](docs/ansible.md) for runnable playbooks, the
-become / privilege model, and downstream `set_fact` patterns.
-
-`--recommend --json` returns a different document with top-level keys
-`role`, `mode`, `hostname`, `generated_at`, and `recommendations`. The
-`recommendations` list contains one object per evaluated policy with
-`policy`, `authority`, `kem`, `signature`, `hash`, `policy_basis`,
-`source`, and `caveats`.
-
-### Schema alignment with CycloneDX 1.6
-
-[`docs/schema-alignment.md`](docs/schema-alignment.md) is a field-by-field
-mapping of the `--json` schema against the field-name conventions in
-CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
-`--json` is a host-level inventory schema and CycloneDX is an asset-level
-schema, so the two operate in different concept spaces — the asset-level
-projection is already provided by `--cbom`. No `--json` field renames
-are recommended at this time and `SCHEMA_VERSION` stays at `"1.0"`.
-
-## CBOM output (`--cbom`)
-
-`--cbom` emits a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/)
-Cryptographic Bill of Materials. Each detected source — ISA features,
-accelerators / HSMs / TPMs, OpenSSL KEM and signature algorithms,
-OpenSSL TLS hybrid and pure-PQC groups, OpenSSH PQC kex, IPsec
-implementation, PKCS#11 modules, and the trust-store summary — becomes
-a `cryptographic-asset` component with the appropriate `assetType`,
-`algorithmProperties` (or `protocolProperties` /
-`relatedCryptoMaterialProperties`) where applicable, and a `detectedBy:
-pqc-readiness@<version>` provenance property.
-
-The output validates against the official CycloneDX 1.6 JSON schema and
-is suitable for ingest by any CBOM-aware tooling. NIST IR 8547
-([final](https://csrc.nist.gov/pubs/ir/8547/final)) references CycloneDX
-1.6 as the standard exchange format for cryptographic inventory.
-
-The existing `--json` output is unchanged; the two formats can be
-emitted side by side from the same probe run.
-
-## SARIF output (`--sarif`)
-
-`--sarif` emits [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
-findings (OASIS standard) so the readiness signal can be consumed by
-the same security pipelines that already ingest SARIF from other
-scanners. Each finding is a rule with a stable id (`pqc-001-…`,
-`pqc-002-…`, …), a short and full description, a `helpUri` pointing at
-`docs/rules/<rule-id>.md`, and a default severity level
-(`warning` / `error`).
-
-Findings cover, among others:
-
-- OpenSSL older than 3.5 (no native PQC).
-- Kernel FIPS mode active but PQC is exposed via a non-FIPS provider.
-- Hybrid TLS groups missing from the OpenSSL build.
-- HSM present but not advertising PQC primitives.
-
-The SARIF document validates against the official SARIF 2.1.0 JSON
-schema. As with `--cbom`, the `--json` schema is unchanged; SARIF is a
-projection over the same probe run.
+`--ansible` always exits 0; the verdict is in the JSON body.
 
 ## Distribution support
 
-The script targets one JSON schema across every Linux it runs on. Tiers
-below describe **what is validated**, not what carries a support
-contract — “validated on” here means the script runs cleanly and the
-schema matches in CI or in maintainer testing.
+The script targets one JSON schema across every Linux it runs on.
+"Validated on" means the script runs cleanly and the schema matches in
+CI or in maintainer testing — not a support contract.
 
 | Tier | Distros | Validation cadence |
 | --- | --- | --- |
-| **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every PR runs `pytest` + `ruff` + `mypy --strict` on the GitHub-hosted `ubuntu-latest` runner under CPython 3.11 / 3.12 / 3.13 (`.github/workflows/ci.yml`); per-OS validation against the actual Tier 1 images runs out-of-band — see *“What ‘every change’ actually means”* below. |
+| **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every PR runs `pytest` + `ruff` + `mypy --strict` on the GitHub-hosted `ubuntu-latest` runner under CPython 3.11 / 3.12 / 3.13 (`.github/workflows/ci.yml`); per-OS validation against the actual Tier 1 images runs out-of-band — see *"What 'every change' actually means"* below. |
 | **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Periodic (weekly) — fixes accepted. EL8 is additionally covered every PR: `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the resulting image. |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
-**What “every change” actually means.** Two workflows run on every PR:
+Cross-distro probing uses a single `detect_os()` source of truth that
+resolves family from `/etc/os-release` `ID` + `ID_LIKE`, so derivatives
+the explicit table doesn't name (Linux Mint → debian, Manjaro → arch,
+…) still classify correctly. PQC primitives require **OpenSSL ≥ 3.5**;
+older builds report `openssl.pqc_native: false` and a no-bench caveat.
+`openssl.upgrade_path` is a family-aware hint for getting a PQC-capable
+OpenSSL on the specific host.
+
+**What "every change" actually means.** Two workflows run on every PR:
 
 - `.github/workflows/ci.yml` — `ruff check`, `mypy --strict`,
   `pytest tests/ -q`, and the `--help` ↔ README cross-check on the
@@ -308,13 +225,12 @@ schema matches in CI or in maintainer testing.
   UBI 8 entry point therefore *is* boot-tested on every PR.
 
 Per-OS validation against stock cloud images for the remaining Tier 1
-targets (RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12) and the
-Tier 2 distros happens out-of-band via the
+targets (RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12) and the Tier 2
+distros happens out-of-band via the
 [`aclater/distro-matrix`](https://github.com/aclater/distro-matrix)
-libvirt + KVM runner on `lennon`; surfacing those runs as a CI
-artefact is tracked in
-[issue #41](https://github.com/aclater/pqc-readiness/issues/41). The
-phrase “Every change (CI)” in earlier revisions of this table
+libvirt + KVM runner; surfacing those runs as a CI artefact is tracked
+in [issue #41](https://github.com/aclater/pqc-readiness/issues/41).
+The phrase "Every change (CI)" in earlier revisions of this table
 overstated what GitHub Actions exercises today — see
 [issue #44](https://github.com/aclater/pqc-readiness/issues/44) for
 the audit finding.
@@ -322,121 +238,78 @@ the audit finding.
 **RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** The system `python3` on
 EL8 is 3.6, which cannot parse the script. Install the AppStream
 `python39` (or `python311`) module and invoke through the
-`pqc-readiness` wrapper, which finds the right interpreter
-automatically. OpenSSL 1.1.1 on EL8 means `openssl.pqc_native: false`
-and a no-bench caveat in the verdict; the inventory probe still
-works. A ready-to-deploy image is shipped at
+`pqc-readiness` wrapper — the wrapper finds the right interpreter
+automatically and prints AppStream guidance when none is available.
+OpenSSL 1.1.1 on EL8 means `openssl.pqc_native: false` and a no-bench
+caveat in the verdict; the inventory probe still works. A
+ready-to-deploy image is shipped at
 [`Containerfile.ubi8`](Containerfile.ubi8) (build via
 `make container-ubi8`); the existing `--host-mount` DaemonSet pattern
-works the same way as the UBI 10 image. CI validates every push
-against the UBI 8 image so regressions surface before a release.
-
-`detect_os()` resolves `family` from `/etc/os-release` `ID` and falls
-back through `ID_LIKE`, so derivatives the explicit table doesn’t name
-(Linux Mint → debian, Manjaro → arch, etc.) still classify correctly.
-The `--scan-packages` path branches on family: `rpm -qa` (rhel/suse),
-`dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine).
-All four parsers normalise to the same `[{name, version}, ...]` shape.
-
-PQC primitives require OpenSSL **≥ 3.5**. The tool runs on older
-OpenSSL builds — it just reports `openssl.pqc_native: false` and the
-verdict gains a “no-bench” caveat. `openssl.upgrade_path` is a
-family-aware string suggesting how to get a PQC-capable OpenSSL on the
-specific host.
+is identical to the UBI 10 image. CI validates every push against the
+UBI 8 image.
 
 Out of scope for this tool: Windows / WSL, BSD, musl-specific behaviour
 beyond Alpine. macOS support is best-effort and limited to the paths
 already in the script.
 
-## Container / OpenShift
+## Containers and OpenShift
 
-Containerfiles are provided for the supported base images:
+Containerfiles ship for each supported base image:
 
-- `Containerfile.ubi10` — Red Hat UBI 10 minimal base. Default for
-  RHEL/Fedora fleets and the image referenced by the systemd quadlet.
-- `Containerfile.ubi8` — Red Hat UBI 8 minimal base for RHEL 8 /
-  Rocky 8 / AlmaLinux 8 fleets that cannot move to UBI 10. Pulls the
-  AppStream `python39` module; same wrapper, same flags, same JSON
-  schema as the other images.
-- `Containerfile.debian` — `debian:12-slim` base. Functionally
-  identical (same script, flags, JSON schema, UID 1001, healthcheck).
-  Use for Debian/Ubuntu fleets.
-- `Containerfile.ubuntu-fips` — stub. Pending an Ubuntu Pro FIPS
-  customer ask.
+| File | Base | Use case |
+| --- | --- | --- |
+| `Containerfile.ubi10` | `registry.access.redhat.com/ubi10/ubi-minimal` | RHEL / Fedora fleets; default |
+| `Containerfile.ubi8` | `registry.access.redhat.com/ubi8/ubi-minimal` | RHEL 8 / Rocky 8 / AlmaLinux 8 |
+| `Containerfile.debian` | `docker.io/library/debian:12-slim` | Debian / Ubuntu fleets |
+| `Containerfile.ubuntu-fips` | (stub) | Pending an Ubuntu Pro FIPS customer ask |
 
 ```bash
-make container-ubi8      # build the UBI 8 image
-make container-ubi10     # build the UBI 10 image
-make container-debian    # build the Debian image
-make container           # build all three
+make container           # build all three real images
+make container-ubi10     # UBI 10 only
+make container-ubi8      # UBI 8 only
+make container-debian    # Debian only
 ```
 
-`deploy/quadlet/pqc-readiness.container` is a systemd quadlet that runs
-the probe daily against the host. `deploy/openshift/daemonset.yaml` is
-the fleet DaemonSet — non-root UID 1001, hostPID, custom SCC dropping
-all capabilities, read-only host bind mounts of `/proc /sys /dev /etc
-/usr/lib/os-release`. Inside the DaemonSet the host root is mounted at
-`/host`, and the probe is invoked with `--host-mount /host` so its
-reads target the node, not the container image.
+All images run as non-root UID 1001 with a Python-only HEALTHCHECK
+(`ubi*-minimal` lacks `curl`).
 
-## Aggregation
+`deploy/quadlet/pqc-readiness.container` is a systemd quadlet that
+runs the probe daily against the host.
+
+`deploy/openshift/daemonset.yaml` is the fleet DaemonSet — non-root,
+hostPID, custom SCC dropping all capabilities, read-only host bind
+mounts of `/proc /sys /dev /etc /usr/lib/os-release`. Inside the pod
+the host root is mounted at `/host` and the probe is invoked with
+`--host-mount /host` so its reads target the node, not the container
+image.
+
+For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
+and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).
+
+## Fleet aggregation
 
 `--aggregate DIR` reads every `*.json` produced by `--save` (or by the
-DaemonSet output volume) and emits a fleet rollup: counts by arch, OS,
-ISA tier, verdict, runtime environment, and accelerator kind, plus the
-list of unique CPU models and a `replace_required_count`.
+DaemonSet output volume) and emits a fleet rollup: counts by arch,
+OS, ISA tier, verdict, runtime environment, and accelerator kind, plus
+unique CPU models and a `replace_required_count`.
 
 ```bash
 pqc_readiness.py --aggregate /var/lib/pqc-readiness                       # JSON
 pqc_readiness.py --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
 ```
 
-Files with mismatched `schema_version` are listed under `skipped` with
-a reason rather than silently merged.
+Files with mismatched `schema_version` land under `skipped` with a
+reason rather than being silently merged.
 
-## Documentation map
+## Documentation
 
-- [`docs/scope.md`](docs/scope.md) — where this project fits in the
-  wider PQC tooling ecosystem; how host-level scanning composes with
-  network, source-code, dependency, and TLS-handshake categories.
-- [`docs/recommendation-policies.md`](docs/recommendation-policies.md) —
-  authority, source documents, and engine-encoded position for every
-  policy reachable through `--policy`.
-- [`docs/ansible.md`](docs/ansible.md) — runnable Ansible playbooks
-  (`set_fact`, fleet aggregation), privilege model, and the fact shape
-  downstream tasks can rely on. Example playbooks live under
-  [`deploy/ansible/`](deploy/ansible/).
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party product reference
-  policy and the rule that keeps this README in sync with `--help`.
-
-## SPDX 3.0 output (`--spdx`)
-
-`--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
-JSON-LD document with `profileConformance` set to `core`, `software`,
-and `security`. The same canonical asset list that drives `--cbom` is
-projected into:
-
-- one `software_Package` per detected cryptographic asset (algorithm,
-  protocol, related-crypto-material), with `software_primaryPurpose` set
-  to `device` for hardware-execution assets and `library` for software
-  ones,
-- one `software_Package` for the scanned host,
-- one `security_Vulnerability` per finding, plus a
-  `security_VexAffectedVulnAssessmentRelationship` linking each
-  vulnerability to the host package via the VEX `affects` relationship,
-- a top-level `software_Sbom` and `SpdxDocument` that wrap the above.
-
-Detection logic is shared with `--cbom` — both renderers read the same
-`canonical_assets()` pipeline and the same finding rules used by
-`--sarif`, so a new detection rule shows up in every output format
-without per-renderer changes.
-
-The output is JSON-LD: every `type` and property is a term in the
-canonical SPDX 3.0.1 context at
-<https://spdx.org/rdf/3.0.1/spdx-context.jsonld>, and every reference
-(`createdBy`, `element`, `from`, `to`, `security_assessedElement`)
-resolves within the document.
+- [`docs/scope.md`](docs/scope.md) — where this project fits in the wider PQC tooling ecosystem; how host-level scanning composes with network, source-code, dependency, and TLS-handshake categories.
+- [`docs/json-output.md`](docs/json-output.md) — full `--json` top-level field reference, `--ansible` wrapper, and `--recommend --json` variant.
+- [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
+- [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
+- [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party-product reference policy, the README ↔ `--help` rule.
 
 ## License
 
-Apache-2.0. See `LICENSE`.
+Apache-2.0. See [`LICENSE`](LICENSE).
