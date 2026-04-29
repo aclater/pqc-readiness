@@ -5498,15 +5498,16 @@ def render_spdx(r: Report) -> str:
     return json.dumps(out, indent=2)
 
 
-def render_text(r: Report) -> str:
-    L: list[str] = []
+def _render_text_header(r: Report) -> list[str]:
+    """Banner and host-identity preamble (host, CPU, cores, memory, timestamp)."""
     bar = "=" * 76
-    sub = "-" * 76
-    L.append(C.wrap(C.BOLD, bar))
-    L.append(C.wrap(C.BOLD, "  Post-Quantum Cryptography Readiness Report"))
-    L.append(C.wrap(C.BOLD, bar))
-    L.append(f"  Host:          {r.hostname}  ({r.os}, {r.arch})")
-    L.append(f"  CPU:           {r.cpu_model}")
+    L: list[str] = [
+        C.wrap(C.BOLD, bar),
+        C.wrap(C.BOLD, "  Post-Quantum Cryptography Readiness Report"),
+        C.wrap(C.BOLD, bar),
+        f"  Host:          {r.hostname}  ({r.os}, {r.arch})",
+        f"  CPU:           {r.cpu_model}",
+    ]
     if r.cpu_freq_mhz:
         L.append(f"  Max freq:      {r.cpu_freq_mhz / 1000:.2f} GHz")
     L.append(
@@ -5523,6 +5524,13 @@ def render_text(r: Report) -> str:
         L.append(f"  Mem bandwidth: {r.memory_bandwidth_method}")
     L.append(f"  Generated:     {r.generated_at}")
     L.append("")
+    return L
+
+
+def render_text(r: Report) -> str:
+    L: list[str] = []
+    sub = "-" * 76
+    L.extend(_render_text_header(r))
 
     L.append(C.wrap(C.BOLD, "1. CPU instruction-set support for PQC"))
     L.append(f"   Tier: {_tier_label(r.isa_tier)}  (score {r.isa_score})")
