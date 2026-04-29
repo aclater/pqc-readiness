@@ -5543,13 +5543,9 @@ def _render_text_isa(r: Report) -> list[str]:
     return L
 
 
-def render_text(r: Report) -> str:
-    L: list[str] = []
-    sub = "-" * 76
-    L.extend(_render_text_header(r))
-    L.extend(_render_text_isa(r))
-
-    L.append(C.wrap(C.BOLD, "2. Cryptographic accelerators / HSMs / TPMs"))
+def _render_text_accelerators(r: Report) -> list[str]:
+    """Section 2: Cryptographic accelerators, HSMs, TPMs, PKCS#11 modules."""
+    L: list[str] = [C.wrap(C.BOLD, "2. Cryptographic accelerators / HSMs / TPMs")]
     if r.accelerators:
         for a in r.accelerators:
             pqc_mark = " [PQC-capable]" if a.get("pqc_capable") else ""
@@ -5578,6 +5574,15 @@ def render_text(r: Report) -> str:
         if len(r.pkcs11_modules) > 5:
             L.append(f"       ... and {len(r.pkcs11_modules) - 5} more")
     L.append("")
+    return L
+
+
+def render_text(r: Report) -> str:
+    L: list[str] = []
+    sub = "-" * 76
+    L.extend(_render_text_header(r))
+    L.extend(_render_text_isa(r))
+    L.extend(_render_text_accelerators(r))
 
     L.append(C.wrap(C.BOLD, "3. Operating-system crypto plumbing"))
     if r.kernel_info:
