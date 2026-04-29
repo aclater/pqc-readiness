@@ -5527,20 +5527,27 @@ def _render_text_header(r: Report) -> list[str]:
     return L
 
 
-def render_text(r: Report) -> str:
-    L: list[str] = []
-    sub = "-" * 76
-    L.extend(_render_text_header(r))
-
-    L.append(C.wrap(C.BOLD, "1. CPU instruction-set support for PQC"))
-    L.append(f"   Tier: {_tier_label(r.isa_tier)}  (score {r.isa_score})")
-    L.append(f"   {r.isa_reason}")
+def _render_text_isa(r: Report) -> list[str]:
+    """Section 1: CPU instruction-set support for PQC."""
+    L: list[str] = [
+        C.wrap(C.BOLD, "1. CPU instruction-set support for PQC"),
+        f"   Tier: {_tier_label(r.isa_tier)}  (score {r.isa_score})",
+        f"   {r.isa_reason}",
+    ]
     if r.isa_features:
         for _, info in sorted(r.isa_features.items()):
             L.append(f"     + {info['name']:<22} {info['purpose']}")
     else:
         L.append("     (no PQC-relevant ISA features detected)")
     L.append("")
+    return L
+
+
+def render_text(r: Report) -> str:
+    L: list[str] = []
+    sub = "-" * 76
+    L.extend(_render_text_header(r))
+    L.extend(_render_text_isa(r))
 
     L.append(C.wrap(C.BOLD, "2. Cryptographic accelerators / HSMs / TPMs"))
     if r.accelerators:
