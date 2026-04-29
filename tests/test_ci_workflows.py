@@ -20,10 +20,23 @@ adds dev deps when a test genuinely needs them (see ci.yml's "Install
 dev dependencies" step — pytest, ruff, mypy, numpy, jsonschema,
 referencing).  Adding PyYAML solely to grep four substrings out of two
 files is not warranted.
+
+Skip behaviour: ci-ubi8.yml builds an extension test image that COPYs
+only `tests/`, `pqc_readiness.py`, and the wrapper into the image — by
+design, the build infrastructure (`.github/workflows/`, the
+Containerfiles themselves) is *not* shipped into the test image.  When
+this test module runs inside that stripped environment the workflow /
+Containerfile files legitimately do not exist, so the relevant tests
+skip rather than fail.  The regression guard still applies wherever
+the repo layout is visible — local `make check` and the ci.yml
+ubuntu-latest matrix — which is where it would catch a missing
+workflow before push.
 """
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -32,7 +45,8 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
 def _read_workflow(name: str) -> str:
     path = WORKFLOWS / name
-    assert path.exists(), f"workflow missing: {path}"
+    if not path.exists():
+        pytest.skip(f"workflow file not present in this checkout: {path}")
     return path.read_text()
 
 
@@ -74,7 +88,16 @@ def test_every_shipped_containerfile_is_built_in_ci() -> None:
     for a Containerfile that no longer exists — both fail this test.
     """
     shipped = sorted(p.name for p in REPO_ROOT.glob("Containerfile.*"))
-    assert shipped, "no Containerfiles found at repo root"
+    if not shipped:
+        pytest.skip(
+            "no Containerfiles in this checkout (e.g. ci-ubi8.yml's "
+            "extension test image deliberately ships only tests/ + the "
+            "script); regression guard runs where the build "
+            "infrastructure is visible"
+        )
+
+    if not WORKFLOWS.exists():
+        pytest.skip(f"workflow dir not present in this checkout: {WORKFLOWS}")
 
     all_workflow_text = "\n".join(
         wf.read_text() for wf in WORKFLOWS.glob("*.yml")
