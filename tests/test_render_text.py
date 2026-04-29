@@ -200,12 +200,20 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
             id="benchmark-unavailable-with-reason",
         ),
         pytest.param(
+            lambda r: setattr(r, "benchmark", {"available": False}),
+            id="benchmark-unavailable-without-reason",
+        ),
+        pytest.param(
             lambda r: setattr(r, "benchmark_tls_handshake", {}),
             id="bench-tls-empty",
         ),
         pytest.param(
             lambda r: setattr(r, "benchmark_tls_handshake", {"available": False, "reason": "loopback failed"}),
             id="bench-tls-unavailable-with-reason",
+        ),
+        pytest.param(
+            lambda r: setattr(r, "benchmark_tls_handshake", {"available": False}),
+            id="bench-tls-unavailable-without-reason",
         ),
         pytest.param(lambda r: setattr(r, "per_algo", {}), id="per-algo-empty"),
         pytest.param(
