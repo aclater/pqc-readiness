@@ -5658,6 +5658,26 @@ def _render_text_os_crypto(r: Report) -> list[str]:
     return L
 
 
+def _render_text_openssl_tls_groups(tls_groups: dict[str, Any]) -> list[str]:
+    """Section 4 sub-block: TLS PQC group lines (hybrid / pure / classical)."""
+    hybrid = tls_groups.get("hybrid") or []
+    pure = tls_groups.get("pure_pqc") or []
+    classical = tls_groups.get("classical") or []
+    L: list[str] = []
+    if not (hybrid or pure):
+        L.append("   TLS PQC groups: not exposed")
+    else:
+        L.append(
+            f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}"
+        )
+        L.append(
+            f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}"
+        )
+    if classical:
+        L.append(f"   TLS classical groups:    {len(classical)} detected")
+    return L
+
+
 def _render_text_openssl(r: Report) -> list[str]:
     """Section 4: OpenSSL PQC capability (version, KEMs, sigs, TLS groups)."""
     L: list[str] = [C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)")]
@@ -5672,21 +5692,7 @@ def _render_text_openssl(r: Report) -> list[str]:
         sigs = r.openssl.get("sig_algorithms") or []
         L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
         L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
-        tg = r.openssl.get("tls_groups") or {}
-        hybrid = tg.get("hybrid") or []
-        pure = tg.get("pure_pqc") or []
-        classical = tg.get("classical") or []
-        if not (hybrid or pure):
-            L.append("   TLS PQC groups: not exposed")
-        else:
-            L.append(
-                f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}"
-            )
-            L.append(
-                f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}"
-            )
-        if classical:
-            L.append(f"   TLS classical groups:    {len(classical)} detected")
+        L.extend(_render_text_openssl_tls_groups(r.openssl.get("tls_groups") or {}))
     L.append("")
     return L
 
