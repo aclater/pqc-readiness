@@ -57,13 +57,21 @@ RUN useradd -r -u 1001 -g 0 -s /sbin/nologin -d /var/lib/pqc-readiness probe \
     && chown -R 1001:0 /var/lib/pqc-readiness \
     && chmod -R g+rwX /var/lib/pqc-readiness
 
-COPY --chown=1001:0 pqc_readiness.py /usr/local/bin/pqc-readiness
-RUN chmod 0755 /usr/local/bin/pqc-readiness
+# Two files: the Python script and the shell wrapper that locates a
+# usable interpreter before exec'ing it.  UBI 10 ships Python 3.12+ so
+# the wrapper finds the system `python3` immediately on this image; the
+# wrapper still ships so the in-container invocation form matches the
+# RHEL 8 host invocation form documented in the README.
+COPY --chown=1001:0 pqc_readiness.py /usr/local/bin/pqc_readiness.py
+COPY --chown=1001:0 pqc-readiness    /usr/local/bin/pqc-readiness
+RUN chmod 0755 /usr/local/bin/pqc_readiness.py /usr/local/bin/pqc-readiness
 
 # Healthcheck: verify the script imports + executes (--help is cheap and
-# always exits 0).  ubi10-minimal does not ship curl, so we use python3.
+# always exits 0).  ubi10-minimal does not ship curl, so we use python3
+# directly against the .py to keep the healthcheck independent of the
+# wrapper's PATH search.
 HEALTHCHECK --interval=1h --timeout=5s --start-period=5s --retries=1 \
-    CMD python3 /usr/local/bin/pqc-readiness --help >/dev/null 2>&1 || exit 1
+    CMD python3 /usr/local/bin/pqc_readiness.py --help >/dev/null 2>&1 || exit 1
 
 USER 1001
 WORKDIR /var/lib/pqc-readiness

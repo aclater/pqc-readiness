@@ -735,17 +735,20 @@ import pytest  # noqa: E402  (placed after the existing tests for diff locality)
 
 
 @pytest.mark.parametrize("fixture, expected_family, expected_id, has_codename", [
-    ("rhel-9.txt",      "rhel",   "rhel",   False),
-    ("rhel-10.txt",     "rhel",   "rhel",   False),
-    ("fedora-41.txt",   "rhel",   "fedora", False),
-    ("rocky-9.txt",     "rhel",   "rocky",  False),
-    ("ubuntu-2404.txt", "debian", "ubuntu", True),
-    ("ubuntu-2510.txt", "debian", "ubuntu", True),
-    ("debian-12.txt",   "debian", "debian", True),
-    ("debian-13.txt",   "debian", "debian", True),
-    ("sles-15sp6.txt",  "suse",   "sles",   False),
-    ("arch.txt",        "arch",   "arch",   False),
-    ("alpine-321.txt",  "alpine", "alpine", False),
+    ("rhel-8.txt",       "rhel",   "rhel",      False),
+    ("rhel-9.txt",       "rhel",   "rhel",      False),
+    ("rhel-10.txt",      "rhel",   "rhel",      False),
+    ("fedora-41.txt",    "rhel",   "fedora",    False),
+    ("rocky-8.txt",      "rhel",   "rocky",     False),
+    ("rocky-9.txt",      "rhel",   "rocky",     False),
+    ("almalinux-8.txt",  "rhel",   "almalinux", False),
+    ("ubuntu-2404.txt",  "debian", "ubuntu",    True),
+    ("ubuntu-2510.txt",  "debian", "ubuntu",    True),
+    ("debian-12.txt",    "debian", "debian",    True),
+    ("debian-13.txt",    "debian", "debian",    True),
+    ("sles-15sp6.txt",   "suse",   "sles",      False),
+    ("arch.txt",         "arch",   "arch",      False),
+    ("alpine-321.txt",   "alpine", "alpine",    False),
 ])
 def test_parse_os_release_matrix(fixture: str, expected_family: str,
                                  expected_id: str, has_codename: bool) -> None:
@@ -993,6 +996,47 @@ def test_openssl_upgrade_path_rhel9() -> None:
     msg = pr.openssl_upgrade_path([3, 2, 0], osr)
     assert msg is not None
     assert "RHEL 10" in msg
+
+
+@pytest.mark.parametrize("id_, version_id, expected_distro_token", [
+    ("rhel",      "8.10", "RHEL 8"),
+    ("rocky",     "8.10", "EL8"),
+    ("almalinux", "8.10", "EL8"),
+])
+def test_openssl_upgrade_path_rhel8_family(
+    id_: str, version_id: str, expected_distro_token: str
+) -> None:
+    """RHEL 8 / Rocky 8 / AlmaLinux 8 ship OpenSSL 1.1.1 — the upgrade
+    hint must call out the OpenSSL 3.5+ requirement and the AppStream
+    Python prerequisite for the script itself.  Distinct branch from the
+    EL9 catch-all so the customer sees an EL8-correct message."""
+    osr = {"family": "rhel", "id": id_, "version_id": version_id}
+    msg = pr.openssl_upgrade_path([1, 1, 1], osr)
+    assert msg is not None
+    assert expected_distro_token in msg, msg
+    assert "1.1.1" in msg, "should name the shipped OpenSSL series"
+    assert "3.5" in msg, "should name the OpenSSL version PQC requires"
+    assert "AppStream" in msg, "should mention the AppStream Python prerequisite"
+    assert "python3" in msg.lower(), "should name the python3.9+ AppStream module"
+
+
+def test_openssl_upgrade_path_rhel9_unchanged_after_rhel8_branch() -> None:
+    """Regression guard: adding the RHEL 8 branch must not change the
+    existing RHEL 9 string."""
+    osr = {"family": "rhel", "id": "rhel", "version_id": "9.6"}
+    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
+    assert msg is not None
+    assert "RHEL 10" in msg
+    assert "AppStream" not in msg, "RHEL 9 hint should not mention AppStream Python"
+
+
+def test_openssl_upgrade_path_rocky9_unchanged_after_rhel8_branch() -> None:
+    """Regression guard: Rocky/Alma 9 keeps the EL9-class hint."""
+    osr = {"family": "rhel", "id": "rocky", "version_id": "9.6"}
+    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
+    assert msg is not None
+    assert "EL10" in msg or "backport" in msg
+    assert "AppStream" not in msg
 
 
 def test_openssl_upgrade_path_debian12() -> None:

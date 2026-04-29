@@ -57,12 +57,18 @@ RUN groupadd -r -g 1001 probe \
     && mkdir -p /var/lib/pqc-readiness \
     && chown -R 1001:1001 /var/lib/pqc-readiness
 
-COPY --chown=1001:1001 pqc_readiness.py /usr/local/bin/pqc-readiness
-RUN chmod 0755 /usr/local/bin/pqc-readiness
+# Two files: the Python script and the shell wrapper that locates a
+# usable interpreter before exec'ing it.  Debian 12 ships Python 3.11
+# (sufficient for this script) — the wrapper still ships so the
+# in-container invocation form matches the README's RHEL 8 host form.
+COPY --chown=1001:1001 pqc_readiness.py /usr/local/bin/pqc_readiness.py
+COPY --chown=1001:1001 pqc-readiness    /usr/local/bin/pqc-readiness
+RUN chmod 0755 /usr/local/bin/pqc_readiness.py /usr/local/bin/pqc-readiness
 
-# Healthcheck — same Python-only pattern as the UBI build.
+# Healthcheck — same Python-only pattern as the UBI build, against the
+# .py directly so it does not depend on the wrapper's PATH search.
 HEALTHCHECK --interval=1h --timeout=5s --start-period=5s --retries=1 \
-    CMD python3 /usr/local/bin/pqc-readiness --help >/dev/null 2>&1 || exit 1
+    CMD python3 /usr/local/bin/pqc_readiness.py --help >/dev/null 2>&1 || exit 1
 
 USER 1001
 WORKDIR /var/lib/pqc-readiness
