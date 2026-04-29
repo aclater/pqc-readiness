@@ -2297,6 +2297,29 @@ def openssl_upgrade_path(
     major = ver[0] if ver and ver[0] else None
 
     if family == "rhel":
+        # RHEL 8 / Rocky 8 / AlmaLinux 8 ship OpenSSL 1.1.1, which has no
+        # PQC primitives at all — distinct from EL9's 3.0/3.2 path.  The
+        # RHEL 8 customer also has to opt into the AppStream python3.9+
+        # module just to invoke this script (default Python is 3.6, which
+        # cannot parse modern type-hint syntax used here), so the hint
+        # carries both facts.  The wrapper shell launcher at the repo
+        # root does the runtime fallback to a usable interpreter.
+        if id_ == "rhel" and major == "8":
+            return (
+                "RHEL 8 base channel ships OpenSSL 1.1.1; PQC requires "
+                "OpenSSL 3.5+, available in RHEL 10 or a Red Hat-supported "
+                "channel with newer crypto.  The script itself requires "
+                "Python 3.9+ — enable the `python39` (or higher) AppStream "
+                "module: `dnf module install python39`."
+            )
+        if id_ in {"rocky", "almalinux", "centos", "ol"} and major == "8":
+            return (
+                "EL8-class distributions ship OpenSSL 1.1.1; PQC requires "
+                "OpenSSL 3.5+, available in the EL10 release of this "
+                "distribution or a backport channel.  The script itself "
+                "requires Python 3.9+ via the `python39` (or higher) "
+                "AppStream module: `dnf module install python39`."
+            )
         if id_ == "rhel" and major and int(major) <= 9:
             return (
                 "RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "

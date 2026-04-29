@@ -1,0 +1,93 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+#
+# pqc-readiness wrapper launcher.
+#
+# Why this exists: pqc_readiness.py uses modern Python (3.9+) type-hint
+# syntax (PEP 604 unions, builtin generics).  RHEL 8 / Rocky 8 /
+# AlmaLinux 8 ship Python 3.6 as the default `python3`, which cannot
+# parse the script — it fails at import with `SyntaxError: future
+# feature annotations is not defined`.  Customers running this on EL8
+# fleets need an actionable signal, not a Python traceback.
+#
+# What this does: search PATH for the highest-version python3.x
+# available (3.13 → 3.9, then `python3`, then `python`), exec the .py
+# with that interpreter, and pass all arguments through.  If no Python
+# 3.9+ is on PATH, print AppStream-aware guidance and exit 127.
+#
+# Co-located with pqc_readiness.py: the wrapper is shipped in the
+# container images (UBI 10 and Debian 12-slim) at the same path so the
+# user's invocation form does not change between distros.
+#
+# Exit codes: whatever pqc_readiness.py returns under the chosen
+# interpreter, or 127 if no usable interpreter is found.  The wrapper
+# itself does not consume any flags; everything after the program name
+# is passed through to the script.
+
+set -e
+
+# Resolve the wrapper's own location so we can find pqc_readiness.py
+# next to it.  $0 may be an absolute path, a relative path, or a bare
+# name resolved via PATH; handle all three.
+case $0 in
+    /*) self=$0 ;;
+    */*) self=$(pwd)/$0 ;;
+    *) self=$(command -v -- "$0" 2>/dev/null || printf '%s' "$0") ;;
+esac
+# Resolve to an absolute directory; suppress cd / dirname stderr so a
+# stripped-down PATH (a handful of test harnesses do this) gets a clean
+# error from the explicit existence check below rather than a noisy
+# `cd: null directory` from the resolver.
+SCRIPT_DIR=$(cd "$(dirname -- "$self" 2>/dev/null)" 2>/dev/null && pwd) || SCRIPT_DIR=
+PY_SCRIPT="$SCRIPT_DIR/pqc_readiness.py"
+
+if [ -z "$SCRIPT_DIR" ] || [ ! -f "$PY_SCRIPT" ]; then
+    printf 'pqc-readiness: cannot locate pqc_readiness.py next to this launcher\n' >&2
+    printf '  launcher: %s\n' "$self" >&2
+    printf '  expected: %s\n' "${PY_SCRIPT:-<unresolved>/pqc_readiness.py}" >&2
+    exit 2
+fi
+
+# Returns 0 if $1 is on PATH and reports a Python version >= 3.9.
+# Uses the interpreter itself to query its version so we trust the
+# answer regardless of how the binary is named.
+is_py_39_plus() {
+    cmd=$1
+    command -v -- "$cmd" >/dev/null 2>&1 || return 1
+    ver=$("$cmd" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null) || return 1
+    major=${ver%%.*}
+    minor=${ver#*.}
+    [ "$major" = "3" ] || return 1
+    # POSIX [ -ge ] requires integers; redirect stderr so a non-numeric
+    # minor (e.g. "9a0" from a pre-release) silently returns false
+    # rather than printing a shell error.
+    [ "$minor" -ge 9 ] 2>/dev/null
+}
+
+# Try explicit minor-version names first, newest to oldest, then the
+# generic `python3` and `python` shims.  Explicit names match the
+# RHEL 8 AppStream module binaries (python3.9, python3.11, python3.12)
+# directly — installing the module exposes them on PATH without
+# touching the system `python3` symlink.
+for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python; do
+    if is_py_39_plus "$candidate"; then
+        exec "$candidate" "$PY_SCRIPT" "$@"
+    fi
+done
+
+cat >&2 <<'EOF'
+pqc-readiness: no Python 3.9+ interpreter found on PATH.
+
+This script requires Python 3.9 or newer.  On RHEL 8, Rocky Linux 8,
+or AlmaLinux 8 the default `python3` is 3.6, which cannot parse the
+modern type-hint syntax this script uses.  Enable the AppStream
+`python39` (or higher) module, then re-run this launcher:
+
+    dnf module install python39
+    /path/to/pqc-readiness [flags]
+
+You can also invoke any 3.9+ interpreter directly against the .py:
+
+    python3.9 /path/to/pqc_readiness.py [flags]
+EOF
+exit 127

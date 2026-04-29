@@ -41,18 +41,30 @@ DaemonSet on OpenShift.
 ## Quick start
 
 ```bash
-./pqc_readiness.py                    # human-readable report
-./pqc_readiness.py --bench            # include OpenSSL microbench
-./pqc_readiness.py --json             # stable JSON for aggregation
-./pqc_readiness.py --cbom             # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
-./pqc_readiness.py --spdx             # SPDX 3.0 JSON-LD (Security profile)
-./pqc_readiness.py --sarif            # SARIF 2.1.0 findings (OASIS)
-./pqc_readiness.py --markdown         # markdown for tickets
-./pqc_readiness.py --recommend        # policy-aware algorithm recommendation
-./pqc_readiness.py --ansible          # ansible_facts wrapper
-./pqc_readiness.py --aggregate ./out  # roll up many --save outputs
-./pqc_readiness.py --version          # script + JSON schema versions
+./pqc-readiness                       # recommended: shell wrapper picks a usable Python
+./pqc_readiness.py                    # equivalent on hosts whose default `python3` is 3.9+
+./pqc-readiness --bench               # include OpenSSL microbench
+./pqc-readiness --json                # stable JSON for aggregation
+./pqc-readiness --cbom                # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
+./pqc-readiness --spdx                # SPDX 3.0 JSON-LD (Security profile)
+./pqc-readiness --sarif               # SARIF 2.1.0 findings (OASIS)
+./pqc-readiness --markdown            # markdown for tickets
+./pqc-readiness --recommend           # policy-aware algorithm recommendation
+./pqc-readiness --ansible             # ansible_facts wrapper
+./pqc-readiness --aggregate ./out     # roll up many --save outputs
+./pqc-readiness --version             # script + JSON schema versions
 ```
+
+The `pqc-readiness` shell wrapper is the recommended invocation form
+because it is RHEL-8-safe: it searches `PATH` for the highest available
+Python 3.9+ (`python3.13` → `python3.9`, then `python3`, then `python`)
+and `exec`s `pqc_readiness.py` with that interpreter. On a host whose
+default `python3` is too old (RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6),
+it prints AppStream guidance instead of a Python `SyntaxError`.
+
+Both files ship side by side in the container images at
+`/usr/local/bin/pqc-readiness` (wrapper) and
+`/usr/local/bin/pqc_readiness.py` (script).
 
 ## Flags
 
@@ -269,6 +281,7 @@ schema matches in CI or in maintainer testing.
 | --- | --- | --- |
 | **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every change (CI) |
 | **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+ | Periodic (weekly) — fixes accepted |
+| **3** | RHEL 8, Rocky 8, AlmaLinux 8 | Best-effort, community-supported. Requires the AppStream `python39` (or higher) module — invoke via the `pqc-readiness` wrapper. OpenSSL 1.1.1 means `openssl.pqc_native: false` and a no-bench caveat; the inventory probe still works. |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
 `detect_os()` resolves `family` from `/etc/os-release` `ID` and falls
