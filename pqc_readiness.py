@@ -5577,14 +5577,9 @@ def _render_text_accelerators(r: Report) -> list[str]:
     return L
 
 
-def render_text(r: Report) -> str:
+def _render_text_kernel_crypto(r: Report) -> list[str]:
+    """Section 3a: kernel release, /proc/crypto PQC drivers and hw-accel, kTLS."""
     L: list[str] = []
-    sub = "-" * 76
-    L.extend(_render_text_header(r))
-    L.extend(_render_text_isa(r))
-    L.extend(_render_text_accelerators(r))
-
-    L.append(C.wrap(C.BOLD, "3. Operating-system crypto plumbing"))
     if r.kernel_info:
         rh = r.kernel_info.get("redhat_release") or {}
         if rh.get("raw"):
@@ -5605,6 +5600,12 @@ def render_text(r: Report) -> str:
             L.append(f"     ... and {len(r.kernel_crypto_hw) - 6} more")
     if r.ktls_supported is not None:
         L.append(f"   Kernel TLS:    {'yes' if r.ktls_supported else 'no'}")
+    return L
+
+
+def _render_text_fips(r: Report) -> list[str]:
+    """Section 3b: FIPS mode and FIPS/PQC conflict warning."""
+    L: list[str] = []
     if r.fips:
         L.append(
             f"   FIPS mode:     kernel={r.fips.get('kernel')}, openssl-provider={r.fips.get('openssl_provider')}"
@@ -5616,6 +5617,12 @@ def render_text(r: Report) -> str:
                 f"   ⚠  FIPS/PQC conflict: {r.fips_pqc_conflict.get('explanation')}",
             )
         )
+    return L
+
+
+def _render_text_ssh_ipsec_nss(r: Report) -> list[str]:
+    """Section 3c: OpenSSH PQC kex groups, strongSwan IPsec, NSS."""
+    L: list[str] = []
     if r.ssh_pqc.get("available"):
         pqc = r.ssh_pqc.get("pqc_kex") or []
         L.append(
@@ -5637,7 +5644,27 @@ def render_text(r: Report) -> str:
         L.append(
             f"   NSS:           {r.nss.get('version')}  (PQC-capable: {r.nss.get('pqc_capable')})"
         )
+    return L
+
+
+def _render_text_os_crypto(r: Report) -> list[str]:
+    """Section 3: OS crypto plumbing. Composite of kernel/proc-crypto, FIPS,
+    and SSH/IPsec/NSS sub-blocks under a single bold heading."""
+    L: list[str] = [C.wrap(C.BOLD, "3. Operating-system crypto plumbing")]
+    L.extend(_render_text_kernel_crypto(r))
+    L.extend(_render_text_fips(r))
+    L.extend(_render_text_ssh_ipsec_nss(r))
     L.append("")
+    return L
+
+
+def render_text(r: Report) -> str:
+    L: list[str] = []
+    sub = "-" * 76
+    L.extend(_render_text_header(r))
+    L.extend(_render_text_isa(r))
+    L.extend(_render_text_accelerators(r))
+    L.extend(_render_text_os_crypto(r))
 
     L.append(C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)"))
     if not r.openssl.get("available"):
