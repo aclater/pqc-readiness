@@ -42,6 +42,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import platform
@@ -478,6 +479,15 @@ def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except (subprocess.TimeoutExpired, OSError) as e:
         return 127, str(e)
+
+
+# openssl version output is constant for the process lifetime; cache to
+# avoid repeated subprocess calls.
+@functools.lru_cache(maxsize=None)
+def _openssl_version_text() -> tuple[int, str]:
+    """Return cached (rc, text) from `openssl version`. Constant per process.
+    Tests requiring a fresh subprocess call must invoke .cache_clear()."""
+    return _run(["openssl", "version"], timeout=5)
 
 
 def _sysctl(key: str) -> str:
@@ -2790,7 +2800,7 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     out: dict[str, Any] = {"available": True}
-    rc, ver = _run(["openssl", "version"], timeout=5)
+    rc, ver = _openssl_version_text()
     out["version"] = ver.strip() if rc == 0 else "unknown"
     m = re.search(r"OpenSSL\s+(\d+)\.(\d+)\.(\d+)", out["version"])
     out["version_tuple"] = (
@@ -2983,7 +2993,7 @@ def run_classical_baseline(seconds: int) -> dict[str, dict[str, float]]:
 def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
-    rc, ver = _run(["openssl", "version"], timeout=5)
+    rc, ver = _openssl_version_text()
     m = re.search(r"OpenSSL\s+(\d+)\.(\d+)", ver)
     if not m or (int(m.group(1)), int(m.group(2))) < (3, 5):
         return {"available": False, "reason": f"OpenSSL pre-3.5 (got {ver.strip()})"}
@@ -3438,7 +3448,7 @@ def run_tls_handshake_bench(
     """
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
-    rc, ver = _run(["openssl", "version"], timeout=5)
+    rc, ver = _openssl_version_text()
     m = re.search(r"OpenSSL\s+(\d+)\.(\d+)", ver)
     if not m or (int(m.group(1)), int(m.group(2))) < (3, 5):
         return {
