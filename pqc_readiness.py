@@ -5702,6 +5702,38 @@ def _render_text_pqc_sizes(r: Report) -> list[str]:
     return L
 
 
+def _render_text_benchmark(r: Report) -> list[str]:
+    """Section 6: PQC microbenchmark — emitted only when r.benchmark is set."""
+    if not r.benchmark:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "6. Microbenchmark")]
+    if not r.benchmark.get("available"):
+        L.append(f"   unavailable: {r.benchmark.get('reason', 'unknown')}")
+    else:
+        L.append(
+            f"   engine: {r.benchmark['engine']}, {r.benchmark['seconds_per_test']}s per test, "
+            f"{r.benchmark.get('threads', 1)} thread(s)"
+        )
+        for algo, data in (r.benchmark.get("pqc") or {}).items():
+            L.append(f"   {algo}:")
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    agg = ", ".join(f"{kk}={vv:.1f}" for kk, vv in v.items())
+                    L.append(f"     {k}: {agg}")
+                elif isinstance(v, (int, float)):
+                    L.append(f"     {k:<12} {v:>12.1f}")
+                else:
+                    L.append(f"     {k}: {v}")
+        classical = r.benchmark.get("classical") or {}
+        if classical:
+            L.append("   Classical baseline (per-core):")
+            for name, rates in classical.items():
+                s = ", ".join(f"{k}={v:.1f}" for k, v in rates.items())
+                L.append(f"     {name:<10} {s}")
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5711,33 +5743,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_os_crypto(r))
     L.extend(_render_text_openssl(r))
     L.extend(_render_text_pqc_sizes(r))
-
-    if r.benchmark:
-        L.append(C.wrap(C.BOLD, "6. Microbenchmark"))
-        if not r.benchmark.get("available"):
-            L.append(f"   unavailable: {r.benchmark.get('reason', 'unknown')}")
-        else:
-            L.append(
-                f"   engine: {r.benchmark['engine']}, {r.benchmark['seconds_per_test']}s per test, "
-                f"{r.benchmark.get('threads', 1)} thread(s)"
-            )
-            for algo, data in (r.benchmark.get("pqc") or {}).items():
-                L.append(f"   {algo}:")
-                for k, v in data.items():
-                    if isinstance(v, dict):
-                        agg = ", ".join(f"{kk}={vv:.1f}" for kk, vv in v.items())
-                        L.append(f"     {k}: {agg}")
-                    elif isinstance(v, (int, float)):
-                        L.append(f"     {k:<12} {v:>12.1f}")
-                    else:
-                        L.append(f"     {k}: {v}")
-            classical = r.benchmark.get("classical") or {}
-            if classical:
-                L.append("   Classical baseline (per-core):")
-                for name, rates in classical.items():
-                    s = ", ".join(f"{k}={v:.1f}" for k, v in rates.items())
-                    L.append(f"     {name:<10} {s}")
-        L.append("")
+    L.extend(_render_text_benchmark(r))
 
     if r.benchmark_tls_handshake:
         L.append(C.wrap(C.BOLD, "6b. TLS handshake benchmark (loopback)"))
