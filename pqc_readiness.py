@@ -5790,6 +5790,41 @@ def _render_text_per_algo(r: Report) -> list[str]:
     return L
 
 
+def _render_text_production_estimate(r: Report) -> list[str]:
+    """Section 8: production capacity estimate (60% CPU headroom),
+    conditional on r.production_estimate."""
+    if not r.production_estimate:
+        return []
+    L: list[str] = [
+        C.wrap(C.BOLD, "8. Production capacity estimate (60% CPU headroom)")
+    ]
+    e = r.production_estimate
+    if "tls_pqc_handshakes_per_sec" in e:
+        L.append(
+            f"   TLS-PQC handshakes/sec:           ~{e['tls_pqc_handshakes_per_sec']:,}"
+        )
+    if "ml_dsa_signatures_per_sec" in e:
+        L.append(
+            f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}"
+        )
+    if "slh_dsa_sha2_128s_signatures_per_sec" in e:
+        L.append(
+            f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}"
+        )
+    if "concurrent_connections_realistic" in e:
+        L.append(
+            f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)"
+        )
+    if "concurrent_connections_theoretical_max" in e:
+        L.append(
+            f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)"
+        )
+    if "assumptions" in e:
+        L.append(f"   ({e['assumptions']})")
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5802,33 +5837,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_benchmark(r))
     L.extend(_render_text_tls_handshake(r))
     L.extend(_render_text_per_algo(r))
-
-    if r.production_estimate:
-        L.append(C.wrap(C.BOLD, "8. Production capacity estimate (60% CPU headroom)"))
-        e = r.production_estimate
-        if "tls_pqc_handshakes_per_sec" in e:
-            L.append(
-                f"   TLS-PQC handshakes/sec:           ~{e['tls_pqc_handshakes_per_sec']:,}"
-            )
-        if "ml_dsa_signatures_per_sec" in e:
-            L.append(
-                f"   ML-DSA-65 signatures/sec:         ~{e['ml_dsa_signatures_per_sec']:,}"
-            )
-        if "slh_dsa_sha2_128s_signatures_per_sec" in e:
-            L.append(
-                f"   SLH-DSA-SHA2-128s signatures/sec: ~{e['slh_dsa_sha2_128s_signatures_per_sec']}"
-            )
-        if "concurrent_connections_realistic" in e:
-            L.append(
-                f"   Concurrent conns (realistic):     ~{e['concurrent_connections_realistic']:,}  (192 KB/conn)"
-            )
-        if "concurrent_connections_theoretical_max" in e:
-            L.append(
-                f"   Concurrent conns (theoretical):   ~{e['concurrent_connections_theoretical_max']:,}  (32 KB/conn)"
-            )
-        if "assumptions" in e:
-            L.append(f"   ({e['assumptions']})")
-        L.append("")
+    L.extend(_render_text_production_estimate(r))
 
     if r.trust_store.get("available"):
         L.append(C.wrap(C.BOLD, "9. Trust store inventory"))
