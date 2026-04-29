@@ -1,0 +1,90 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI: build the UBI 8 runtime image and run the pytest suite inside an
+# extension image under the AppStream `python3.9` interpreter.
+#
+# Why a separate workflow: the existing ci.yml uses `actions/setup-python`
+# on `ubuntu-latest` to cover the 3.11 / 3.12 / 3.13 matrix.  UBI 8 ships
+# Python 3.9 from the AppStream `python39` module — that combination is
+# not expressible via setup-python on Ubuntu, and validating it requires
+# running inside an actual UBI 8 image.  Keeping it in its own workflow
+# leaves the Ubuntu-matrix logic in ci.yml clean.
+#
+# Why an extension image instead of bind-mounting the workspace into
+# the runtime image: microdnf and rootless-podman bind mounts interact
+# badly across cwd / SELinux contexts.  Building a separate test image
+# that COPYs tests/ + the script keeps the runtime image lean (no
+# pytest, no test fixtures shipped to customers) and the CI step
+# reproducible — the same `podman build` / `podman run` pair works
+# locally and in CI.
+#
+# Action versions verified against upstream releases at the time of
+# writing (per CLAUDE.md "Always verify current versions before using
+# them").  Bump deliberately and re-verify, not via Dependabot churn:
+#   actions/checkout@v6.0.2  (gh api repos/actions/checkout/releases/latest)
+
+name: ci-ubi8
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: build + test (UBI 8 / python3.9)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Build the UBI 8 runtime image
+        # podman is preinstalled on ubuntu-latest runners; the same
+        # `make container-ubi8` target reproduces this locally.
+        run: |
+          podman build --format=docker \
+            -t pqc-readiness:ubi8 \
+            -f Containerfile.ubi8 .
+
+      - name: Smoke-test the wrapper launcher
+        # --help is the cheapest path through the wrapper + script and
+        # exits 0 on success.  If python3.9 is missing inside the image
+        # or the wrapper cannot find it, this step fails before pytest
+        # so the failure is unambiguous.
+        run: |
+          podman run --rm pqc-readiness:ubi8 --help >/dev/null
+
+      - name: Build the test extension image
+        # Layers test-only dependencies (python39-pip, pytest,
+        # jsonschema, referencing, git) on top of the runtime image and
+        # COPYs tests/ + the script + the wrapper into a working dir.
+        # Customers never ship this image — it exists only inside CI to
+        # validate that the runtime image's Python 3.9 environment can
+        # run every test in the suite.
+        run: |
+          cat <<'CONTAINERFILE' | podman build --format=docker -t pqc-readiness:ubi8-test -f - .
+          FROM pqc-readiness:ubi8
+          USER 0
+          WORKDIR /tmp/build
+          RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+                  python39-pip \
+                  git \
+              && microdnf clean all
+          RUN python3.9 -m pip install --no-cache-dir \
+                  pytest \
+                  jsonschema \
+                  referencing
+          COPY tests/             /tmp/build/tests/
+          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
+          COPY pqc-readiness      /tmp/build/pqc-readiness
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          CONTAINERFILE
+
+      - name: Run pytest under python3.9 inside the test image
+        run: |
+          podman run --rm \
+            --user 0 \
+            --entrypoint /bin/sh \
+            pqc-readiness:ubi8-test \
+            -c 'cd /tmp/build && python3.9 -m pytest tests/ -q'

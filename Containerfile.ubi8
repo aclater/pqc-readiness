@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: Apache-2.0
+# Containerfile.ubi8 — host-level Post-Quantum Cryptography readiness
+# assessment, Red Hat UBI 8 minimal base.  Companion to
+# Containerfile.ubi10 (current Red Hat path) and Containerfile.debian
+# (Debian/Ubuntu path); ships so RHEL 8 / Rocky 8 / AlmaLinux 8 fleets
+# can deploy a ready-to-run image without first enabling the AppStream
+# `python39` module on every host.
+#
+# Build:
+#   podman build --format=docker -t pqc-readiness:ubi8 -f Containerfile.ubi8 .
+#
+# Run (host probe — same shape as the UBI 10 image):
+#   podman run --rm \
+#     --pid=host \
+#     -v /proc:/host/proc:ro \
+#     -v /sys:/host/sys:ro \
+#     -v /dev:/host/dev:ro \
+#     -v /etc:/host/etc:ro \
+#     -v /usr/lib/os-release:/host/usr/lib/os-release:ro \
+#     pqc-readiness:ubi8 --host-mount /host --json
+#
+# UBI 8.10 is the current released minor at the time of writing.  Verify
+# before bumping:
+#   curl -s https://registry.access.redhat.com/v2/ubi8/ubi-minimal/tags/list \
+#     | jq '.tags | map(select(test("^8\\.")))'
+
+FROM registry.access.redhat.com/ubi8/ubi-minimal:8.10
+
+LABEL org.opencontainers.image.title="pqc-readiness"
+LABEL org.opencontainers.image.description="Host-level PQC readiness assessment (UBI 8)"
+LABEL org.opencontainers.image.source="https://github.com/aclater/pqc-readiness"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+LABEL org.opencontainers.image.vendor="Red Hat (community)"
+
+# UBI 8 ships Python 3.6 as `python3` by default; the script needs
+# 3.9+ for PEP 604 union syntax and builtin generics.  The AppStream
+# `python39` module is part of UBI 8's package set and provides the
+# `python3.9` interpreter alongside the system python3 — installing it
+# does not displace `/usr/bin/python3` (still 3.6), it adds
+# `/usr/bin/python3.9`.  The wrapper launcher (see /usr/local/bin/
+# pqc-readiness below) already searches PATH for `python3.9` ahead of
+# the system `python3`, so no extra wiring is needed.
+#
+# python39-numpy is the AppStream-supplied numpy build matched to
+# python3.9 — required for the STREAM-triad memory-bandwidth probe;
+# the script falls back gracefully when missing, but every customer
+# report should have a real bandwidth number.
+RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+        python39 \
+        python39-numpy \
+        openssl \
+        openssh-clients \
+    && microdnf clean all \
+    && rm -rf /var/cache/yum
+
+# Non-root UID 1001 — required by OpenShift restricted SCC and matches
+# the convention in CLAUDE.md.  The probe never writes inside the
+# image; outputs are emitted to stdout or a bind-mounted volume.
+RUN useradd -r -u 1001 -g 0 -s /sbin/nologin -d /var/lib/pqc-readiness probe \
+    && mkdir -p /var/lib/pqc-readiness \
+    && chown -R 1001:0 /var/lib/pqc-readiness \
+    && chmod -R g+rwX /var/lib/pqc-readiness
+
+# Two files: the Python script and the shell wrapper that locates a
+# usable interpreter before exec'ing it.  On UBI 8 the wrapper finds
+# `python3.9` (installed above); on UBI 10 / Debian 12 the same wrapper
+# finds the system `python3` directly.  Same invocation form across
+# all three images.
+COPY --chown=1001:0 pqc_readiness.py /usr/local/bin/pqc_readiness.py
+COPY --chown=1001:0 pqc-readiness    /usr/local/bin/pqc-readiness
+RUN chmod 0755 /usr/local/bin/pqc_readiness.py /usr/local/bin/pqc-readiness
+
+# Healthcheck: verify the script imports + executes (--help is cheap
+# and always exits 0).  ubi8-minimal does not ship curl, so we use
+# python3.9 directly against the .py to keep the healthcheck
+# independent of the wrapper's PATH search.
+HEALTHCHECK --interval=1h --timeout=5s --start-period=5s --retries=1 \
+    CMD python3.9 /usr/local/bin/pqc_readiness.py --help >/dev/null 2>&1 || exit 1
+
+USER 1001
+WORKDIR /var/lib/pqc-readiness
+
+ENTRYPOINT ["/usr/local/bin/pqc-readiness"]
+CMD ["--json"]
