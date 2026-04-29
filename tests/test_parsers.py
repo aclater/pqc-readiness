@@ -517,7 +517,7 @@ def test_parse_cgroup_for_container_bare_metal() -> None:
 
 def test_parse_rpm_packages() -> None:
     text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
-    out = pr.parse_rpm_packages(text)
+    out = pr.parse_whitespace_pkg_lines(text)
     assert {"name": "openssl", "version": "3.5.5"} in out
     assert {"name": "java-21-openjdk", "version": "21.0.5"} in out
     assert len(out) == 4
@@ -876,7 +876,7 @@ def test_parse_os_release_strips_quotes_and_comments() -> None:
 
 def test_parse_dpkg_packages_normalises_to_dicts() -> None:
     text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
-    out = pr.parse_dpkg_packages(text)
+    out = pr.parse_whitespace_pkg_lines(text)
     names = {e["name"] for e in out}
     assert "openjdk-21-jdk" in names
     assert "libbcprov-java" in names
@@ -887,7 +887,7 @@ def test_parse_dpkg_packages_normalises_to_dicts() -> None:
 
 def test_parse_pacman_packages() -> None:
     text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
-    out = pr.parse_pacman_packages(text)
+    out = pr.parse_whitespace_pkg_lines(text)
     by_name = {e["name"]: e["version"] for e in out}
     assert by_name["jdk21-openjdk"] == "21.0.5.u11-1"
     assert by_name["nodejs"] == "22.11.0-1"
@@ -906,7 +906,7 @@ def test_parse_apk_packages_handles_release_suffix() -> None:
 
 def test_classify_bundled_crypto_debian_finds_distinct_names() -> None:
     text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
-    pkgs = pr.parse_dpkg_packages(text)
+    pkgs = pr.parse_whitespace_pkg_lines(text)
     out = pr.classify_bundled_crypto(pkgs, family="debian")
     names = {p["package"] for p in out}
     # Debian uses openjdk-XX-jdk / openjdk-XX-jre; the regex catches all four.
@@ -925,7 +925,7 @@ def test_classify_bundled_crypto_debian_finds_distinct_names() -> None:
 
 def test_classify_bundled_crypto_arch_uses_arch_naming() -> None:
     text = (FIXTURES / "packages" / "pacman-q-sample.txt").read_text()
-    pkgs = pr.parse_pacman_packages(text)
+    pkgs = pr.parse_whitespace_pkg_lines(text)
     out = pr.classify_bundled_crypto(pkgs, family="arch")
     names = {p["package"] for p in out}
     # Arch ships `jdk21-openjdk` (vs. RHEL `java-21-openjdk`, Debian
