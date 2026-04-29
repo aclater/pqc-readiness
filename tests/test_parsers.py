@@ -1359,6 +1359,54 @@ def test_parse_ssh_kex_emits_kex_groups_and_back_compat_pqc_kex() -> None:
         "mlkem768x25519-sha256", "sntrup761x25519-sha512",
     ]
     assert out["kex_groups"]["pure_pqc"] == []
+    # Issue #40: classical SSH kex must surface in its own bucket so
+    # downstream tooling can inventory classical-only SSH posture from a
+    # single field, the way it already can for tls_groups.
+    assert out["kex_groups"]["classical"] == [
+        "curve25519-sha256",
+        "diffie-hellman-group14-sha256",
+        "ecdh-sha2-nistp256",
+    ]
+
+
+def test_classify_ssh_kex_buckets_rhel10_fixture_into_three_groups() -> None:
+    """Regression for issue #40: every kex name from the rhel10 ssh -Q
+    kex fixture must land in exactly one of pure_pqc / hybrid / classical
+    (the same three-bucket contract issue #9 introduced for TLS).  The
+    classical bucket must be non-empty — historical behaviour silently
+    dropped curve25519-sha256, ecdh-sha2-nistp*, and the diffie-hellman
+    group kex set, which left consumers unable to inventory classical
+    SSH posture from kex_groups alone."""
+    text = (FIXTURES / "ssh-kex-rhel10.txt").read_text()
+    out = pr.parse_ssh_kex(text)
+    kg = out["kex_groups"]
+    assert set(kg) == {"pure_pqc", "hybrid", "classical"}
+    classified = set(kg["pure_pqc"]) | set(kg["hybrid"]) | set(kg["classical"])
+    fixture_kexes = {ln.strip() for ln in text.splitlines() if ln.strip()}
+    # Every fixture entry must be classified; no kex is dropped.
+    assert classified == fixture_kexes
+    # No kex appears in more than one bucket.
+    assert len(classified) == (
+        len(kg["pure_pqc"]) + len(kg["hybrid"]) + len(kg["classical"])
+    )
+    # Sanity: classical bucket carries the expected baseline kex set.
+    assert "curve25519-sha256" in kg["classical"]
+    assert "ecdh-sha2-nistp256" in kg["classical"]
+    assert "diffie-hellman-group14-sha256" in kg["classical"]
+    # And the PQC pair still bucket as hybrid (no regression).
+    assert "mlkem768x25519-sha256" in kg["hybrid"]
+    assert "sntrup761x25519-sha512" in kg["hybrid"]
+
+
+def test_classify_ssh_kex_drops_unrecognised_names() -> None:
+    """Names that match no PQC and no classical pattern are dropped, the
+    same way classify_tls_groups treats unknown TLS groups.  This keeps
+    the report honest about what we don't yet catalogue."""
+    out = pr.classify_ssh_kex([
+        "unknown-future-kex-sha512",
+        "gss-group14-sha256-",  # GSS-API kex; out of scope for PQC inventory
+    ])
+    assert out == {"pure_pqc": [], "hybrid": [], "classical": []}
 
 
 # ---------------------------------------------------------------------------

@@ -199,7 +199,7 @@ keep the same version. Aggregation refuses to merge files whose
 | `tpm_pqc` | TPM presence and any PQC capability advertised. |
 | `memory_bandwidth_gb_s` | Memory bandwidth measurement (null if not measured). |
 | `memory_bandwidth_method` | How the bandwidth value was obtained, or `not-measured`. |
-| `ssh_pqc` | OpenSSH `ssh -Q kex` PQC / hybrid kex availability. |
+| `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan PQC and hybrid IKE state. |
 | `nss` | NSS PQC algorithm exposure. |
 | `kernel_info` | Kernel version, build flags relevant to crypto, and module list. |
