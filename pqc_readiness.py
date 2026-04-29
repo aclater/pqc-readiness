@@ -99,6 +99,36 @@ def host_path(p: str) -> Path:
     return Path(p)
 
 
+def host_fs_unavailable_note(
+    detection_label: str, host_resources: str
+) -> dict[str, Any] | None:
+    """Return an `unavailable_in_container` annotation when running inside
+    a container without `--host-mount` for a detection whose result
+    depends on the host filesystem (any of /proc /sys /dev /etc /var/lib
+    /usr/lib) or on `lspci` / `dmidecode` whose output reflects the
+    container's view, not the host.  Returns None when the detection is
+    trustworthy: bare-metal invocation, or --host-mount in effect.
+
+    detection_label is the human-readable name of the detection (e.g.
+    "PCI accelerator detection"); host_resources names the host-fs
+    paths or commands the detection consults.  Both are surfaced verbatim
+    in the returned `reason` field so consumers can render a precise
+    "X is unavailable because Y" message."""
+    if HOST_PREFIX:
+        return None
+    env = detect_runtime_environment()
+    if env.get("environment") != "container":
+        return None
+    return {
+        "unavailable_in_container": True,
+        "reason": (
+            f"{detection_label} reads {host_resources}; running inside a "
+            f"container without --host-mount, so the result reflects the "
+            f"container's namespace, not the host."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # ISA feature catalogs
 # Per-flag tuple = (display name, purpose, weight in tier scoring)
@@ -407,6 +437,15 @@ class Report:
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
+    # Per-detection `unavailable_in_container` flags for host-fs-dependent
+    # probes (PCI accel, kernel crypto, ktls, FIPS, TPM, kernel info, OS
+    # release, PKCS#11 modules).  Populated only when the report was
+    # produced inside a container without --host-mount; empty otherwise.
+    # The fleet aggregator counts hosts per key under
+    # host_fs_detections_unavailable_host_count.
+    host_fs_detections_unavailable: dict[str, dict[str, Any]] = field(
+        default_factory=dict
+    )
     packages: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
@@ -710,6 +749,24 @@ def detect_accelerators() -> list[dict[str, Any]]:
     return out
 
 
+def detect_pci_accelerators() -> dict[str, Any]:
+    """Dict-returning sibling of detect_accelerators().  Returns the same
+    list of detected accelerators under key `items`, plus an
+    `unavailable_in_container` annotation when the result depends on
+    `lspci` / /dev probing inside a container without --host-mount.
+    Use this when callers need to surface "we couldn't see the host's
+    PCI bus from in here" rather than silently emit an empty list."""
+    items = detect_accelerators()
+    out: dict[str, Any] = {"items": items}
+    note = host_fs_unavailable_note(
+        "PCI accelerator detection",
+        "lspci output and /dev hints (/dev/kfd, /dev/nvidia*, etc.)",
+    )
+    if note:
+        out.update(note)
+    return out
+
+
 def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
     """Walk the family-appropriate PKCS#11 directories plus the always-
     on vendor paths.  Returns a sorted, de-duplicated list of *.so and
@@ -727,32 +784,44 @@ def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
 
 
 def detect_tpm_pqc() -> dict[str, Any]:
+    note = host_fs_unavailable_note(
+        "TPM PQC detection", "/dev/tpmrm0, /dev/tpm0 and tpm2_getcap"
+    )
     if not shutil.which("tpm2_getcap"):
-        return {
+        out: dict[str, Any] = {
             "present": host_path("/dev/tpmrm0").exists()
             or host_path("/dev/tpm0").exists(),
             "tools": False,
             "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC",
         }
-    rc, out = _run(["tpm2_getcap", "algorithms"], timeout=5)
+        if note:
+            out.update(note)
+        return out
+    rc, out_text = _run(["tpm2_getcap", "algorithms"], timeout=5)
     if rc != 0:
-        return {
+        out = {
             "present": True,
             "tools": True,
             "note": "tpm2_getcap failed",
-            "raw": out[:200],
+            "raw": out_text[:200],
         }
+        if note:
+            out.update(note)
+        return out
     has_pqc = bool(
         re.search(
-            r"ml[-_ ]?kem|ml[-_ ]?dsa|kyber|dilithium|sphincs", out, re.IGNORECASE
+            r"ml[-_ ]?kem|ml[-_ ]?dsa|kyber|dilithium|sphincs", out_text, re.IGNORECASE
         )
     )
-    return {
+    out = {
         "present": True,
         "tools": True,
         "pqc_advertised": has_pqc,
         "note": "TPM 2.0 specs do not yet mandate PQC; almost all shipped TPMs answer 'no'",
     }
+    if note:
+        out.update(note)
+    return out
 
 
 def detect_kernel_crypto_hw() -> list[str]:
@@ -841,6 +910,12 @@ def detect_fips_mode() -> dict[str, Any]:
         rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
         if rc == 0:
             info["openssl_provider"] = detect_fips_mode_from_providers_text(out)
+    note = host_fs_unavailable_note(
+        "FIPS mode detection",
+        "/proc/sys/crypto/fips_enabled and the in-container openssl binary",
+    )
+    if note:
+        info.update(note)
     return info
 
 
@@ -1297,7 +1372,22 @@ def detect_os() -> dict[str, Any]:
     version_codename  e.g. "jammy", "bookworm", or None
     pretty_name       full string from os-release / sysctl
     package_manager   first tool on PATH for this family, or None
-    """
+
+    When running inside a container without --host-mount, the result
+    additionally carries `unavailable_in_container: True` and a `reason`
+    string — /etc/os-release inside a container is the container image's
+    OS, not the host's, so consumers can warn rather than misreport."""
+    out = _detect_os_impl()
+    note = host_fs_unavailable_note(
+        "OS release detection",
+        "/etc/os-release, /usr/lib/os-release, /etc/redhat-release, /etc/debian_version",
+    )
+    if note:
+        out.update(note)
+    return out
+
+
+def _detect_os_impl() -> dict[str, Any]:
     if is_macos():
         ver = _sysctl("kern.osproductversion") or platform.mac_ver()[0]
         return {
@@ -1478,7 +1568,13 @@ def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, An
     duplicate that and now consumes the precomputed dict for backward
     compatibility — `os_release_id` and `os_release_version_id` are kept
     on the kernel_info dict so existing aggregator/CSV consumers don't
-    break when they read either location."""
+    break when they read either location.
+
+    When running inside a container without --host-mount, the dict
+    additionally carries `unavailable_in_container: True` and a `reason`
+    string — /etc/redhat-release reflects the container image, and
+    /proc/crypto is shared with the host kernel but PQC awareness still
+    needs explicit acknowledgement that the container is in play."""
     info: dict[str, Any] = {
         "release": platform.release(),
         "system": platform.system(),
@@ -1504,6 +1600,12 @@ def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, An
         )
     except OSError:
         info["proc_crypto_pqc"] = []
+    note = host_fs_unavailable_note(
+        "Kernel info detection",
+        "/etc/redhat-release and /proc/crypto",
+    )
+    if note:
+        info.update(note)
     return info
 
 
@@ -1930,6 +2032,51 @@ def parse_cgroup_for_container(text: str) -> str | None:
     return None
 
 
+# Catalogue of detection probes whose results depend on host filesystem
+# paths or host-only commands (lspci / dmidecode).  Used by
+# build_host_fs_detections_unavailable() to compute one annotation per
+# probe when running inside a container without --host-mount.  The keys
+# match Report field names so the aggregator can correlate counts back
+# to the field they describe.
+_HOST_FS_DEPENDENT_DETECTIONS: tuple[tuple[str, str, str], ...] = (
+    (
+        "accelerators",
+        "PCI accelerator detection",
+        "lspci output and /dev hints (/dev/kfd, /dev/nvidia*, etc.)",
+    ),
+    ("kernel_crypto_hw", "Kernel crypto hardware detection", "/proc/crypto"),
+    ("ktls", "kTLS module detection", "/proc/modules and /sys/module/tls"),
+    ("fips", "FIPS mode detection", "/proc/sys/crypto/fips_enabled"),
+    ("tpm_pqc", "TPM PQC detection", "/dev/tpmrm0, /dev/tpm0 and tpm2_getcap"),
+    ("kernel_info", "Kernel info detection", "/etc/redhat-release and /proc/crypto"),
+    (
+        "os_release",
+        "OS release detection",
+        "/etc/os-release, /usr/lib/os-release, /etc/redhat-release, /etc/debian_version",
+    ),
+    (
+        "pkcs11_modules",
+        "PKCS#11 module scan",
+        "/usr/lib*/<arch>/ and /usr/lib*/pkcs11/ under host /usr",
+    ),
+)
+
+
+def build_host_fs_detections_unavailable() -> dict[str, dict[str, Any]]:
+    """Compute the `host_fs_detections_unavailable` map for the current
+    invocation.  Returns an empty dict on bare metal or when --host-mount
+    is in effect; otherwise returns one annotation per host-fs-dependent
+    probe in `_HOST_FS_DEPENDENT_DETECTIONS`.  The aggregator preserves
+    these keys so fleet rollups can report "X hosts had detection Y
+    unavailable in container" without re-running detection."""
+    out: dict[str, dict[str, Any]] = {}
+    for key, label, host_resources in _HOST_FS_DEPENDENT_DETECTIONS:
+        note = host_fs_unavailable_note(label, host_resources)
+        if note:
+            out[key] = note
+    return out
+
+
 def detect_runtime_environment() -> dict[str, Any]:
     """Identify whether we're executing inside a container.  Used by
     every detection function that may need a `unavailable_in_container`
@@ -2171,7 +2318,9 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     Output:
       total_hosts, by_arch, by_os_release_id, by_isa_tier, by_verdict,
       by_runtime_environment, accelerator_kinds (count of hosts with
-      each kind), unique_cpu_models, replace_required_count.
+      each kind), unique_cpu_models, replace_required_count,
+      host_fs_detections_unavailable_host_count (count of hosts where
+      each host-fs-dependent probe was flagged unavailable in container).
     """
     from collections import Counter
 
@@ -2186,6 +2335,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     by_env: Counter[str] = Counter()
     cpu_models: set[str] = set()
     accel_kinds: Counter[str] = Counter()
+    detections_unavailable: Counter[str] = Counter()
     replace_required = 0
     for r in reports:
         by_arch[r.get("arch", "?")] += 1
@@ -2204,6 +2354,12 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
             if k not in seen_kinds:
                 accel_kinds[k] += 1
                 seen_kinds.add(k)
+        # A detection key is counted at most once per host: the aggregator
+        # only cares whether *any* host had probe Y flagged unavailable,
+        # not how many duplicate annotations a single host carried.
+        for det_key, det_info in (r.get("host_fs_detections_unavailable") or {}).items():
+            if isinstance(det_info, dict) and det_info.get("unavailable_in_container"):
+                detections_unavailable[det_key] += 1
         if r.get("replace_required"):
             replace_required += 1
     out["by_arch"] = dict(by_arch)
@@ -2212,6 +2368,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     out["by_verdict"] = dict(by_verdict)
     out["by_runtime_environment"] = dict(by_env)
     out["accelerator_kinds_host_count"] = dict(accel_kinds)
+    out["host_fs_detections_unavailable_host_count"] = dict(detections_unavailable)
     out["unique_cpu_models"] = sorted(cpu_models)
     out["replace_required_count"] = replace_required
     return out
@@ -2236,6 +2393,7 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
         "by_verdict",
         "by_runtime_environment",
         "accelerator_kinds_host_count",
+        "host_fs_detections_unavailable_host_count",
     ):
         for k, v in (rollup.get(group) or {}).items():
             w.writerow([group, k, v])
@@ -5654,6 +5812,7 @@ def main() -> int:
     isa_t, isa_reason = isa_tier(arch, isa_score, flags)
     mem_t, mem_reason = memory_tier(total_gb)
     runtime_env = detect_runtime_environment()
+    host_fs_detections_unavailable = build_host_fs_detections_unavailable()
     accels = detect_accelerators()
     accels.extend(detect_network_hsms())
     os_release = detect_os()
@@ -5755,6 +5914,7 @@ def main() -> int:
         cnsa_2_0=cnsa_2_0,
         trust_store=trust_store_info,
         runtime_environment=runtime_env,
+        host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
         replace_required=replace_required,
         os_release=os_release,
