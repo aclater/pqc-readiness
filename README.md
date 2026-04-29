@@ -25,6 +25,7 @@ privileged DaemonSet on OpenShift.
 - [Containers and OpenShift](#containers-and-openshift)
 - [Fleet aggregation](#fleet-aggregation)
 - [Scope and adjacent tooling](docs/scope.md)
+- [Findings](#findings)
 - [Documentation](#documentation)
 - [License](#license)
 
@@ -300,6 +301,12 @@ pqc_readiness.py --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CS
 
 Files with mismatched `schema_version` land under `skipped` with a
 reason rather than being silently merged.
+
+## Findings
+
+Reproducible technical findings produced by `pqc_readiness.py`-driven testing. Reference documents — not blog posts — kept in-repo so the underlying claim, the data, and the reproduction steps stay together.
+
+- [`docs/findings/fips-algorithm-fence.md`](docs/findings/fips-algorithm-fence.md) — kernel `fips=1` and a FIPS-preset crypto-policy do not, by themselves, gate which algorithms the public OpenSSL interface exposes; the gating comes from downstream patches in the OpenSSL build. Distros that rebuild from upstream sources without those patches expose ML-KEM, ML-DSA, and SLH-DSA via the default provider while FIPS is active. Use `--fips-strict` to flag the divergence.
 
 ## Documentation
 
