@@ -62,7 +62,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
 # the tool runs inside a container with the host's /proc /sys /dev /etc
@@ -415,6 +415,13 @@ class Report:
     cores_physical: int = 0
     mem_total_gb: float = 0.0
     mem_avail_gb: float = 0.0
+    # Role-aware memory tiering.  When --role is supplied, `memory.tier`
+    # reflects that role and `memory.tier_basis.role` records which
+    # threshold was applied.  When --role is not supplied, `memory.tier`
+    # is the generic role's tier (back-compat with schema 1.0 reports
+    # that pre-date role-aware tiering) and `memory.tier_by_role` carries
+    # per-role evaluations side-by-side.
+    memory: dict[str, Any] = field(default_factory=dict)
     isa_features: dict[str, dict[str, str]] = field(default_factory=dict)
     isa_score: int = 0
     isa_tier: str = ""
@@ -709,17 +716,65 @@ def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
     return ("unknown", f"Architecture {arch} not classified")
 
 
-def memory_tier(gb: float) -> tuple[str, str]:
+# Per-role memory thresholds in GiB for the "good" tier.  Driven by
+# per-connection memory math: TLS terminator at ~192 KB realistic per
+# PQC TLS connection × concurrent-connection target gives 16 GiB; a
+# signing service with ML-DSA-87 working memory of ~120 KB × concurrent
+# signing target gives 8 GiB; firmware signing has low concurrency and
+# large signatures (2 GiB is enough); a TLS client only originates a
+# small number of connections (4 GiB).  "generic" preserves the prior
+# single-threshold behavior (16 GiB) for back-compat with reports that
+# pre-date role-aware tiering.
+MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE: dict[str, float] = {
+    "tls-server": 16.0,
+    "tls-client": 4.0,
+    "signing-service": 8.0,
+    "firmware-signing": 2.0,
+    "generic": 16.0,
+}
+
+
+def memory_tier(gb: float, role: str = "generic") -> tuple[str, str]:
+    """Classify total memory into a tier for a given workload role.
+
+    The "excellent" and "poor" thresholds are role-independent — only the
+    boundary between "marginal" and "good" varies by role, since that's
+    the boundary driven by per-connection / per-operation working memory
+    math.  Roles other than the five enumerated in
+    `MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE` fall back to the generic tier.
+    """
+    threshold_good = MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE.get(
+        role, MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE["generic"]
+    )
     if gb >= 64:
         return (
             "excellent",
             f"{gb:.1f} GiB - comfortable for high-throughput TLS/PQC at scale",
         )
-    if gb >= 16:
-        return ("good", f"{gb:.1f} GiB - adequate for medium production load")
+    if gb >= threshold_good:
+        return (
+            "good",
+            f"{gb:.1f} GiB >= {threshold_good:.0f} GiB threshold for role={role}",
+        )
     if gb >= 4:
-        return ("marginal", f"{gb:.1f} GiB - OK for low-volume or edge deployments")
+        return (
+            "marginal",
+            f"{gb:.1f} GiB below {threshold_good:.0f} GiB threshold for role={role} - OK for low-volume or edge",
+        )
     return ("poor", f"{gb:.1f} GiB - insufficient for production PQC services")
+
+
+def memory_tier_all_roles(gb: float) -> dict[str, dict[str, Any]]:
+    """Return tier evaluations for every known role keyed by role name."""
+    out: dict[str, dict[str, Any]] = {}
+    for role, threshold in MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE.items():
+        tier, reason = memory_tier(gb, role)
+        out[role] = {
+            "tier": tier,
+            "reason": reason,
+            "threshold_gib_good": threshold,
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3702,7 +3757,13 @@ POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
 }
 
 VALID_POLICIES = ("cnsa-2.0", "nist-civilian", "eu-anssi-bsi", "commercial")
-VALID_ROLES = ("tls-server", "tls-client", "signing-service", "firmware-signing")
+VALID_ROLES = (
+    "tls-server",
+    "tls-client",
+    "signing-service",
+    "firmware-signing",
+    "generic",
+)
 
 
 def _accel_pqc_capable(accelerators: list[dict[str, Any]]) -> bool:
@@ -5779,10 +5840,17 @@ def main() -> int:
     ap.add_argument(
         "--role",
         choices=list(VALID_ROLES),
-        default="tls-server",
+        default=None,
         help=(
-            "role for --recommend (only 'tls-server' is fully implemented; "
-            "other roles return a stub response)"
+            "workload role.  Drives both the recommendation engine "
+            "(only 'tls-server' is fully implemented; other roles "
+            "currently return a stub response) and the memory-tier "
+            "threshold (per-role good thresholds: tls-server=16 GiB, "
+            "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
+            "2 GiB, generic=16 GiB).  When omitted, the report contains "
+            "memory tier evaluations for every role side-by-side under "
+            "memory.tier_by_role; the recommendation engine still "
+            "defaults to tls-server."
         ),
     )
     ap.add_argument(
@@ -5833,7 +5901,19 @@ def main() -> int:
     logical, physical = core_counts()
     isa_feat, isa_score = detect_isa(arch, flags)
     isa_t, isa_reason = isa_tier(arch, isa_score, flags)
-    mem_t, mem_reason = memory_tier(total_gb)
+    role_for_memory = args.role if args.role else "generic"
+    mem_t, mem_reason = memory_tier(total_gb, role_for_memory)
+    memory_field: dict[str, Any] = {
+        "tier": mem_t,
+        "reason": mem_reason,
+        "tier_basis": {
+            "role": role_for_memory,
+            "threshold_gib_good": MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE[role_for_memory],
+            "role_supplied": args.role is not None,
+        },
+    }
+    if args.role is None:
+        memory_field["tier_by_role"] = memory_tier_all_roles(total_gb)
     runtime_env = detect_runtime_environment()
     host_fs_detections_unavailable = build_host_fs_detections_unavailable()
     accels = detect_accelerators()
@@ -5927,6 +6007,7 @@ def main() -> int:
         fips=fips,
         openssl=osinfo,
         tpm_pqc=tpm,
+        memory=memory_field,
         memory_bandwidth_gb_s=membw,
         memory_bandwidth_method=membw_method,
         ssh_pqc=ssh_info,
@@ -5965,7 +6046,7 @@ def main() -> int:
         print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
         return 0
     if args.recommend:
-        rec = recommend(r, policy=args.policy, role=args.role)
+        rec = recommend(r, policy=args.policy, role=args.role or "tls-server")
         if args.json:
             print(json.dumps(rec, indent=2))
         elif args.markdown:
