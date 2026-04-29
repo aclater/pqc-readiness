@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 README = REPO_ROOT / "README.md"
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
@@ -25,6 +27,18 @@ PR_CI_PHRASE = re.compile(
     re.IGNORECASE,
 )
 WORKFLOW_REF = re.compile(r"([A-Za-z0-9_.-]+\.ya?ml)")
+
+# This is a repo-level integrity check: it cross-references README.md
+# against `.github/workflows/`. The UBI 8 test container in
+# `.github/workflows/ci-ubi8.yml` deliberately COPYs only `tests/`,
+# `pqc_readiness.py`, and the `pqc-readiness` wrapper into the image —
+# README.md and the workflow files are not shipped to customers and
+# are not present at runtime. Skip cleanly when either is missing
+# rather than failing on environments where the check is meaningless.
+pytestmark = pytest.mark.skipif(
+    not README.is_file() or not WORKFLOWS_DIR.is_dir(),
+    reason="README.md or .github/workflows/ not present (e.g. inside the UBI 8 test image)",
+)
 
 
 def _tier_rows() -> list[tuple[str, str, str]]:
