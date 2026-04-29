@@ -362,7 +362,6 @@ class C:
 TIER_COLOR = {
     "excellent": C.GREEN,
     "good": C.GREEN,
-    "adequate": C.YELLOW,
     "marginal": C.YELLOW,
     "poor": C.RED,
     "unknown": C.DIM,
@@ -643,7 +642,7 @@ def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
                 "AVX2 + AES-NI + PCLMULQDQ - production-capable in software",
             )
         if "avx2" in flags:
-            return ("adequate", "AVX2 only - workable but slower than peers")
+            return ("marginal", "AVX2 only - workable but slower than peers")
         return ("poor", "Pre-AVX2 x86 - software PQC will be slow")
     if arch in ("aarch64", "arm64"):
         if {"sha3", "aes"}.issubset(flags) and ("sve2" in flags or score >= 8):
@@ -658,7 +657,7 @@ def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
             )
         if {"aes", "sha2", "pmull"}.issubset(flags):
             return ("good", "ARMv8 crypto extensions - production-capable")
-        return ("adequate", "Limited ARM crypto extensions")
+        return ("marginal", "Limited ARM crypto extensions")
     if arch == "s390x":
         if {"msa8", "msa9"}.issubset(flags):
             return (
@@ -666,7 +665,7 @@ def isa_tier(arch: str, score: int, flags: set[str]) -> tuple[str, str]:
                 "MSA8+MSA9 (z15+/z16) - on-chip SHA-3 / EdDSA, PQC accel possible",
             )
         if "msa" in flags:
-            return ("adequate", "Older z hardware without SHA-3 on-chip")
+            return ("marginal", "Older z hardware without SHA-3 on-chip")
         return ("poor", "No CPACF detected")
     return ("unknown", f"Architecture {arch} not classified")
 
@@ -680,7 +679,7 @@ def memory_tier(gb: float) -> tuple[str, str]:
     if gb >= 16:
         return ("good", f"{gb:.1f} GiB - adequate for medium production load")
     if gb >= 4:
-        return ("adequate", f"{gb:.1f} GiB - OK for low-volume or edge deployments")
+        return ("marginal", f"{gb:.1f} GiB - OK for low-volume or edge deployments")
     return ("poor", f"{gb:.1f} GiB - insufficient for production PQC services")
 
 
@@ -3354,7 +3353,6 @@ def overall_verdict(
     rank = {
         "excellent": 4,
         "good": 3,
-        "adequate": 2,
         "marginal": 2,
         "poor": 1,
         "unknown": 2,
@@ -3645,7 +3643,7 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
                 "'excellent'; ML-DSA-87 sign p99 latency will likely "
                 "exceed typical service SLOs"
             )
-        elif isa in ("poor", "marginal", "adequate"):
+        elif isa in ("poor", "marginal"):
             sig_reason = (
                 f"ML-DSA-65 because ISA tier is '{isa}' without a PQC "
                 "accelerator; ML-DSA-87 sign p99 latency would likely "
