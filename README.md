@@ -290,9 +290,20 @@ schema matches in CI or in maintainer testing.
 | Tier | Distros | Validation cadence |
 | --- | --- | --- |
 | **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every change (CI) |
-| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+ | Periodic (weekly) — fixes accepted |
-| **3** | RHEL 8, Rocky 8, AlmaLinux 8 | Best-effort, community-supported. Requires the AppStream `python39` (or higher) module — invoke via the `pqc-readiness` wrapper. OpenSSL 1.1.1 means `openssl.pqc_native: false` and a no-bench caveat; the inventory probe still works. |
+| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Periodic (weekly) — fixes accepted |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
+
+**RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** The system `python3` on
+EL8 is 3.6, which cannot parse the script. Install the AppStream
+`python39` (or `python311`) module and invoke through the
+`pqc-readiness` wrapper, which finds the right interpreter
+automatically. OpenSSL 1.1.1 on EL8 means `openssl.pqc_native: false`
+and a no-bench caveat in the verdict; the inventory probe still
+works. A ready-to-deploy image is shipped at
+[`Containerfile.ubi8`](Containerfile.ubi8) (build via
+`make container-ubi8`); the existing `--host-mount` DaemonSet pattern
+works the same way as the UBI 10 image. CI validates every push
+against the UBI 8 image so regressions surface before a release.
 
 `detect_os()` resolves `family` from `/etc/os-release` `ID` and falls
 back through `ID_LIKE`, so derivatives the explicit table doesn’t name
@@ -313,10 +324,14 @@ already in the script.
 
 ## Container / OpenShift
 
-Two Containerfiles are provided:
+Containerfiles are provided for the supported base images:
 
 - `Containerfile.ubi10` — Red Hat UBI 10 minimal base. Default for
   RHEL/Fedora fleets and the image referenced by the systemd quadlet.
+- `Containerfile.ubi8` — Red Hat UBI 8 minimal base for RHEL 8 /
+  Rocky 8 / AlmaLinux 8 fleets that cannot move to UBI 10. Pulls the
+  AppStream `python39` module; same wrapper, same flags, same JSON
+  schema as the other images.
 - `Containerfile.debian` — `debian:12-slim` base. Functionally
   identical (same script, flags, JSON schema, UID 1001, healthcheck).
   Use for Debian/Ubuntu fleets.
@@ -324,9 +339,10 @@ Two Containerfiles are provided:
   customer ask.
 
 ```bash
-make container-ubi10     # build the UBI image
+make container-ubi8      # build the UBI 8 image
+make container-ubi10     # build the UBI 10 image
 make container-debian    # build the Debian image
-make container           # build both
+make container           # build all three
 ```
 
 `deploy/quadlet/pqc-readiness.container` is a systemd quadlet that runs
