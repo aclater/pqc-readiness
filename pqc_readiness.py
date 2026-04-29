@@ -1092,30 +1092,53 @@ _CLASSICAL_SSH_TOKEN_RE = re.compile(
     r"(?:nistp\d+|x25519|x448|secp\d+r1)",
     re.IGNORECASE,
 )
+# Full classical SSH kex names recognised by OpenSSH's `-Q kex` set.
+# Used to populate the `classical` bucket for parity with
+# classify_tls_groups (issue #9, audit #40).  Names that match no
+# pattern are dropped rather than silently lumped into classical, the
+# same way classify_tls_groups handles unknown TLS group names.
+_CLASSICAL_SSH_KEX_RE = re.compile(
+    r"^(?:"
+    r"diffie-hellman-group(?:\d+|-exchange)-sha\d+"
+    r"|ecdh-sha2-nistp\d+"
+    r"|curve(?:25519|448)-sha\d+(?:@\S+)?"
+    r")$",
+    re.IGNORECASE,
+)
 
 
-def classify_ssh_kex(pqc_kex: list[str]) -> dict[str, list[str]]:
-    """Split detected PQC-relevant SSH kex algorithms into pure-PQC and
-    hybrid buckets.  A name that contains both a PQC and a classical
-    token is hybrid; PQC-token-only names are pure PQC.  As of 2026 every
-    shipped OpenSSH PQC kex is hybrid, but the pure_pqc bucket exists so
-    future RFC-adopted pure-PQC kex are surfaced the day they arrive."""
+def classify_ssh_kex(kexes: list[str]) -> dict[str, list[str]]:
+    """Split SSH kex algorithm names into pure_pqc / hybrid / classical
+    buckets, mirroring classify_tls_groups.  A name with a PQC token and
+    a classical token is hybrid; PQC-token-only names are pure_pqc;
+    recognised classical kex names (DH groups, ECDH NIST, curve25519/448)
+    land in classical.  As of 2026 every shipped OpenSSH PQC kex is
+    hybrid, but the pure_pqc bucket exists so future RFC-adopted pure-PQC
+    kex surface the day they arrive.  Unrecognised names are dropped so
+    the report stays honest about what we don't catalogue yet."""
     pure: set[str] = set()
     hybrid: set[str] = set()
-    for k in pqc_kex:
-        if not _PQC_SSH_TOKEN_RE.search(k):
-            continue
-        if _CLASSICAL_SSH_TOKEN_RE.search(k):
-            hybrid.add(k)
-        else:
-            pure.add(k)
-    return {"pure_pqc": sorted(pure), "hybrid": sorted(hybrid)}
+    classical: set[str] = set()
+    for k in kexes:
+        if _PQC_SSH_TOKEN_RE.search(k):
+            if _CLASSICAL_SSH_TOKEN_RE.search(k):
+                hybrid.add(k)
+            else:
+                pure.add(k)
+        elif _CLASSICAL_SSH_KEX_RE.match(k):
+            classical.add(k)
+    return {
+        "pure_pqc": sorted(pure),
+        "hybrid": sorted(hybrid),
+        "classical": sorted(classical),
+    }
 
 
 def parse_ssh_kex(text: str) -> dict[str, Any]:
     """Parse `ssh -Q kex` output.  Returns a dict with the full kex
     count, the flat PQC subset (ML-KEM hybrids and the older sntrup761
-    NTRU Prime hybrid), and a `kex_groups` split into pure_pqc / hybrid.
+    NTRU Prime hybrid), and a `kex_groups` split into pure_pqc / hybrid /
+    classical.
 
     The flat `pqc_kex` list is preserved for back-compat with consumers
     that already key off it; new consumers should prefer `kex_groups`."""
@@ -1125,7 +1148,7 @@ def parse_ssh_kex(text: str) -> dict[str, Any]:
         "available": True,
         "kex_count": len(kexes),
         "pqc_kex": pqc,
-        "kex_groups": classify_ssh_kex(pqc),
+        "kex_groups": classify_ssh_kex(kexes),
     }
 
 
