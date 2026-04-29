@@ -2362,29 +2362,13 @@ BUNDLED_CRYPTO_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
 }
 
 
-def parse_rpm_packages(text: str) -> list[dict[str, str]]:
-    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` output into
-    [{"name", "version"}, ...]."""
-    out: list[dict[str, str]] = []
-    for line in text.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2:
-            out.append({"name": parts[0], "version": parts[1]})
-    return out
+def parse_whitespace_pkg_lines(text: str) -> list[dict[str, str]]:
+    """Parse `name version` per line into [{"name", "version"}, ...].
 
-
-def parse_dpkg_packages(text: str) -> list[dict[str, str]]:
-    """Parse `dpkg-query -W -f='${Package} ${Version}\\n'` output."""
-    out: list[dict[str, str]] = []
-    for line in text.splitlines():
-        parts = line.strip().split(None, 1)
-        if len(parts) == 2:
-            out.append({"name": parts[0], "version": parts[1]})
-    return out
-
-
-def parse_pacman_packages(text: str) -> list[dict[str, str]]:
-    """Parse `pacman -Q` output (`name version` per line)."""
+    Used for rpm (`rpm -qa --queryformat '%{NAME} %{VERSION}\\n'`),
+    dpkg (`dpkg-query -W -f='${Package} ${Version}\\n'`), and pacman
+    (`pacman -Q`) — all three emit the same two-token-per-line format.
+    Apk does not (see `parse_apk_packages` below)."""
     out: list[dict[str, str]] = []
     for line in text.splitlines():
         parts = line.strip().split(None, 1)
@@ -2447,17 +2431,17 @@ PACKAGE_QUERY_BY_FAMILY: dict[
 ] = {
     "rhel": (
         ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
-        parse_rpm_packages,
+        parse_whitespace_pkg_lines,
     ),
     "suse": (
         ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION}\\n"],
-        parse_rpm_packages,
+        parse_whitespace_pkg_lines,
     ),
     "debian": (
         ["dpkg-query", "-W", "-f=${Package} ${Version}\\n"],
-        parse_dpkg_packages,
+        parse_whitespace_pkg_lines,
     ),
-    "arch": (["pacman", "-Q"], parse_pacman_packages),
+    "arch": (["pacman", "-Q"], parse_whitespace_pkg_lines),
     "alpine": (["apk", "info", "-v"], parse_apk_packages),
 }
 
