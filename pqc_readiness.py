@@ -919,6 +919,107 @@ def detect_fips_mode() -> dict[str, Any]:
     return info
 
 
+# ---------------------------------------------------------------------------
+# FIPS algorithm-fence check (rule pqc-007)
+# ---------------------------------------------------------------------------
+#
+# "FIPS mode active" (kernel fips=1, FIPS provider loaded with status:
+# active, crypto-policy FIPS) is not the same as "algorithm fence
+# engaged" (the public OpenSSL interface is gated to a subset of the
+# FIPS provider's algorithm list).  Distros that ship downstream
+# FIPS-provider gating patches produce both; distros that rebuild from
+# upstream sources without those patches inherit the former without
+# the latter.  See docs/findings/fips-algorithm-fence.md.
+
+_FENCE_KEM_RE = re.compile(r"ML-KEM-\d+")
+_FENCE_SIG_RE = re.compile(r"ML-DSA-\d+|SLH-DSA-[A-Za-z0-9-]+")
+
+
+def _fence_parse_algos(text: str, pattern: re.Pattern[str]) -> list[str]:
+    return sorted({m.group(0) for m in pattern.finditer(text)})
+
+
+def _fence_provider_algos(
+    list_arg: str, pattern: re.Pattern[str], provider: str
+) -> list[str] | None:
+    if not shutil.which("openssl"):
+        return None
+    rc, out = _run(
+        ["openssl", "list", list_arg, "-provider", provider], timeout=5
+    )
+    if rc != 0:
+        return None
+    return _fence_parse_algos(out, pattern)
+
+
+def fips_fence_check(fips: dict[str, Any]) -> dict[str, Any]:
+    """Compare default-provider vs FIPS-provider algorithm visibility.
+
+    Only meaningful when FIPS is active (kernel fips=1 AND OpenSSL FIPS
+    provider loaded).  When inactive the check is skipped — the notion
+    of an algorithm fence is undefined without a FIPS provider to
+    fence against.
+
+    Returns a dict with:
+      - active: bool — was the check performed
+      - algorithm_fence_engaged: bool — True iff every default-provider
+        set is a (non-strict) subset of the corresponding FIPS-provider
+        set.  False iff any default-provider set strictly contains
+        algorithms the FIPS provider does not list.
+      - algorithms_reachable_outside_fence: per-class lists.
+      - skip_reason: str, populated when active is False.
+    """
+    out: dict[str, Any] = {
+        "active": False,
+        "algorithm_fence_engaged": False,
+        "algorithms_reachable_outside_fence": {
+            "kems": [],
+            "signatures": [],
+            "tls_groups": [],
+        },
+    }
+    if not (fips.get("kernel") and fips.get("openssl_provider")):
+        out["skip_reason"] = (
+            "FIPS not active (kernel fips=1 and active OpenSSL FIPS "
+            "provider both required for the fence check)"
+        )
+        return out
+    out["active"] = True
+
+    fence_engaged: list[bool] = []
+
+    for list_arg, pattern, key in (
+        ("-kem-algorithms", _FENCE_KEM_RE, "kems"),
+        ("-signature-algorithms", _FENCE_SIG_RE, "signatures"),
+    ):
+        fips_algs = _fence_provider_algos(list_arg, pattern, "fips") or []
+        default_algs = _fence_provider_algos(list_arg, pattern, "default") or []
+        outside = sorted(set(default_algs) - set(fips_algs))
+        out["algorithms_reachable_outside_fence"][key] = outside
+        fence_engaged.append(not outside)
+
+    rc_fips, fips_groups_text = _run(
+        ["openssl", "list", "-tls-groups", "-provider", "fips"], timeout=5
+    )
+    rc_def, default_groups_text = _run(
+        ["openssl", "list", "-tls-groups", "-provider", "default"], timeout=5
+    )
+    if rc_fips == 0 and rc_def == 0:
+        fips_groups = set(parse_openssl_tls_groups(fips_groups_text))
+        default_groups = set(parse_openssl_tls_groups(default_groups_text))
+        outside_groups = sorted(default_groups - fips_groups)
+        outside_classified = classify_tls_groups(outside_groups)
+        outside_pqc = sorted(
+            set(outside_classified.get("pure_pqc", []))
+            | set(outside_classified.get("hybrid", []))
+        )
+        out["algorithms_reachable_outside_fence"]["tls_groups"] = outside_pqc
+        fence_engaged.append(not outside_pqc)
+
+    out["algorithm_fence_engaged"] = all(fence_engaged)
+    return out
+
+
 def parse_lszcrypt(text: str) -> list[dict[str, Any]]:
     """Parse `lszcrypt -V` output into per-adapter records.
 
@@ -1707,6 +1808,16 @@ def interpret_fips(
                 break
 
     out["notes"] = _FIPS_NOTES_BY_FAMILY.get(family, _FIPS_NOTES_BY_FAMILY["unknown"])
+
+    fence = fips_fence_check(out)
+    out["algorithm_fence_engaged"] = fence["algorithm_fence_engaged"]
+    out["algorithms_reachable_outside_fence"] = fence[
+        "algorithms_reachable_outside_fence"
+    ]
+    out["fence_check_active"] = fence["active"]
+    if "skip_reason" in fence:
+        out["fence_check_skip_reason"] = fence["skip_reason"]
+
     return out
 
 
@@ -4705,6 +4816,24 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-006-no-network-hsm-pqc-firmware.md",
     ),
+    RuleSpec(
+        id="pqc-007-fips-without-algorithm-fence",
+        short_description=(
+            "FIPS active but the default OpenSSL provider exposes "
+            "non-FIPS-validated PQC algorithms."
+        ),
+        full_description=(
+            "The kernel reports FIPS mode active and the OpenSSL FIPS "
+            "provider is loaded, but the default provider exposes "
+            "algorithms that are not in the FIPS provider's set.  "
+            "Operators conflating 'FIPS mode is on' with 'only "
+            "FIPS-validated algorithms are reachable' will get a "
+            "different answer than the system enforces.  See the "
+            "FIPS algorithm-fence finding for mechanism and mitigation."
+        ),
+        default_level="error",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-007-fips-without-algorithm-fence.md",
+    ),
 )
 
 
@@ -4851,6 +4980,36 @@ def build_findings(r: Report) -> list[Finding]:
                     "appliance firmware before relying on it for PQC."
                 ),
                 properties={"hsm:network_hsm_names": names},
+            )
+        )
+
+    if r.fips.get("fence_check_active") and not r.fips.get(
+        "algorithm_fence_engaged"
+    ):
+        outside = r.fips.get("algorithms_reachable_outside_fence") or {}
+        kems = outside.get("kems") or []
+        sigs = outside.get("signatures") or []
+        groups = outside.get("tls_groups") or []
+        msg_parts: list[str] = []
+        if kems:
+            msg_parts.append(f"KEMs={','.join(kems)}")
+        if sigs:
+            msg_parts.append(f"signatures={','.join(sigs)}")
+        if groups:
+            msg_parts.append(f"tls_groups={','.join(groups)}")
+        findings.append(
+            Finding(
+                rule_id="pqc-007-fips-without-algorithm-fence",
+                level="error",
+                message=(
+                    "FIPS mode is active but the default OpenSSL provider "
+                    "exposes algorithms outside the FIPS provider's set: "
+                    + "; ".join(msg_parts) + ".  See "
+                    "docs/findings/fips-algorithm-fence.md."
+                ),
+                properties={
+                    "fips:algorithms_reachable_outside_fence": outside,
+                },
             )
         )
 
@@ -5734,6 +5893,17 @@ def main() -> int:
         help="exit 4 if verdict is below TIER, or if cnsa-2.0 status != compliant",
     )
     ap.add_argument(
+        "--fips-strict",
+        action="store_true",
+        help=(
+            "exit 4 (parallel to --check) when FIPS is active but the "
+            "OpenSSL default provider exposes algorithms not present in "
+            "the FIPS provider's set.  See "
+            "docs/findings/fips-algorithm-fence.md for the underlying "
+            "behavior."
+        ),
+    )
+    ap.add_argument(
         "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
     )
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
@@ -5988,6 +6158,10 @@ def main() -> int:
     else:
         print(render_text(r))
 
+    if args.fips_strict and r.fips.get("fence_check_active") and not r.fips.get(
+        "algorithm_fence_engaged"
+    ):
+        return 4
     if args.check == "cnsa-2.0":
         if r.cnsa_2_0.get("status") != "compliant":
             return 4
