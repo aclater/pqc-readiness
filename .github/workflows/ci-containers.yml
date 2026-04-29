@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI: build the UBI 10 and Debian runtime images and smoke-test --help on
+# each.  Companion to ci-ubi8.yml, which already builds + tests the UBI 8
+# image under python3.9.
+#
+# Why a separate workflow per base image: each `podman build` is the
+# slow step (a base-image pull + microdnf/apt-get layers) and the three
+# images are independent — running them as parallel jobs keeps total
+# wall-clock close to the slowest single build instead of the sum.
+#
+# Why only --help (not the full pytest suite) here: the script is
+# OS-portable Python; ci.yml already runs pytest across Python
+# 3.11/3.12/3.13 on ubuntu-latest, and ci-ubi8.yml runs pytest under the
+# UBI 8 / python3.9 combination that is not expressible via setup-python.
+# This workflow's job is narrower: catch container-build regressions
+# (microdnf/apt flag rename, dropped package on a base-image bump,
+# broken multi-stage pattern) before merge.  --help is the cheapest
+# round-trip through ENTRYPOINT + the wrapper that proves the image
+# starts and the script is reachable on PATH.
+#
+# Action versions verified against upstream releases at the time of
+# writing (per CLAUDE.md "Always verify current versions before using
+# them").  Bump deliberately and re-verify, not via Dependabot churn:
+#   actions/checkout@v6.0.2  (gh api repos/actions/checkout/releases/latest)
+
+name: ci-containers
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-ubi10:
+    name: build + smoke (UBI 10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Build the UBI 10 runtime image
+        # podman is preinstalled on ubuntu-latest runners; the same
+        # `make container-ubi10` target reproduces this locally.
+        run: |
+          podman build --format=docker \
+            -t pqc-readiness:ubi10 \
+            -f Containerfile.ubi10 .
+
+      - name: Smoke-test the wrapper launcher
+        # --help overrides the image's CMD (--json) and exits 0 on
+        # success.  If the base-image bump dropped python3 or the
+        # wrapper cannot find it, this step fails before any downstream
+        # consumer pulls the image.
+        run: |
+          podman run --rm pqc-readiness:ubi10 --help >/dev/null
+
+  build-debian:
+    name: build + smoke (Debian)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Build the Debian runtime image
+        run: |
+          podman build --format=docker \
+            -t pqc-readiness:debian \
+            -f Containerfile.debian .
+
+      - name: Smoke-test the wrapper launcher
+        run: |
+          podman run --rm pqc-readiness:debian --help >/dev/null
