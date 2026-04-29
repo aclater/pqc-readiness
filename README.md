@@ -42,7 +42,7 @@ DaemonSet on OpenShift.
 
 ```bash
 ./pqc-readiness                       # recommended: shell wrapper picks a usable Python
-./pqc_readiness.py                    # equivalent on hosts whose default `python3` is 3.9+
+./pqc_readiness.py                    # equivalent — the .py carries the same polyglot probe
 ./pqc-readiness --bench               # include OpenSSL microbench
 ./pqc-readiness --json                # stable JSON for aggregation
 ./pqc-readiness --cbom                # CycloneDX 1.6 CBOM JSON (NIST IR 8547)
@@ -55,12 +55,16 @@ DaemonSet on OpenShift.
 ./pqc-readiness --version             # script + JSON schema versions
 ```
 
-The `pqc-readiness` shell wrapper is the recommended invocation form
-because it is RHEL-8-safe: it searches `PATH` for the highest available
-Python 3.9+ (`python3.13` → `python3.9`, then `python3`, then `python`)
-and `exec`s `pqc_readiness.py` with that interpreter. On a host whose
-default `python3` is too old (RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6),
-it prints AppStream guidance instead of a Python `SyntaxError`.
+Either entry point is RHEL-8-safe. `pqc_readiness.py` carries a
+sh/Python polyglot shebang that runs the same interpreter probe as the
+wrapper before handing off to Python: `python3.13` → `python3.9`, then
+`python3`, then `python`, with a runtime `sys.version_info` check on
+each candidate so a too-old `python3` (3.6 on stock EL8) is rejected
+rather than silently exec'd into a `SyntaxError`. On a host with no
+suitable interpreter, both forms print the same AppStream guidance and
+exit 127. The thin `pqc-readiness` wrapper is preserved for
+operational ergonomics — a hostname-style command name on `PATH` and a
+single place to extend probe order without re-touching the .py.
 
 Both files ship side by side in the container images at
 `/usr/local/bin/pqc-readiness` (wrapper) and
@@ -295,13 +299,18 @@ schema matches in CI or in maintainer testing.
 | **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Periodic (weekly) — fixes accepted |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
-**RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** The system `python3` on
-EL8 is 3.6, which cannot parse the script. Install the AppStream
-`python39` (or `python311`) module and invoke through the
-`pqc-readiness` wrapper, which finds the right interpreter
-automatically. OpenSSL 1.1.1 on EL8 means `openssl.pqc_native: false`
-and a no-bench caveat in the verdict; the inventory probe still
-works. A ready-to-deploy image is shipped at
+**RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** Stock cloud images
+(RHEL 8.10 KVM Guest, Rocky 8.10 GenericCloud, AlmaLinux 8.10
+GenericCloud) ship `platform-python` (3.6) but no `/usr/bin/python3`
+symlink at all, and the system `python3` you do get after running
+`alternatives` is still 3.6 — too old to parse the modern type-hint
+syntax this script uses. Install the AppStream `python39` (or
+`python311`) module and invoke either `./pqc_readiness.py` directly or
+through the `pqc-readiness` wrapper; both carry the same probe order
+and reject 3.6 with an actionable error referencing
+`dnf module install python39`. OpenSSL 1.1.1 on EL8 means
+`openssl.pqc_native: false` and a no-bench caveat in the verdict; the
+inventory probe still works. A ready-to-deploy image is shipped at
 [`Containerfile.ubi8`](Containerfile.ubi8) (build via
 `make container-ubi8`); the existing `--host-mount` DaemonSet pattern
 works the same way as the UBI 10 image. CI validates every push

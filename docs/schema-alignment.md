@@ -58,7 +58,7 @@ follow-up issue can be filed at that point with concrete justification.
 1. Captured `./pqc_readiness.py --json` against a representative host
    (Fedora 44, OpenSSL 3.5.5, OpenSSH 10.2p1, TPM 2.0 present, no
    FIPS, no IPsec, no trust-store scan, no `--bench`).
-2. Walked the `Report` dataclass (`pqc_readiness.py:377`) to enumerate
+2. Walked the `Report` dataclass (`pqc_readiness.py:422`) to enumerate
    every declared field, including those that are empty by default in
    the captured shape (`benchmark`, `benchmark_tls_handshake`,
    `trust_store`, `packages`, `per_algo`, `production_estimate`,

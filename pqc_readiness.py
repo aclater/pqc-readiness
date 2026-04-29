@@ -1,6 +1,54 @@
-#!/usr/bin/env python3
+#!/bin/sh
+"true" '''\'
+# Polyglot launcher: this file is a valid /bin/sh script *and* a valid
+# Python module.  When invoked directly (`./pqc_readiness.py ...`) the
+# shell side runs first, picks the highest available Python 3.9+ on
+# PATH, and `exec`s the script under it.  Python then re-reads the
+# file and treats the shell block as a discarded triple-quoted string
+# expression — `__doc__` is rebound to the real docstring immediately
+# below so `--help` / argparse keep working unchanged.
+#
+# Why this exists: RHEL 8 / Rocky Linux 8 / AlmaLinux 8 cloud images
+# ship `platform-python` (Python 3.6) but no `/usr/bin/python3`
+# symlink, so `#!/usr/bin/env python3` aborts with exit 127 before the
+# script can even introspect the host.  This polyglot mirrors the
+# `pqc-readiness` shell wrapper: same probe order, same AppStream
+# guidance on failure.  See issue aclater/pqc-readiness#36.
+#
+# The shell side runs only at first invocation; once exec replaces
+# the process with Python, this entire block (line 2 through the
+# matching closing-quote line) is parsed as one triple-quoted string
+# literal expression and discarded.
+for c in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python ; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    v=$("$c" -c "import sys; print(\"%d.%d\" % sys.version_info[:2])" 2>/dev/null) || continue
+    maj=${v%%.*} ; min=${v#*.}
+    [ "$maj" = 3 ] && [ "$min" -ge 9 ] 2>/dev/null && exec "$c" "$0" "$@"
+done
+cat >&2 <<'MSG'
+pqc-readiness: no Python 3.9+ interpreter found on PATH.
+
+This script requires Python 3.9 or newer.  On RHEL 8, Rocky Linux 8,
+or AlmaLinux 8 the default python3 is 3.6 (or absent on cloud images),
+which cannot parse the modern type-hint syntax this script uses.
+Enable the AppStream python39 (or higher) module:
+
+    dnf module install python39
+    /path/to/pqc_readiness.py [flags]
+
+Or invoke any 3.9+ interpreter directly:
+
+    python3.9 /path/to/pqc_readiness.py [flags]
+MSG
+exit 127
+'''
 # SPDX-License-Identifier: Apache-2.0
-"""pqc-readiness: assess host suitability for Post-Quantum Cryptography.
+from __future__ import annotations
+
+# Re-bind __doc__ now that the polyglot launcher above has consumed the
+# first string-literal slot.  Argparse reads description=__doc__ later,
+# so this assignment is what surfaces through `--help`.
+__doc__ = """pqc-readiness: assess host suitability for Post-Quantum Cryptography.
 
 Determines whether on-chip ISA features accelerate NIST PQC primitives
 (ML-KEM / Kyber, ML-DSA / Dilithium, SLH-DSA / SPHINCS+), enumerates
@@ -38,8 +86,6 @@ Exit codes:
     3  Poor       - software-only and too slow for production
     4  --check threshold not met (TIER below floor, or cnsa-2.0 not compliant)
 """
-
-from __future__ import annotations
 
 import argparse
 import json
