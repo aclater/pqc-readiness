@@ -63,7 +63,17 @@ def _full_trigger_report() -> pr.Report:
             "sig_algorithms": ["ML-DSA-65", "SLH-DSA-SHA2-128s"],
             "upgrade_path": {"recommendation": "upgrade to OpenSSL 3.5"},
         },
-        fips={"kernel": True, "openssl_provider": None},
+        fips={
+            "kernel": True,
+            "openssl_provider": True,
+            "fence_check_active": True,
+            "algorithm_fence_engaged": False,
+            "algorithms_reachable_outside_fence": {
+                "kems": ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"],
+                "signatures": ["ML-DSA-87", "SLH-DSA-SHAKE-256f"],
+                "tls_groups": ["X25519MLKEM768"],
+            },
+        },
         fips_pqc_conflict={"in_conflict": True, "explanation": "FIPS conflict"},
         isa_tier="poor",
         isa_score=0,
@@ -111,7 +121,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 6
+    assert len(rules) == 7
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -119,6 +129,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-004-classical-only-trust-store",
         "pqc-005-slh-dsa-in-tls-context",
         "pqc-006-no-network-hsm-pqc-firmware",
+        "pqc-007-fips-without-algorithm-fence",
     }
     assert {r["id"] for r in rules} == expected_ids
     for r in rules:
