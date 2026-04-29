@@ -5438,7 +5438,7 @@ def render_text(r: Report) -> str:
     if r.benchmark:
         L.append(C.wrap(C.BOLD, "6. Microbenchmark"))
         if not r.benchmark.get("available"):
-            L.append(f"   unavailable: {r.benchmark.get('reason')}")
+            L.append(f"   unavailable: {r.benchmark.get('reason', 'unknown')}")
         else:
             L.append(
                 f"   engine: {r.benchmark['engine']}, {r.benchmark['seconds_per_test']}s per test, "
@@ -5466,7 +5466,7 @@ def render_text(r: Report) -> str:
         L.append(C.wrap(C.BOLD, "6b. TLS handshake benchmark (loopback)"))
         b = r.benchmark_tls_handshake
         if not b.get("available"):
-            L.append(f"   unavailable: {b.get('reason')}")
+            L.append(f"   unavailable: {b.get('reason', 'unknown')}")
         else:
             L.append(
                 f"   engine: {b.get('engine')}, transport: {b.get('transport')}, "
