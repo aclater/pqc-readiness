@@ -5658,15 +5658,9 @@ def _render_text_os_crypto(r: Report) -> list[str]:
     return L
 
 
-def render_text(r: Report) -> str:
-    L: list[str] = []
-    sub = "-" * 76
-    L.extend(_render_text_header(r))
-    L.extend(_render_text_isa(r))
-    L.extend(_render_text_accelerators(r))
-    L.extend(_render_text_os_crypto(r))
-
-    L.append(C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)"))
+def _render_text_openssl(r: Report) -> list[str]:
+    """Section 4: OpenSSL PQC capability (version, KEMs, sigs, TLS groups)."""
+    L: list[str] = [C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)")]
     if not r.openssl.get("available"):
         L.append(f"   {r.openssl.get('reason', 'unknown')}")
     else:
@@ -5694,6 +5688,17 @@ def render_text(r: Report) -> str:
         if classical:
             L.append(f"   TLS classical groups:    {len(classical)} detected")
     L.append("")
+    return L
+
+
+def render_text(r: Report) -> str:
+    L: list[str] = []
+    sub = "-" * 76
+    L.extend(_render_text_header(r))
+    L.extend(_render_text_isa(r))
+    L.extend(_render_text_accelerators(r))
+    L.extend(_render_text_os_crypto(r))
+    L.extend(_render_text_openssl(r))
 
     L.append(C.wrap(C.BOLD, "5. NIST PQC parameter sizes (bytes)"))
     for name, sz in r.pqc_sizes.items():
