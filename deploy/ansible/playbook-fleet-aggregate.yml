@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Two-phase fleet rollup: each target host runs the probe and writes a
+# JSON file, then the controller fetches every file and runs
+# `pqc_readiness.py --aggregate` over the collected directory to produce
+# a single fleet-wide rollup.
+#
+# This mirrors the pattern documented under "Aggregation" in README.md:
+# the same `--aggregate DIR` mode that consumes the DaemonSet output
+# volume on OpenShift consumes the Ansible-fetched directory here.
+#
+# Layout on the controller:
+#
+#   {{ rollup_dir }}/
+#     <hostname>.json     one per target
+#     fleet-rollup.json   the --aggregate output
+#
+# Validated against `ansible-core 2.20.5`.
+---
+- name: Phase 1 — run the probe on every target and emit JSON
+  hosts: pqc_targets
+  gather_facts: false
+  # `rollup_dir` is declared in both phases so Phase 1 can resolve the
+  # fetch destination without reaching into `hostvars['localhost']`,
+  # which is not yet populated when this play runs.  `playbook_dir`
+  # resolves identically on every host context.
+  vars:
+    rollup_dir: "{{ playbook_dir }}/.rollup"
+    target_output: /var/tmp/pqc-readiness.json
+  tasks:
+    - name: Run pqc-readiness with --json
+      ansible.builtin.script:
+        cmd: "../../pqc_readiness.py --json"
+      register: pqc_raw
+      changed_when: false
+
+    - name: Write JSON to a known path on the target
+      ansible.builtin.copy:
+        content: "{{ pqc_raw.stdout }}"
+        dest: "{{ target_output }}"
+        mode: "0644"
+      changed_when: false
+
+    - name: Fetch the JSON back to the controller
+      ansible.builtin.fetch:
+        src: "{{ target_output }}"
+        dest: "{{ rollup_dir }}/{{ inventory_hostname }}.json"
+        flat: true
+
+- name: Phase 2 — controller-side aggregation
+  hosts: controller
+  gather_facts: false
+  vars:
+    rollup_dir: "{{ playbook_dir }}/.rollup"
+    aggregate_output: "{{ rollup_dir }}/fleet-rollup.json"
+  tasks:
+    - name: Ensure the rollup directory exists
+      ansible.builtin.file:
+        path: "{{ rollup_dir }}"
+        state: directory
+        mode: "0755"
+
+    # The aggregator is idempotent over the input directory — we want a
+    # fresh rollup on every run, so no `creates:` guard.
+    - name: Run --aggregate on the collected JSON
+      ansible.builtin.shell:
+        cmd: >-
+          {{ playbook_dir }}/../../pqc_readiness.py
+          --aggregate {{ rollup_dir }}
+          > {{ aggregate_output }}
+      changed_when: true
+
+    - name: Show the rollup highlights
+      ansible.builtin.debug:
+        msg: "Fleet rollup written to {{ aggregate_output }}"

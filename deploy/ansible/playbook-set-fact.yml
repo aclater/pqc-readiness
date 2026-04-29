@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Run pqc-readiness against every host in the `pqc_targets` group, set
+# the resulting facts under `pqc_readiness`, and print the verdict for
+# each host.  Use this as the starting template for any
+# `pqc_readiness`-aware play.
+#
+# Why two tasks (run, then set_fact): the script's `--ansible` flag
+# emits `{ansible_facts: {pqc_readiness: ...}}`, which Ansible can pick
+# up directly when used as a module-style fact source.  The `script`
+# module returns stdout in `register`, so we json-decode that and feed
+# it through `set_fact` ourselves.  The two-step form is portable
+# across `ansible-core` versions and works on hosts where the controller
+# Python differs from the target Python.
+#
+# `become: false` is the default — the probe runs fine without root.
+# Set `become_for_tpm: true` (vars below) to escalate just for the probe
+# task; that fills in `tpm_pqc.pqc_advertised` (TPM 2.0 query needs
+# /dev/tpmrm0 access).  See docs/ansible.md for the full privilege
+# requirements list.
+#
+# Validated against `ansible-core 2.20.5`.
+---
+- name: Probe PQC readiness across the fleet and capture facts
+  hosts: pqc_targets
+  gather_facts: false
+  vars:
+    # Set true to run the probe under become — the only field this
+    # actually changes today is tpm_pqc.pqc_advertised.
+    become_for_tpm: false
+  tasks:
+    - name: Run pqc-readiness with --ansible
+      ansible.builtin.script:
+        cmd: ../../pqc_readiness.py --ansible
+      register: pqc_raw
+      changed_when: false
+      become: "{{ become_for_tpm }}"
+
+    - name: Set pqc_readiness facts from probe output
+      ansible.builtin.set_fact:
+        pqc_readiness: "{{ (pqc_raw.stdout | from_json).ansible_facts.pqc_readiness }}"
+
+    - name: Print the verdict for each host
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ pqc_readiness.verdict }}
+          (isa_tier={{ pqc_readiness.isa_tier }},
+          openssl.pqc_native={{ pqc_readiness.openssl.pqc_native }},
+          replace_required={{ pqc_readiness.replace_required }})

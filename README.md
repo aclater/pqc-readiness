@@ -69,7 +69,7 @@ authoritative one-line summary.
 | `--cbom` | Emit a CycloneDX 1.6 Cryptographic Bill of Materials (see [CBOM output](#cbom-output---cbom)). |
 | `--spdx` | Emit an SPDX 3.0 JSON-LD document with the Security profile (see [SPDX 3.0 output](#spdx-30-output---spdx)). |
 | `--sarif` | Emit SARIF 2.1.0 findings for security pipelines (see [SARIF output](#sarif-output---sarif)). |
-| `--ansible` | Wrap the JSON schema in `{ansible_facts: {pqc_readiness: ...}}` and exit 0. Intended for `ansible.builtin.set_fact`. |
+| `--ansible` | Wrap the JSON schema in `{ansible_facts: {pqc_readiness: ...}}` and exit 0. See [`docs/ansible.md`](docs/ansible.md) for runnable playbooks (`set_fact`, fleet aggregation), the privilege model, and the fact shape downstream tasks can rely on. |
 
 `--json`, `--cbom`, `--spdx`, and `--sarif` are mutually exclusive views
 over the same probe run. The default (no flag) is the human-readable
@@ -209,7 +209,9 @@ keep the same version. Aggregation refuses to merge files whose
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](#exit-codes) table. |
 
 `--ansible` returns a single top-level key `ansible_facts`, whose value
-is `{pqc_readiness: {…the schema above…}}`.
+is `{pqc_readiness: {…the schema above…}}`. See
+[`docs/ansible.md`](docs/ansible.md) for runnable playbooks, the
+become / privilege model, and downstream `set_fact` patterns.
 
 `--recommend --json` returns a different document with top-level keys
 `role`, `mode`, `hostname`, `generated_at`, and `recommendations`. The
@@ -337,6 +339,10 @@ a reason rather than silently merged.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) —
   authority, source documents, and engine-encoded position for every
   policy reachable through `--policy`.
+- [`docs/ansible.md`](docs/ansible.md) — runnable Ansible playbooks
+  (`set_fact`, fleet aggregation), privilege model, and the fact shape
+  downstream tasks can rely on. Example playbooks live under
+  [`deploy/ansible/`](deploy/ansible/).
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party product reference
   policy and the rule that keeps this README in sync with `--help`.
 
