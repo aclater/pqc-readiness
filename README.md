@@ -217,6 +217,16 @@ is `{pqc_readiness: {…the schema above…}}`.
 `policy`, `authority`, `kem`, `signature`, `hash`, `policy_basis`,
 `source`, and `caveats`.
 
+### Schema alignment with CycloneDX 1.6
+
+[`docs/schema-alignment.md`](docs/schema-alignment.md) is a field-by-field
+mapping of the `--json` schema against the field-name conventions in
+CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
+`--json` is a host-level inventory schema and CycloneDX is an asset-level
+schema, so the two operate in different concept spaces — the asset-level
+projection is already provided by `--cbom`. No `--json` field renames
+are recommended at this time and `SCHEMA_VERSION` stays at `"1.0"`.
+
 ## CBOM output (`--cbom`)
 
 `--cbom` emits a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/)
