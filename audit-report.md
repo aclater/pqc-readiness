@@ -418,8 +418,8 @@ gates today, but meaningful gaps below:
   suite on every PR. ✓
 - **Third-party-reference lint:** I confirmed
   `scripts/check-no-third-party-refs.sh` rejects with rc=1 when given
-  a known-bad pattern (e.g., `Keyfactor`). The workflow uses the
-  script. ✓ (verified by reading; not actively tampered).
+  a pattern reserved in `scripts/forbidden-refs.txt`. The workflow
+  uses the script. ✓ (verified by reading; not actively tampered).
 - **Containerfile builds in CI:** `ci-ubi8.yml` builds the UBI 8 image
   in CI. UBI 10 and Debian Containerfiles are NOT built in any CI
   workflow — only `make container-ubi10` / `make container-debian`
