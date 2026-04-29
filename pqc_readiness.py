@@ -5691,6 +5691,17 @@ def _render_text_openssl(r: Report) -> list[str]:
     return L
 
 
+def _render_text_pqc_sizes(r: Report) -> list[str]:
+    """Section 5: NIST PQC parameter sizes (bytes) per algorithm."""
+    L: list[str] = [C.wrap(C.BOLD, "5. NIST PQC parameter sizes (bytes)")]
+    for name, sz in r.pqc_sizes.items():
+        role = sz.get("role", "")
+        nums = " ".join(f"{k}={v}" for k, v in sz.items() if k != "role")
+        L.append(f"   {name:<20} {role:<18} {nums}")
+    L.append("")
+    return L
+
+
 def render_text(r: Report) -> str:
     L: list[str] = []
     sub = "-" * 76
@@ -5699,13 +5710,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_accelerators(r))
     L.extend(_render_text_os_crypto(r))
     L.extend(_render_text_openssl(r))
-
-    L.append(C.wrap(C.BOLD, "5. NIST PQC parameter sizes (bytes)"))
-    for name, sz in r.pqc_sizes.items():
-        role = sz.get("role", "")
-        nums = " ".join(f"{k}={v}" for k, v in sz.items() if k != "role")
-        L.append(f"   {name:<20} {role:<18} {nums}")
-    L.append("")
+    L.extend(_render_text_pqc_sizes(r))
 
     if r.benchmark:
         L.append(C.wrap(C.BOLD, "6. Microbenchmark"))
