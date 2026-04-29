@@ -5888,9 +5888,26 @@ def _render_text_trust_store(r: Report) -> list[str]:
     return L
 
 
-def render_text(r: Report) -> str:
-    L: list[str] = []
+def _render_text_verdict(r: Report) -> list[str]:
+    """Trailing verdict block: bracketed by horizontal rules with the
+    overall verdict, reason, and optional caveat."""
     sub = "-" * 76
+    L: list[str] = [
+        sub,
+        f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}",
+        f"           {r.verdict_reason}",
+    ]
+    if r.verdict_caveat:
+        L.append(C.wrap(C.YELLOW, f"  CAVEAT:  {r.verdict_caveat}"))
+    L.append(sub)
+    return L
+
+
+def render_text(r: Report) -> str:
+    """Render the full report as plain text (color-aware via the module-
+    level C). Composes per-section helpers in numbered order; each helper
+    returns the lines it owns, including the trailing blank-line spacer."""
+    L: list[str] = []
     L.extend(_render_text_header(r))
     L.extend(_render_text_isa(r))
     L.extend(_render_text_accelerators(r))
@@ -5903,13 +5920,7 @@ def render_text(r: Report) -> str:
     L.extend(_render_text_production_estimate(r))
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_cnsa_2_0(r))
-
-    L.append(sub)
-    L.append(f"  VERDICT: {C.wrap(C.BOLD, r.verdict)}")
-    L.append(f"           {r.verdict_reason}")
-    if r.verdict_caveat:
-        L.append(C.wrap(C.YELLOW, f"  CAVEAT:  {r.verdict_caveat}"))
-    L.append(sub)
+    L.extend(_render_text_verdict(r))
     return "\n".join(L)
 
 
