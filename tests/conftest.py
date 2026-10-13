@@ -25,3 +25,4 @@ def _clear_openssl_version_cache() -> None:
     fresh subprocess invocation."""
     import pqc_readiness as pr
     pr._openssl_version_text.cache_clear()
+    pr._openssl_providers_verbose_text.cache_clear()

@@ -72,7 +72,7 @@ from typing import Any, Callable, Iterable, Iterator
 log = logging.getLogger("pqc-readiness")
 
 SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
 # the tool runs inside a container with the host's /proc /sys /dev /etc
@@ -995,15 +995,24 @@ def detect_ktls_annotated() -> dict[str, Any]:
     return out
 
 
-def detect_fips_mode_from_providers_text(text: str) -> bool:
-    """Parse `openssl list -providers -verbose` output as records and
-    return True iff a provider named exactly 'fips' has 'status: active'.
+# `openssl list -providers -verbose` is constant for the process lifetime
+# and serves both FIPS detection and the provider list in
+# openssl_capability(); one cached call replaces two subprocesses (#117).
+@functools.lru_cache(maxsize=None)
+def _openssl_providers_verbose_text() -> tuple[int, str]:
+    """Return cached (rc, text) from `openssl list -providers -verbose`.
+    Tests requiring a fresh subprocess call must invoke .cache_clear()."""
+    return _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
+
+
+def parse_openssl_provider_records(text: str) -> dict[str, dict[str, str]]:
+    """Parse `openssl list -providers -verbose` output into
+    {provider_name: {field: value}}.
 
     Provider records are introduced by a 2-space-indented line containing
     just the provider name; field lines under that record are indented
-    4+ spaces and look like `    status: active`.  A FIPS provider that
-    is loaded but inactive (status anything other than 'active') must NOT
-    register as enabled — earlier regex-based detection conflated the two.
+    exactly 4 spaces and look like `    status: active`.  Deeper-indented
+    lines (the `gettable provider parameters` listing) are ignored.
     """
     records: dict[str, dict[str, str]] = {}
     current: str | None = None
@@ -1018,7 +1027,16 @@ def detect_fips_mode_from_providers_text(text: str) -> bool:
         f = re.match(r"^    (\S+):\s*(.*)$", line)
         if f:
             records[current][f.group(1).strip()] = f.group(2).strip()
-    fips = records.get("fips") or {}
+    return records
+
+
+def detect_fips_mode_from_providers_text(text: str) -> bool:
+    """Return True iff `openssl list -providers -verbose` output lists a
+    provider named exactly 'fips' with 'status: active'.  A FIPS provider
+    that is loaded but inactive (status anything other than 'active') must
+    NOT register as enabled — earlier regex-based detection conflated the
+    two."""
+    fips = parse_openssl_provider_records(text).get("fips") or {}
     return fips.get("status", "").lower() == "active"
 
 
@@ -1031,7 +1049,7 @@ def detect_fips_mode() -> dict[str, Any]:
     except OSError as e:
         log.debug("detect_fips_mode: cannot read /proc/sys/crypto/fips_enabled: %s", e)
     if shutil.which("openssl"):
-        rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
+        rc, out = _openssl_providers_verbose_text()
         if rc == 0:
             info["openssl_provider"] = detect_fips_mode_from_providers_text(out)
     note = host_fs_unavailable_note(
@@ -3094,13 +3112,9 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     out["tls_pqc_groups"] = sorted(
         set(classified["pure_pqc"]) | set(classified["hybrid"])
     )
-    rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
+    rc, providers = _openssl_providers_verbose_text()
     out["providers"] = (
-        sorted(
-            {m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}
-        )
-        if rc == 0
-        else []
+        sorted(parse_openssl_provider_records(providers)) if rc == 0 else []
     )
     out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
     return out
@@ -3185,14 +3199,66 @@ def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
             continue
         rates = [float(x) for x in nums[-len(pending) :]]
         # The same algorithm appears under several header sections in
-        # `openssl speed` (e.g., RSA shows up under the legacy block, the
-        # KEM block, and the signature block).  Keep the first reading.
+        # `openssl speed` (OpenSSL 3.5 runs RSA as a legacy block, then as
+        # a KEM, then as a signature scheme, with no flag to narrow it).
+        # The legacy block keeps the bare key so existing consumers see the
+        # same numbers; the KEM / signature blocks (marked by a keygens/s
+        # column) land under `<name>_kem` / `<name>_signature` rather than
+        # being discarded — RSA keygen/s is the classical counterpart to
+        # ML-KEM / ML-DSA keygen (#117).
+        if "keygens/s" in pending:
+            name += "_kem" if "encaps/s" in pending else "_signature"
         out.setdefault(name, dict(zip(pending, rates)))
         pending = []
     return out
 
 
-def run_pqc_bench(seconds: int, threads: int) -> dict[str, Any]:
+BENCH_SKIPPED_NOT_PROVIDED = "algorithm not provided by this OpenSSL"
+
+
+def _bench_provided_algorithms(osinfo: dict[str, Any] | None) -> set[str] | None:
+    """KEM + signature algorithm names this OpenSSL exposes, taken from the
+    lists openssl_capability() already gathered (no extra subprocess).
+
+    Returns None when no capability data is available, which the caller
+    must treat as "unknown" and fall back to its own lookup.  Names are
+    upper-cased so the membership test is case-insensitive."""
+    if not osinfo or not osinfo.get("available"):
+        return None
+    names = list(osinfo.get("kem_algorithms") or []) + list(
+        osinfo.get("sig_algorithms") or []
+    )
+    return {n.upper() for n in names}
+
+
+def _bench_lookup_provided_algorithms() -> set[str]:
+    """Standalone fallback for run_benchmarks() callers that do not pass
+    capability data: query the KEM and signature lists directly."""
+    provided: set[str] = set()
+    for flag, pattern in (
+        ("-kem-algorithms", r"ML-KEM-\d+"),
+        ("-signature-algorithms", r"ML-DSA-\d+|SLH-DSA-[A-Za-z0-9-]+"),
+    ):
+        rc, text = _run(["openssl", "list", flag], timeout=5)
+        if rc == 0:
+            provided |= {a.upper() for a in re.findall(pattern, text)}
+    return provided
+
+
+def run_pqc_bench(
+    seconds: int, threads: int, provided: set[str] | None = None
+) -> dict[str, Any]:
+    """Run `openssl speed` for each PQC algorithm in the plan.
+
+    `provided` is the set of (upper-cased) algorithm names this OpenSSL
+    exposes.  An algorithm outside it is never benchmarked: given a name
+    it does not recognise, `openssl speed -signature-algorithms NAME`
+    silently benchmarks *every* signature algorithm (and likewise for
+    KEMs), which burns the whole timeout and then reports a misleading
+    failure (#117).  None means "unknown" and is resolved by a direct
+    lookup so the guard always applies."""
+    if provided is None:
+        provided = _bench_lookup_provided_algorithms()
     plan: list[tuple[str, str, tuple[str, ...]]] = [
         ("ML-KEM-768", "-kem-algorithms", ("keygen/s", "encaps/s", "decaps/s")),
         ("ML-DSA-65", "-signature-algorithms", ("keygen/s", "sign/s", "verify/s")),
@@ -3204,6 +3270,10 @@ def run_pqc_bench(seconds: int, threads: int) -> dict[str, Any]:
     ]
     results: dict[str, Any] = {}
     for algo, flag, labels in plan:
+        if algo.upper() not in provided:
+            log.debug("run_pqc_bench: skipping %s: %s", algo, BENCH_SKIPPED_NOT_PROVIDED)
+            results[algo] = {"skipped": BENCH_SKIPPED_NOT_PROVIDED}
+            continue
         cmd = ["openssl", "speed", "-seconds", str(seconds), flag, algo]
         rc, out = _run(cmd, timeout=seconds * 8 + 30)
         if rc != 0:
@@ -3253,7 +3323,14 @@ def run_classical_baseline(seconds: int) -> dict[str, dict[str, float]]:
     return parse_classical_speed(out)
 
 
-def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
+def run_benchmarks(
+    seconds: int = 1,
+    threads: int = 1,
+    osinfo: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Microbenchmark PQC + classical primitives.  Pass `osinfo` (the
+    openssl_capability() result) to reuse its algorithm lists; without it
+    the lists are looked up directly so the #117 guard still applies."""
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     rc, ver = _openssl_version_text()
@@ -3265,7 +3342,7 @@ def run_benchmarks(seconds: int = 1, threads: int = 1) -> dict[str, Any]:
         "engine": "openssl speed",
         "seconds_per_test": seconds,
         "threads": threads,
-        "pqc": run_pqc_bench(seconds, threads),
+        "pqc": run_pqc_bench(seconds, threads, _bench_provided_algorithms(osinfo)),
         "classical": run_classical_baseline(seconds),
     }
 
@@ -3852,7 +3929,7 @@ def per_algo_verdict(
             out[key] = {
                 "algorithm": algo,
                 "tier": "unknown",
-                "reason": "no benchmark data",
+                "reason": (bench_algo or {}).get("skipped") or "no benchmark data",
                 "metric": op,
                 "notes": notes,
             }
@@ -6915,7 +6992,9 @@ def main() -> int:
     membw: float | None = None
     membw_method: str | None = None
     if args.bench:
-        bench = run_benchmarks(seconds=args.seconds, threads=max(args.threads, 1))
+        bench = run_benchmarks(
+            seconds=args.seconds, threads=max(args.threads, 1), osinfo=osinfo
+        )
         membw, membw_method = memory_bandwidth_probe()
     if args.bench_tls:
         bench_tls = run_tls_handshake_bench(seconds=args.seconds, osinfo=osinfo)

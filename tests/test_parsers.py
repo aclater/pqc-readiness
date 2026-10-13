@@ -87,6 +87,30 @@ def test_parse_classical_speed_finds_rsa_eddsa_ecdh() -> None:
     assert ecdh_keys, f"no ECDH/X25519 row in {list(out)}"
 
 
+def test_parse_classical_speed_keeps_rsa_kem_and_signature_blocks() -> None:
+    # OpenSSL 3.5 always benchmarks rsa2048 three ways (#117).  The legacy
+    # block keeps the bare key with unchanged values; the KEM and
+    # signature blocks are captured instead of discarded.
+    text = _read(FIXTURES / "openssl-speed" / "classical.txt")
+    out = pr.parse_classical_speed(text)
+    assert out["rsa2048"] == {
+        "sign/s": 5681.8,
+        "verify/s": 94943.0,
+        "encr./s": 90551.0,
+        "decr./s": 5531.3,
+    }
+    assert out["rsa2048_kem"] == {
+        "keygens/s": 32.0,
+        "encaps/s": 88047.5,
+        "decaps/s": 5638.0,
+    }
+    assert out["rsa2048_signature"] == {
+        "keygens/s": 38.2,
+        "sign/s": 5616.0,
+        "verify/s": 96760.6,
+    }
+
+
 # ---------------------------------------------------------------------------
 # detect_fips_mode_from_providers_text — record-based provider parser
 # ---------------------------------------------------------------------------
@@ -844,7 +868,7 @@ import pytest  # noqa: E402  (placed after the existing tests for diff locality)
     ("rocky-9.txt",      "rhel",   "rocky",     False),
     ("almalinux-8.txt",  "rhel",   "almalinux", False),
     ("ubuntu-2404.txt",  "debian", "ubuntu",    True),
-    ("ubuntu-2510.txt",  "debian", "ubuntu",    True),
+    ("ubuntu-2604.txt",  "debian", "ubuntu",    True),
     ("debian-12.txt",    "debian", "debian",    True),
     ("debian-13.txt",    "debian", "debian",    True),
     ("sles-15sp6.txt",   "suse",   "sles",      False),
