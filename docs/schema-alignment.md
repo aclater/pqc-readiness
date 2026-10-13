@@ -47,8 +47,9 @@ The deliverable here is the mapping only. Applying any rename, bumping
   algorithms). The only naming authority for cryptographic asset
   schemas remains CycloneDX 1.6.
 
-The conclusion: keep the current `--json` shape and `SCHEMA_VERSION =
-"1.0"`, treat `--cbom` as the asset-level alignment surface, and skip
+The conclusion: keep the current `--json` shape (then at
+`SCHEMA_VERSION = "1.0"`; now `"1.1"` after the additive `memory`
+field), treat `--cbom` as the asset-level alignment surface, and skip
 the planned follow-up rename PR. The follow-up is no-op given this
 analysis; if a future cross-tool need surfaces a specific rename the
 follow-up issue can be filed at that point with concrete justification.
@@ -348,7 +349,9 @@ refactor, or introduce abstractions beyond what the task requires".
 
 ## Versioning recommendation
 
-`SCHEMA_VERSION` stays at `"1.0"`. No follow-up rename PR is required.
+`SCHEMA_VERSION` is currently `"1.1"`: this analysis left it at
+`"1.0"`, and the role-aware `memory` field (#61) later added a minor
+bump under the rule below. No follow-up rename PR is required.
 
 If a future patch *does* introduce a rename, the bump rule is:
 

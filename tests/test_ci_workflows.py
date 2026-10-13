@@ -109,3 +109,52 @@ def test_every_shipped_containerfile_is_built_in_ci() -> None:
     # guards the three images CI is responsible for.
     missing = [name for name in missing if name != "Containerfile.ubuntu-fips"]
     assert not missing, f"Containerfiles not built by any workflow: {missing}"
+
+
+def test_ci_runs_detect_secrets_with_precommit_version() -> None:
+    """ci.yml must run detect-secrets against the shared baseline, at the
+    same version pinned in .pre-commit-config.yaml (#94).
+
+    A version skew between the hook and CI would let the two disagree on
+    what counts as a finding, so a contributor could pass locally and fail
+    in CI (or vice versa).
+    """
+    import re
+
+    body = _read_workflow("ci.yml")
+    precommit = REPO_ROOT / ".pre-commit-config.yaml"
+    if not precommit.exists():
+        pytest.skip(f"pre-commit config not present in this checkout: {precommit}")
+    assert "detect-secrets-hook --baseline .secrets.baseline" in body
+    m = re.search(
+        r"Yelp/detect-secrets\s*\n\s*rev:\s*v?([0-9.]+)", precommit.read_text()
+    )
+    assert m, "detect-secrets hook not found in .pre-commit-config.yaml"
+    assert f"detect-secrets=={m.group(1)}" in body
+
+
+@pytest.mark.parametrize("image", ["ubi10", "debian"])
+def test_containers_workflow_runs_pytest_inside_image(image: str) -> None:
+    """ci-containers.yml must run the full pytest suite inside the UBI 10
+    and Debian images, not just smoke `--help` (#84).
+
+    The suite exercises each image's own interpreter and OpenSSL, which
+    the setup-python matrix in ci.yml cannot reproduce.
+    """
+    body = _read_workflow("ci-containers.yml")
+    assert f"FROM pqc-readiness:{image}" in body
+    assert f"pqc-readiness:{image}-test" in body
+    assert "python3 -m pytest tests/ -q" in body
+
+
+def test_tier2_weekly_workflow_is_scheduled_and_non_blocking() -> None:
+    """ci-tier2-weekly.yml backs the README's Tier 2 "weekly" promise
+    (#83): it must run on a weekly cron, be runnable on demand, and not
+    let one broken distro fail the others."""
+    body = _read_workflow("ci-tier2-weekly.yml")
+    assert 'cron: "0 6 * * 1"' in body
+    assert "workflow_dispatch:" in body
+    assert "continue-on-error: true" in body
+    assert "fail-fast: false" in body
+    for distro in ("fedora", "rocky", "almalinux", "debian", "ubuntu", "bci"):
+        assert distro in body, f"Tier 2 distro image missing: {distro}"

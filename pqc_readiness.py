@@ -6352,6 +6352,31 @@ def render_markdown(r: Report) -> str:
 # ---------------------------------------------------------------------------
 
 
+def ansible_ignored_flag_warnings(args: argparse.Namespace) -> list[str]:
+    """Explain flags that --ansible silently overrides.
+
+    --ansible must always exit 0 (otherwise Ansible marks the play failed
+    on the verdict), so it returns before the --check / --fips-strict
+    exit-code gates run.  Combining them is legal but the gates have no
+    effect; say so on stderr rather than leaving the user to discover it
+    from a surprising exit code (#95).  stdout stays pure JSON.
+    """
+    if not args.ansible:
+        return []
+    out: list[str] = []
+    if args.check:
+        out.append(
+            f"--check {args.check} is ignored when --ansible is active "
+            "(--ansible always exits 0; read the verdict from the JSON)"
+        )
+    if args.fips_strict:
+        out.append(
+            "--fips-strict is ignored when --ansible is active "
+            "(--ansible always exits 0; read fips.* from the JSON)"
+        )
+    return out
+
+
 # Exit code when --output FILE cannot be written after the probe ran.
 # Distinct from 0-4 so a write failure is never mistaken for a verdict.
 EXIT_OUTPUT_WRITE_FAILED = 5
@@ -6427,7 +6452,10 @@ def main() -> int:
     ap.add_argument(
         "--check",
         choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
-        help="exit 4 if verdict is below TIER, or if cnsa-2.0 status != compliant",
+        help=(
+            "exit 4 if verdict is below TIER, or if cnsa-2.0 status != "
+            "compliant.  Ignored (with a stderr warning) under --ansible"
+        ),
     )
     ap.add_argument(
         "--fips-strict",
@@ -6437,7 +6465,7 @@ def main() -> int:
             "OpenSSL default provider exposes algorithms not present in "
             "the FIPS provider's set.  See "
             "docs/findings/fips-algorithm-fence.md for the underlying "
-            "behavior."
+            "behavior.  Ignored (with a stderr warning) under --ansible"
         ),
     )
     dest = ap.add_mutually_exclusive_group()
@@ -6474,7 +6502,10 @@ def main() -> int:
     ap.add_argument(
         "--ansible",
         action="store_true",
-        help="emit {ansible_facts: {pqc_readiness: ...}} JSON, exit 0",
+        help=(
+            "emit {ansible_facts: {pqc_readiness: ...}} JSON and always "
+            "exit 0; takes precedence over --check and --fips-strict"
+        ),
     )
     ap.add_argument(
         "--recommend",
@@ -6543,6 +6574,8 @@ def main() -> int:
 
     def emit(text: str) -> bool:
         return _emit(text, out_path)
+    for warning in ansible_ignored_flag_warnings(args):
+        print(f"warning: {warning}", file=sys.stderr)
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
     if args.aggregate:

@@ -1,9 +1,12 @@
 # JSON output reference
 
 `./pqc_readiness.py --json` emits a stable, schema-versioned document.
-The `schema_version` key changes only when fields are renamed or
-removed; additive changes keep the same version. The fleet aggregator
-refuses to merge files whose `schema_version` does not match.
+The current `schema_version` is **`"1.1"`** (`SCHEMA_VERSION` in
+`pqc_readiness.py`). Renaming, removing or re-typing a field is a major
+bump (`1.x` → `2.0`); adding a field is a minor bump (`1.0` → `1.1`,
+as when `memory` was added). The fleet aggregator only merges files
+whose `schema_version` exactly matches its own and lists the rest under
+`skipped`, so aggregate reports from one script version at a time.
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -14,7 +17,7 @@ of the README.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Stable schema version string. Bumped on rename/remove, not on additive changes. |
+| `schema_version` | Schema version string, currently `"1.1"`. Major bump on rename/remove/re-type, minor bump on additions. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. |
 | `os` | OS family token (`linux`, `darwin`). |
@@ -25,6 +28,7 @@ of the README.
 | `cores_physical` | Physical core count. |
 | `mem_total_gb` | Total system memory in GiB. |
 | `mem_avail_gb` | Available memory in GiB at probe time. |
+| `memory` | Role-aware memory tier (added in schema `1.1`). `tier` (`excellent` / `good` / `marginal` / `poor`) and `reason` evaluate `mem_total_gb` against the threshold for `tier_basis.role` — the `--role` value, or `generic` when none is given. `tier_basis` = `{role, threshold_gib_good, role_supplied}`. When `--role` is not supplied, `tier_by_role` maps every role (`tls-server`, `tls-client`, `signing-service`, `firmware-signing`, `generic`) to `{tier, reason, threshold_gib_good}`. |
 | `isa_features` | Map of ISA feature flags relevant to PQC (AVX-512 family, ARMv8 crypto, CPACF MSA, …). |
 | `isa_score` | Numeric ISA score backing the tier classification. |
 | `isa_tier` | Coarse ISA tier (`excellent` / `good` / `marginal` / `poor`). |
@@ -96,5 +100,6 @@ mapping of the `--json` schema against the field-name conventions in
 CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 `--json` is a host-level inventory schema and CycloneDX is an
 asset-level schema — the asset-level projection is already provided by
-`--cbom`. No `--json` field renames are recommended at this time and
-`SCHEMA_VERSION` stays at `"1.0"`.
+`--cbom`. No `--json` field renames are recommended at this time; the
+only version change since that analysis is the additive minor bump to
+`SCHEMA_VERSION = "1.1"` for the `memory` field.

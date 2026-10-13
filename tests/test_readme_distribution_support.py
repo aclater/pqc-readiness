@@ -107,3 +107,43 @@ def test_named_workflow_files_actually_exist() -> None:
         f"README Distribution support § references workflow files that "
         f"do not exist: {missing}. Existing workflows: {sorted(workflow_files)}."
     )
+
+
+WEEKLY_PHRASE = re.compile(r"\bweekly\b", re.IGNORECASE)
+
+
+def test_weekly_cadence_claims_reference_scheduled_workflow() -> None:
+    """Any tier row whose cadence cell claims weekly validation must name
+    a workflow file that actually has a `schedule:` trigger (#83).
+
+    The Tier 2 row said "Periodic (weekly)" for months while no workflow
+    in the repo had a cron trigger; this pins the claim to a real one.
+    """
+    offenders: list[tuple[str, str]] = []
+    for tier, _distros, cadence in _tier_rows():
+        if not WEEKLY_PHRASE.search(cadence):
+            continue
+        scheduled = [
+            name
+            for name in WORKFLOW_REF.findall(cadence)
+            if (WORKFLOWS_DIR / name).is_file()
+            and re.search(r"^\s*schedule:", (WORKFLOWS_DIR / name).read_text(), re.MULTILINE)
+        ]
+        if not scheduled:
+            offenders.append((tier, cadence))
+    assert not offenders, (
+        "README tier rows claim weekly validation without naming a "
+        f"workflow that has a schedule: trigger. Offending rows: {offenders}"
+    )
+
+
+def test_el8_cadence_names_its_per_pr_workflow() -> None:
+    """EL8 sits in the Tier 2 row but is validated per PR, not weekly
+    (#85). The row must say so and name ci-ubi8.yml, so the table never
+    again understates (weekly) or overstates (bare metal) EL8 coverage."""
+    rows = {tier: (distros, cadence) for tier, distros, cadence in _tier_rows()}
+    distros, cadence = rows["2"]
+    assert "RHEL 8" in distros
+    assert "ci-ubi8.yml" in cadence
+    assert "every PR" in cadence
+    assert "not a booted EL8 host" in cadence

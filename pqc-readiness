@@ -79,11 +79,13 @@ cat >&2 <<'EOF'
 pqc-readiness: no Python 3.9+ interpreter found on PATH.
 
 This script requires Python 3.9 or newer.  On RHEL 8, Rocky Linux 8,
-or AlmaLinux 8 the default `python3` is 3.6, which cannot parse the
-modern type-hint syntax this script uses.  Enable the AppStream
-`python39` (or higher) module, then re-run this launcher:
+or AlmaLinux 8 the default `python3` is 3.6 (stock cloud images have no
+`python3` at all, only /usr/libexec/platform-python 3.6), which cannot
+parse the modern type-hint syntax this script uses.  Enable the
+AppStream `python39` module (or, on EL 8.8+, install `python3.11`),
+then re-run this launcher:
 
-    dnf module install python39
+    sudo dnf module install -y python39
     /path/to/pqc-readiness [flags]
 
 You can also invoke any 3.9+ interpreter directly against the .py:
