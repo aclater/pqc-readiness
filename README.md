@@ -32,6 +32,149 @@ privileged DaemonSet on OpenShift.
 
 ## What's new
 
+### 2026-10-13: version 2.1.0, one package, configuration-aware detection, schema 1.5
+
+Version **2.1.0**. All JSON changes are additive, so the schema goes to
+**1.5**. The fleet aggregator only merges reports with the same
+`schema_version`, so re-scan before mixing old and new reports.
+
+#### Deployment changes: read first
+
+- **`pqc_readiness.py` no longer exists** (#80). Run one of:
+  - `pqc-readiness.pyz`, a single-file zipapp built with
+    `python3 scripts/build_zipapp.py` (or `make dist`). It is stdlib only and
+    needs Python 3.9 or newer.
+  - The `pqc-readiness` wrapper, which prefers the `.pyz`.
+  - `python3 -m pqc_readiness` from a checkout.
+
+  Output and exit codes are unchanged: every output mode was compared
+  byte for byte, including on booted Fedora 44, Rocky 9 and AlmaLinux 8
+  VMs.
+- **More read-only host mounts.** The DaemonSet and quadlet now also mount
+  `/usr/share/crypto-policies`, because the crypto-policies back-end files
+  are symlinks into it (#104).
+- **Atomic file writes.** `--output` now writes every format atomically
+  (#140).
+- **Python install hints per distro.** When no Python 3.9+ is found, the
+  wrapper's message now gives the right install command for SUSE, the
+  RHEL 8 family or Debian/Ubuntu (#127).
+
+#### Results that were wrong, now fixed
+
+- **Containers scanned the image, not the host.** With `--host-mount`,
+  `--scan-trust-store` read the scanner image's own `/etc` (#108).
+- **CNSA 2.0 recommendations passed hosts that don't qualify** (#139).
+  - A host offering only ML-KEM-768 TLS groups used to pass the CNSA 2.0
+    group check. It now gets a caveat.
+  - X25519MLKEM768 and the other ML-KEM-768 groups are reported as not
+    compliant in `cnsa_2_0.tls_key_exchange`. This is informational:
+    `status` and `--check cnsa-2.0` exit codes are unchanged.
+- **NIST IR 8547 was presented as final.** It is still a draft (#138,
+  #139). The README also wrongly said IR 8547 references CycloneDX; the
+  draft never mentions it (#139).
+- **Policy text corrected** (#141).
+  - The ANSSI source linked to a quantum-key-distribution paper.
+  - The CNSA 2.0 wording on hybrids now matches NSA's FAQ: permitted, not
+    required.
+
+#### New: what the host is configured to do, not just what it can do
+
+- **System crypto policy** (`crypto_policy`, #104). It is read from files,
+  so it works under `--host-mount` and on SUSE. A new SARIF rule,
+  `pqc-008`, fires when OpenSSL supports PQC but the policy blocks it.
+  On booted VMs:
+  - Rocky 9.8 and AlmaLinux 9.8 `DEFAULT` let no PQC through; `DEFAULT:PQ`
+    enables it.
+  - Rocky 10.2, Fedora 44 and Leap 16 `DEFAULT` already allow PQC.
+- **OpenSSL effective configuration** (`openssl.config`, #106). It reports
+  the config file and its includes, configured and third-party providers,
+  and where the default TLS groups come from.
+  - AlmaLinux 9.8 offers no PQC key exchange by default.
+  - Rocky 10.2, Fedora 44 and Leap 16 do.
+  - Debian 13 and Ubuntu 26.04 configs set no groups, so OpenSSL 3.5's
+    built-in hybrid-first default applies.
+- **Listening services and the crypto library each one loads**
+  (`--scan-services`, #111). It covers the OpenSSL family, GnuTLS, NSS and
+  wolfSSL, plus the Go version and default hybrid key exchange of static
+  Go binaries. It only reads `/proc`. Every listener was attributed:
+  16/16 on Fedora 44 and 12/12 on Rocky 9.8.
+- **Certificates, private keys and Java keystores on disk**
+  (`--scan-crypto-material`, #108).
+  - Certificates: leaf or CA, key algorithm, PQC category, and whether they
+    are valid past 2030 or 2035.
+  - Private keys: metadata only. Key bytes never appear in any output
+    format; this was checked on VMs across all 7 formats.
+- **RFC-assigned names and codepoints** for PQC TLS groups and SSH key
+  exchanges (RFC 10024, RFC 10042), with draft/final status
+  (`openssl.tls_group_references`, `ssh_pqc.kex_references`, #139).
+- **Sourced migration timelines** in `--recommend`, as `policy_sources` plus
+  a per-record `timeline` that includes the CNSA 2.0 deadline category
+  (#141).
+
+#### New outputs and integrations
+
+- **CycloneDX 1.7 is now the default CBOM** (#138). It adds algorithm
+  families, TLS/SSH protocol components and certificate assets.
+  `--cbom-version 1.6` is byte-identical to earlier releases.
+- **Federal CBOM fields** (`--cbom-profile federal-draft` and
+  `--inventory-metadata FILE`, #144). These cover EO 14412 / OMB M-26-15:
+  key establishment vs signature, deadlines, TLS 1.3 status and OMB M-23-02
+  item coverage. The profile is a data table, so it can be remapped when
+  CISA/NIST publish the minimum CBOM elements (#150).
+- **Prometheus output** (`--prometheus`, #140) for node_exporter's textfile
+  collector, with an 8-panel Grafana dashboard. It was checked end to end
+  with node_exporter and Prometheus. See [docs/prometheus.md](docs/prometheus.md).
+- **SIEM events** (`--ndjson`, #146): OCSF 1.9.0 Device Inventory Info and
+  Compliance Finding events, validated against the OCSF schema. Recipes for
+  Splunk, Sentinel and Elastic are in
+  [docs/siem-ndjson.md](docs/siem-ndjson.md).
+- **Code-scanning SARIF** (`--sarif-anchor PATH`, #145) adds the locations,
+  fingerprints and per-host categories that code-scanning upload needs.
+  Without the flag, `--sarif` output is unchanged.
+- **Tested integration recipes** for Dependency-Track and DefectDojo,
+  written from real uploads (#147). See
+  [docs/integrations/](docs/integrations/).
+- **[Inventory methodology](docs/inventory-methodology.md)** that agencies
+  can cite in M-26-15 migration plans (#142). It maps the scanner's output
+  to the OMB M-23-02 inventory items.
+
+#### Upgrade notes for JSON consumers (schema 1.5)
+
+- **New top-level objects:** `crypto_policy`, `crypto_material`,
+  `service_crypto_linkage`, `inventory_metadata`.
+- **New nested fields:** `openssl.config`, `openssl.tls_group_references`,
+  `ssh_pqc.kex_references`, `cnsa_2_0.tls_key_exchange`,
+  `trust_store.certificates`.
+- **New values:** `packages.source` can now also be `rpmdb-bdb` or
+  `rpmdb-ndb`.
+
+Nothing was renamed, removed or re-typed. See the
+[version table](docs/json-output.md).
+
+#### Known limitations
+
+- **Ubuntu 26.04's own crypto-policy framework isn't read yet** (#170).
+- **Dependency-Track:**
+  - 5.2.0 accepts the CBOM but drops the crypto details.
+  - 4.14.5 accepts the upload and then fails silently (#175).
+- **The CBOM lists trust-store certificates only.** Certificates found by
+  `--scan-crypto-material` aren't included yet (#178).
+- **SARIF help links point to rule pages that don't exist yet** (#179).
+- **`--scan-services` can't see other users' processes** in the non-root
+  DaemonSet without `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`.
+  Unreadable processes are counted, not guessed (#111).
+- **The SIEM recipes haven't been run against live tenants** (#146).
+
+#### Under the hood
+
+- **Package split** (#80): one module per area, with registries for
+  output formats and per-module command-line flags. A test guard
+  rejects patches on the package root. The `.pyz` runs the full test
+  suite in CI, including inside the UBI 8/10 and Debian images.
+- **Formatting enforced** (#122): repo-wide `ruff format`, and every
+  pre-commit hook runs in CI.
+- **Tests:** from 688 to 1,146.
+
 ### 2026-10-13: accuracy fixes, faster scans, schema 1.4
 
 This release fixes results that were wrong on current platforms, so
@@ -165,9 +308,10 @@ Nothing was renamed or removed. The full field reference is in
 #### Known limitations
 
 - **Stock SLES 15 / openSUSE Leap 15** ship only Python 3.6, so the
-  scanner exits 127 until a newer interpreter is installed (#127).
-  [RHEL 8 / Rocky 8 / AlmaLinux 8](#distribution-support) need the same
-  kind of prerequisite.
+  scanner exits 127 until a newer interpreter is installed (#127). The
+  prerequisite is now documented under [Distribution
+  support](#distribution-support), and the wrapper prints the SUSE
+  install commands (resolved in 2.1.0).
 - RHEL cloud images need a Red Hat login to download, so they were checked as UBI containers.
   Rocky and AlmaLinux stood in for booted RHEL 8 hosts.
 
@@ -595,6 +739,10 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 
 - [`docs/scope.md`](docs/scope.md) — where this project fits in the wider PQC tooling ecosystem; how host-level scanning composes with network, source-code, dependency, and TLS-handshake categories.
 - [`docs/json-output.md`](docs/json-output.md) — full `--json` top-level field reference, `--ansible` wrapper, and `--recommend --json` variant.
+- [`docs/inventory-methodology.md`](docs/inventory-methodology.md) — what is collected and how, mapped to the OMB M-23-02 inventory items, for M-26-15 migration plans.
+- [`docs/prometheus.md`](docs/prometheus.md) — `--prometheus` metrics, labels and presence rules; Grafana dashboard in [`docs/grafana/`](docs/grafana/).
+- [`docs/siem-ndjson.md`](docs/siem-ndjson.md) — `--ndjson` (OCSF 1.9.0) ingestion recipes.
+- [`docs/sarif-code-scanning.md`](docs/sarif-code-scanning.md) — `--sarif-anchor` code-scanning upload recipe.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
 - [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF).
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
