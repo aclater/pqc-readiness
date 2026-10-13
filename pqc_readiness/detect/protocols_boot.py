@@ -222,6 +222,22 @@ def detect_secure_boot() -> dict[str, Any]:
             "firmware": "uefi",
             "reason": f"{EFIVARS_DIR} is not mounted (efivarfs)",
         }
+    try:
+        with os.scandir(efivars) as it:
+            next(it, None)
+    except OSError as e:
+        # Measured: rootless podman with default SELinux labels gets EACCES
+        # on efivarfs even with /sys bind-mounted; the quadlet's
+        # SecurityLabelDisable lifts it.
+        log.debug("boot_chain: cannot list %s: %s", efivars, e)
+        return {
+            "available": False,
+            "firmware": "uefi",
+            "reason": (
+                f"{EFIVARS_DIR} is not readable ({e.strerror}); SELinux-confined "
+                "containers are denied efivarfs"
+            ),
+        }
     databases: dict[str, Any] = {}
     for key, name, guid in SIGNATURE_DATABASES:
         if guid == SHIM_LOCK:
@@ -437,21 +453,37 @@ def parse_pkcs7_signer(der: bytes) -> dict[str, Any]:
 
 
 def _module_candidates(release: str) -> list[Path]:
-    """Module files to sample, from modules.dep order (deterministic)."""
+    """Module files to sample, in modules.dep order (deterministic).  When
+    modules.dep can't be read (measured: SELinux-confined containers are
+    denied it while the module files stay readable), walk the module tree
+    in sorted order instead."""
     for base in _kernel_dirs(release):
         root = _platform.host_path(base)
+        if not root.is_dir():
+            continue
+        out: list[Path] = []
         try:
             dep = (root / "modules.dep").read_text(errors="replace")
-        except OSError:
-            continue
-        out = []
-        for line in dep.splitlines():
-            rel = line.split(":", 1)[0].strip()
-            if rel:
-                out.append(root / rel)
-            if len(out) >= MODULE_SAMPLE_LIMIT:
-                break
-        return out
+        except OSError as e:
+            log.debug("boot_chain: cannot read %s/modules.dep: %s", root, e)
+        else:
+            for line in dep.splitlines():
+                rel = line.split(":", 1)[0].strip()
+                if rel:
+                    out.append(root / rel)
+                if len(out) >= MODULE_SAMPLE_LIMIT:
+                    return out
+            if out:
+                return out
+        for dirpath, dirnames, filenames in os.walk(root / "kernel"):
+            dirnames.sort()
+            for name in sorted(filenames):
+                if ".ko" in name:
+                    out.append(Path(dirpath) / name)
+                    if len(out) >= MODULE_SAMPLE_LIMIT:
+                        return out
+        if out:
+            return out
     return []
 
 

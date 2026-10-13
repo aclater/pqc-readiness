@@ -602,7 +602,7 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | --- | --- | --- |
 | `available` | bool | False on legacy BIOS boot or without efivarfs. |
 | `firmware` | string | `uefi` or `bios`. |
-| `reason` | string | Why `available` is false. |
+| `reason` | string | Why `available` is false: legacy BIOS, efivarfs not mounted, or efivarfs not readable (measured: rootless podman with default SELinux labels is denied efivarfs; the quadlet's `SecurityLabelDisable` lifts that). |
 | `enabled` | bool \| null | The `SecureBoot` variable. |
 | `setup_mode` | bool \| null | The `SetupMode` variable (true: no PK enrolled, keys can be changed freely). |
 | `shim_validation_disabled` | bool | shim's `MokSBStateRT` says signature validation is disabled. |

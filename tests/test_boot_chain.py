@@ -456,3 +456,22 @@ def test_host_mount_never_reads_the_containers_boot_or_lib_modules(
 def test_bare_metal_reads_boot_config(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
     assert pb._kernel_dirs("6.0") == ["/lib/modules/6.0", "/usr/lib/modules/6.0"]
+
+
+def test_module_tree_walk_when_modules_dep_is_unreadable(host: Path) -> None:
+    _modules_tree(host, "rsa4096.p7s", "CONFIG_MODULE_SIG_KEY_TYPE_RSA=y\n")
+    (host / f"usr/lib/modules/{RELEASE}/modules.dep").unlink()
+    sample = pb.detect_module_signing()["sample_module"]
+    assert sample["module"] == "fake.ko.xz" and sample["signature_algorithm"] == "RSA"
+
+
+def test_unreadable_efivarfs_is_reported(host: Path, monkeypatch) -> None:
+    _secure_boot_tree(host, [_der("rsa-2048.pem")])
+
+    def denied(path):  # noqa: ARG001
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(pb.os, "scandir", denied)
+    sb = pb.detect_secure_boot()
+    assert sb["available"] is False and sb["firmware"] == "uefi"
+    assert "Permission denied" in sb["reason"]
