@@ -22,11 +22,21 @@ not require touching the engine.
 - **Source:**
   - CNSA 2.0 advisory:
     https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF
-  - CNSA 2.0 FAQ:
+  - CNSA 2.0 FAQ, ver. 2.1 (December 2024):
     https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSI_CNSA_2.0_FAQ_.PDF
-- **Position:** ML-KEM-1024 and ML-DSA-87 for National Security
-  Systems. Pure PQC is preferred. Hybrid is permitted only where a
-  protocol mandates it (e.g., IKEv2 per RFC 9370).
+- **Position:** ML-KEM-1024 and ML-DSA-87 (plus single-tree LMS/XMSS
+  for software/firmware signing) for National Security Systems. Pure
+  PQC is preferred. Hybrids are permitted but not required; NSA
+  anticipates one for IKEv2 (RFC 9370). SLH-DSA and HSS/XMSS^MT are not
+  approved.
+- **Deadlines (2022 advisory and FAQ ver. 2.1):** new NSS acquisitions
+  compliant from 1 January 2027; equipment that cannot support CNSA 2.0
+  phased out by 31 December 2030; CNSA 2.0 mandated by 31 December
+  2031; all NSS quantum-resistant by 2035. Exclusive use by category:
+  software/firmware signing and traditional networking 2030; web
+  browsers/servers and cloud, operating systems and niche equipment
+  2033; custom and legacy equipment updated or replaced by 2033. The
+  engine reports the category for the role in `timeline`.
 - **Hash:** SHA-384.
 - **Engine output:**
   - KEM: `ML-KEM-1024` (pure)
@@ -41,7 +51,11 @@ not require touching the engine.
   - FIPS 203 (ML-KEM): https://csrc.nist.gov/pubs/fips/203/final
   - FIPS 204 (ML-DSA): https://csrc.nist.gov/pubs/fips/204/final
   - FIPS 205 (SLH-DSA): https://csrc.nist.gov/pubs/fips/205/final
-  - NIST IR 8547: https://csrc.nist.gov/pubs/ir/8547/final
+  - NIST IR 8547 (initial public draft, 12 Nov 2024; no final version):
+    https://csrc.nist.gov/pubs/ir/8547/ipd
+  - The IR 8547 draft deprecates quantum-vulnerable algorithms at
+    112-bit strength after 2030 and disallows all of them after 2035.
+    These dates are from a draft and may change.
   - NIST SP 800-56C Rev. 2:
     https://csrc.nist.gov/pubs/sp/800/56/c/r2/final
   - NIST SP 800-227: https://csrc.nist.gov/pubs/sp/800/227/final
@@ -59,14 +73,28 @@ not require touching the engine.
 
 - **Authority:** ANSSI (France) and BSI (Germany)
 - **Source:**
-  - ANSSI position on PQC migration:
-    https://cyber.gouv.fr/publications/should-quantum-key-distribution-be-used-secure-communications
-  - BSI guidance on PQC:
-    https://www.bsi.bund.de/EN/Themen/Unternehmen-und-Organisationen/Informationen-und-Empfehlungen/Quantentechnologien-und-Post-Quanten-Kryptografie/quantentechnologien-und-post-quanten-kryptografie_node.html
+  - ANSSI views on the Post-Quantum Cryptography transition (2023
+    follow up, 21 December 2023):
+    https://cyber.gouv.fr/en/publications/follow-position-paper-post-quantum-cryptography
+  - BSI TR-02102-1, Cryptographic Mechanisms: Recommendations and Key
+    Lengths, version 2026-01 (23 January 2026):
+    https://www.bsi.bund.de/SharedDocs/Downloads/EN/BSI/Publications/TechGuidelines/TG02102/BSI-TR-02102-1.pdf
+  - EU NIS Cooperation Group, A Coordinated Implementation Roadmap for
+    the Transition to Post-Quantum Cryptography, Part 1, v1.1
+    (11 June 2025):
+    https://digital-strategy.ec.europa.eu/en/library/coordinated-implementation-roadmap-transition-post-quantum-cryptography
 - **Position:** Both authorities recommend hybrid deployment of PQC
-  alongside a classical primitive throughout the migration period.
-  Pure-PQC deployments are discouraged until confidence in the new
-  primitives matures.
+  alongside a classical primitive throughout the migration period
+  (ANSSI: hybridation "wherever post-quantum mitigation is needed" in
+  the short and medium term; BSI: quantum-safe mechanisms "should be
+  used in hybrid form"). BSI recommends ML-KEM-768 and ML-KEM-1024,
+  alongside FrodoKEM and Classic McEliece.
+- **Deadlines (EU roadmap):** Member States complete First Steps by the
+  end of 2026; high-risk use cases transitioned, with no stand-alone
+  quantum-vulnerable public-key mechanisms, by the end of 2030; the
+  transition complete for as many systems as feasible, and medium-risk
+  use cases off stand-alone quantum-vulnerable mechanisms, by the end
+  of 2035.
 - **Hash:** SHA-256 or SHA-384.
 - **Engine output:**
   - KEM: `ML-KEM-768` (hybrid)
@@ -215,3 +243,18 @@ changes is a maintenance task, not an automation goal.
   advisory; the operator applies it.
 - Recommendations for cryptographic primitives outside NIST FIPS
   203/204/205.
+
+## Other national timelines
+
+The `--recommend` document's `policy_sources` block also carries these,
+for context. They are not separate engine policies.
+
+| Authority | Document | Milestones |
+| --- | --- | --- |
+| UK NCSC | [Timelines for migration to PQC](https://www.ncsc.gov.uk/guidance/pqc-migration-timelines) | 2028 discovery and plan; 2031 highest-priority migrations; 2035 all systems |
+| Canada CCCS | [ITSM.40.001](https://www.cyber.gc.ca/en/guidance/roadmap-migration-post-quantum-cryptography-government-canada-itsm40001) | April 2026 departmental plans; end of 2031 high-priority systems; end of 2035 remaining systems |
+| Australia ASD | [ISM, Guidelines for Cryptography](https://www.cyber.gov.au/business-government/asds-cyber-security-frameworks/ism/cyber-security-guidelines/guidelines-for-cryptography) (ISM-0472/0474/0475) | DH, ECDH and ECDSA not approved beyond 2030 |
+
+Every date in this document was read from the issuing body's own
+publication on 2026-10-13. `docs/json-output.md` describes the
+`timeline` and `policy_sources` fields.
