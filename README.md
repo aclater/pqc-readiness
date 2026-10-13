@@ -479,6 +479,27 @@ ready-to-deploy image is shipped at
 is identical to the UBI 10 image. CI runs the full test suite inside the
 UBI 8 image on every PR and push to `main` (`ci-ubi8.yml`).
 
+**SLES 15 / openSUSE Leap 15 specifics.** SLES 15 and openSUSE Leap 15
+ship Python 3.6 as `/usr/bin/python3`; the openSUSE Leap 15.6 cloud
+image has nothing newer. On such a host the `pqc-readiness` wrapper
+exits 127 and prints SUSE-specific guidance. The fix is a one-time
+install of a newer interpreter alongside the system one. The wrapper
+finds `python3.11` on its own, and the system `python3` is left
+untouched:
+
+```bash
+sudo zypper --gpg-auto-import-keys ref   # refresh repo metadata (and import repo keys) first
+sudo zypper -n in python311              # provides /usr/bin/python3.11
+./pqc-readiness --json
+```
+
+These exact steps were tested on a booted openSUSE Leap 15.6 cloud image
+(`python311` gives Python 3.11.15). The scanner then ran normally and
+read the Berkeley DB rpm database in-process. openSUSE Leap 16.0 and Tumbleweed already ship Python 3.13 as
+`python3` (checked by booting their cloud images). The wrapper picks its install hint from `ID` / `ID_LIKE`
+in `/etc/os-release`. SUSE, RHEL-family and Debian/Ubuntu hosts each get
+their own hint ([#127](https://github.com/aclater/pqc-readiness/issues/127)).
+
 Out of scope for this tool: Windows / WSL, BSD, musl-specific behaviour
 beyond Alpine. macOS support is best-effort and limited to the paths
 already in the script.

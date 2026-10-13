@@ -187,3 +187,15 @@ def test_tier2_weekly_workflow_is_scheduled_and_non_blocking() -> None:
     assert "fail-fast: false" in body
     for distro in ("fedora", "rocky", "almalinux", "debian", "ubuntu", "bci"):
         assert distro in body, f"Tier 2 distro image missing: {distro}"
+
+
+def test_tier2_weekly_asserts_stock_suse_guidance() -> None:
+    """#127: the weekly workflow must exercise the wrapper on a stock SLES
+    15 image (no Python 3.9+) and check the SUSE hint, not only run the
+    suite under a pre-installed python311."""
+    body = _read_workflow("ci-tier2-weekly.yml")
+    assert "suse15-stock-guidance:" in body
+    job = body.split("suse15-stock-guidance:", 1)[1]
+    assert "continue-on-error: true" in job
+    assert "sudo zypper -n in python311" in job
+    assert "./pqc-readiness" in job

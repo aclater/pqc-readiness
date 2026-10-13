@@ -26,6 +26,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = REPO_ROOT / "pqc-readiness"
+OS_RELEASE_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "os-release"
+# Guidance is family-aware (#127); pin the EL8 tests to an EL8 host so
+# they do not depend on the OS of the machine running the suite.
+EL8_OS_RELEASE = str(OS_RELEASE_FIXTURES / "rhel-8.txt")
 
 
 @pytest.fixture(scope="module")
@@ -77,7 +81,7 @@ def test_launcher_no_python_on_path_emits_appstream_guidance(
         [str(launcher_executable)],
         capture_output=True,
         text=True,
-        env={"PATH": utils_path},
+        env={"PATH": utils_path, "PQC_READINESS_OS_RELEASE": EL8_OS_RELEASE},
         check=False,
     )
     assert proc.returncode == 127, proc.stderr
@@ -106,7 +110,10 @@ def test_launcher_only_old_python_emits_appstream_guidance(
         [str(launcher_executable)],
         capture_output=True,
         text=True,
-        env={"PATH": f"{fake_py_dir}:{utils_path}"},
+        env={
+            "PATH": f"{fake_py_dir}:{utils_path}",
+            "PQC_READINESS_OS_RELEASE": EL8_OS_RELEASE,
+        },
         check=False,
     )
     assert proc.returncode == 127, (
@@ -149,7 +156,7 @@ def test_launcher_and_readme_give_the_same_el8_prerequisite(
         [str(launcher_executable)],
         capture_output=True,
         text=True,
-        env={"PATH": utils_path},
+        env={"PATH": utils_path, "PQC_READINESS_OS_RELEASE": EL8_OS_RELEASE},
         check=False,
     )
     assert proc.returncode == 127
@@ -162,3 +169,107 @@ def test_launcher_and_readme_give_the_same_el8_prerequisite(
     text = readme.read_text(encoding="utf-8")
     assert EL8_INSTALL_CMD in text
     assert "/usr/bin/env: 'python3': No such file or directory" in text
+
+
+# ---------------------------------------------------------------------------
+# Family-aware guidance (#127)
+# ---------------------------------------------------------------------------
+
+SUSE_INSTALL_CMD = "sudo zypper -n in python311"
+
+
+def _no_python_guidance(
+    utils_path: str, os_release: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(LAUNCHER)],
+        capture_output=True,
+        text=True,
+        env={"PATH": utils_path, "PQC_READINESS_OS_RELEASE": os_release},
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected", "absent"),
+    [
+        ("sles-15sp6.txt", SUSE_INSTALL_CMD, "dnf module install"),
+        ("opensuse-leap-156.txt", SUSE_INSTALL_CMD, "dnf module install"),
+        ("rhel-8.txt", EL8_INSTALL_CMD, "zypper"),
+        ("rocky-8.txt", EL8_INSTALL_CMD, "zypper"),  # via ID_LIKE
+        ("almalinux-8.txt", EL8_INSTALL_CMD, "zypper"),
+        ("ubuntu-2404.txt", "sudo apt-get install -y python3", "zypper"),
+        ("debian-12.txt", "sudo apt-get install -y python3", "dnf module install"),
+    ],
+)
+def test_launcher_guidance_matches_host_family(
+    launcher_executable: Path, utils_path: str, fixture: str, expected: str, absent: str
+) -> None:
+    proc = _no_python_guidance(utils_path, str(OS_RELEASE_FIXTURES / fixture))
+    assert proc.returncode == 127
+    assert expected in proc.stderr
+    assert absent not in proc.stderr
+
+
+def test_launcher_suse_guidance_refreshes_repos_first(
+    launcher_executable: Path, utils_path: str
+) -> None:
+    # Minimal SUSE images may have no usable repo metadata yet, and
+    # non-interactive zypper won't import repo keys on its own, so the
+    # refresh (with key auto-import) must come before the install.
+    proc = _no_python_guidance(utils_path, str(OS_RELEASE_FIXTURES / "sles-15sp6.txt"))
+    err = proc.stderr
+    assert "zypper --gpg-auto-import-keys ref" in err
+    assert err.index("zypper --gpg-auto-import-keys ref") < err.index(SUSE_INSTALL_CMD)
+
+
+def test_launcher_unknown_family_lists_the_common_hints(
+    launcher_executable: Path, utils_path: str
+) -> None:
+    proc = _no_python_guidance(utils_path, str(OS_RELEASE_FIXTURES / "arch.txt"))
+    assert proc.returncode == 127
+    assert "dnf module install -y python39" in proc.stderr
+    assert "zypper -n in python311" in proc.stderr
+
+
+def test_launcher_finds_side_installed_python311(
+    launcher_executable: Path, utils_path: str, tmp_path: Path
+) -> None:
+    """SLES/Leap after `zypper in python311`: `python3` is still 3.6 and
+    a separate `python3.11` exists.  The launcher must pick python3.11."""
+    bin_dir = tmp_path / "py"
+    bin_dir.mkdir()
+    old = bin_dir / "python3"
+    old.write_text('#!/bin/sh\ncase "$1" in -c) echo 3.6 ;; esac\nexit 0\n')
+    new = bin_dir / "python3.11"
+    marker = tmp_path / "ran-with"
+    new.write_text(
+        '#!/bin/sh\ncase "$1" in -c) echo 3.11 ; exit 0 ;; esac\n'
+        f'echo "$@" > {marker}\nexit 0\n'
+    )
+    for f in (old, new):
+        f.chmod(0o755)
+    proc = subprocess.run(
+        [str(launcher_executable), "--version"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:{utils_path}"},
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    ran = marker.read_text()
+    assert "--version" in ran
+    assert "pqc_readiness" in ran or "pqc-readiness.pyz" in ran
+
+
+def test_launcher_and_readme_give_the_same_suse_prerequisite(
+    launcher_executable: Path, utils_path: str
+) -> None:
+    proc = _no_python_guidance(utils_path, str(OS_RELEASE_FIXTURES / "sles-15sp6.txt"))
+    assert SUSE_INSTALL_CMD in proc.stderr
+    readme = REPO_ROOT / "README.md"
+    if not readme.exists():
+        pytest.skip("README.md not present in this checkout")
+    text = readme.read_text(encoding="utf-8")
+    assert SUSE_INSTALL_CMD in text
+    assert "zypper --gpg-auto-import-keys ref" in text
