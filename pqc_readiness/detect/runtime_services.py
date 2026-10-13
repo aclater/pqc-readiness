@@ -207,12 +207,21 @@ def parse_maps_libraries(text: str) -> list[dict[str, Any]]:
         for family, pattern in _LIBRARIES:
             if pattern.match(base):
                 m = _SONAME_VERSION_RE.search(base)
+                try:
+                    inode = int(parts[4])
+                except ValueError:
+                    inode = 0
                 seen[path] = {
                     "family": family,
                     "path": path,
                     "soname_version": m.group(1) if m else None,
                     "deleted": deleted,
                     "map_range": parts[0],
+                    # Device + inode as the kernel reports them: lets a
+                    # process whose root is a private namespace (sandboxed
+                    # browsers, chroots) reuse the result for the same file
+                    # read through another process (#155).
+                    "maps_key": (parts[3], inode) if inode else None,
                 }
                 break
     return list(seen.values())
@@ -245,12 +254,37 @@ def _version_tuple(v: str | None) -> tuple[int, ...] | None:
     return tuple(int(n) for n in nums[:3]) if nums else None
 
 
-def library_pqc_capable(family: str, version: str | None) -> bool | None:
-    """Whether the library *version* ships ML-KEM hybrid TLS key exchange.
+def library_tls_pqc_markers(family: str, blob: bytes) -> bool | None:
+    """Whether the library binary contains hybrid ML-KEM TLS group names.
 
-    Capability only: whether a given service enables it is configuration
-    (#106 / #107).  None means "not assessed" for families where no
-    verified threshold is encoded yet (#110)."""
+    Uses the per-library marker strings verified in #110
+    (``LIBRARY_SPECS[...]["markers"]["tls_hybrid_groups"]``): their presence
+    is definitive evidence, and catches builds a version threshold misses
+    (Rocky 9.8's GnuTLS).  None when no markers are encoded for the family
+    (OpenSSL / NSS are assessed by version) or the blob is empty."""
+    if not blob:
+        return None
+    # Imported here: protocols_libraries imports this module at load time.
+    from .protocols_libraries import LIBRARY_SPECS
+
+    spec = LIBRARY_SPECS.get(family) or {}
+    markers = (spec.get("markers") or {}).get("tls_hybrid_groups")
+    if not markers:
+        return None
+    return any(m in blob for m in markers.values())
+
+
+def library_pqc_capable(
+    family: str, version: str | None, markers: bool | None = None
+) -> bool | None:
+    """Whether the library ships ML-KEM hybrid TLS key exchange.
+
+    ``markers`` is binary evidence from ``library_tls_pqc_markers`` and wins
+    when known; otherwise the *version* threshold decides.  Capability
+    only: whether a given service enables it is configuration (#106 /
+    #107).  None means "not assessed"."""
+    if markers is not None:
+        return markers
     vt = _version_tuple(version)
     if vt is None:
         return None
@@ -552,27 +586,38 @@ class _Cache:
     worker processes of one binary are read once."""
 
     def __init__(self) -> None:
-        self.libs: dict[tuple[int, int], tuple[str, str | None]] = {}
+        self.libs: dict[tuple[int, int], tuple[str, str | None, bool | None]] = {}
+        self.by_maps: dict[tuple[str, int], tuple[str, str | None, bool | None]] = {}
         self.exes: dict[tuple[int, int], dict[str, Any]] = {}
 
 
 def _library_details(pid: int, lib: dict[str, Any], cache: _Cache) -> dict[str, Any]:
     candidates = [_proc(pid, "map_files", lib["map_range"])] if lib["deleted"] else []
     candidates.append(_proc(pid, "root", lib["path"].lstrip("/")))
-    family, version, source = lib["family"], None, None
+    family, version, source, markers = lib["family"], None, None, None
+    maps_key = lib.get("maps_key")
     for cand in candidates:
         try:
             st = os.stat(cand)
             key = (st.st_dev, st.st_ino)
             if key not in cache.libs:
-                cache.libs[key] = library_version(
-                    lib["family"], _read_capped(cand, _LIB_READ_CAP)
-                )
-            family, version = cache.libs[key]
+                blob = _read_capped(cand, _LIB_READ_CAP)
+                fam, ver = library_version(lib["family"], blob)
+                cache.libs[key] = (fam, ver, library_tls_pqc_markers(fam, blob))
+            family, version, markers = cache.libs[key]
+            if maps_key:
+                cache.by_maps[maps_key] = cache.libs[key]
             source = "embedded" if version else None
             break
         except OSError as e:
             log.debug("services: cannot read %s: %s", cand, e)
+    else:
+        # Unreadable through this process (private root namespace): the
+        # same device + inode already read via another process is the same
+        # file.
+        if maps_key and maps_key in cache.by_maps:
+            family, version, markers = cache.by_maps[maps_key]
+            source = "embedded" if version else None
     if (
         version is None
         and lib["soname_version"]
@@ -588,7 +633,14 @@ def _library_details(pid: int, lib: dict[str, Any], cache: _Cache) -> dict[str, 
         "version": version,
         "version_source": source,
         "deleted": lib["deleted"],
-        "library_pqc_capable": library_pqc_capable(family, version),
+        "library_pqc_capable": library_pqc_capable(family, version, markers),
+        "pqc_evidence": (
+            "binary"
+            if markers is not None
+            else (
+                "version" if library_pqc_capable(family, version) is not None else None
+            )
+        ),
     }
 
 
@@ -612,10 +664,17 @@ def _inherit_libssl_version(libs: list[dict[str, Any]]) -> list[dict[str, Any]]:
             lib["version"] = sibling["version"]
             lib["version_source"] = "sibling-libcrypto"
             lib["library_pqc_capable"] = sibling["library_pqc_capable"]
+            lib["pqc_evidence"] = sibling["pqc_evidence"]
     return libs
 
 
-def _process_details(pid: int, cache: _Cache) -> dict[str, Any]:
+def _process_details(
+    pid: int, cache: _Cache, maps: str | None = None
+) -> dict[str, Any]:
+    """Process identity, mapped crypto libraries and Go details for pid.
+    ``maps`` is the already-read /proc/<pid>/maps text when the caller has
+    it (--scan-processes reads it first to classify unreadable processes
+    and kernel threads, #155)."""
     unit, cgroup = _systemd_unit(pid)
     info: dict[str, Any] = {
         "process": _comm(pid),
@@ -626,11 +685,12 @@ def _process_details(pid: int, cache: _Cache) -> dict[str, Any]:
         "static_binary": None,
         "go": None,
     }
-    try:
-        maps = _proc(pid, "maps").read_text()
-    except OSError as e:
-        log.debug("services: cannot read /proc/%s/maps: %s", pid, e)
-        maps = ""
+    if maps is None:
+        try:
+            maps = _proc(pid, "maps").read_text()
+        except OSError as e:
+            log.debug("services: cannot read /proc/%s/maps: %s", pid, e)
+            maps = ""
     info["crypto_libraries"] = _inherit_libssl_version(
         [_library_details(pid, lib, cache) for lib in parse_maps_libraries(maps)]
     )

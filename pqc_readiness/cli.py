@@ -34,6 +34,7 @@ from .detect import protocols_libraries as _libraries
 from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
 from .detect import runtime_offline as _runtime_offline
+from .detect import runtime_processes as _runtime_processes
 from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
 from .render import text as _text
@@ -238,6 +239,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
         services_info = _runtime_services.scan_services()
+    processes_info: dict[str, Any] = {}
+    if getattr(args, "scan_processes", False):
+        processes_info = _runtime_processes.scan_processes()
     dedicated = _hardware.has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
     hsm_pqc_capable = any(
@@ -317,6 +321,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         crypto_material=crypto_material_info,
         runtime_environment=runtime_env,
         service_crypto_linkage=services_info,
+        process_crypto_linkage=processes_info,
         host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
         signing_keys=signing_keys_info,
