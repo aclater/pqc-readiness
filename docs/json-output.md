@@ -41,6 +41,7 @@ nothing was found.
 | `cores_physical` | Physical core count. |
 | `mem_total_gb` | Total system memory in GiB. |
 | `mem_avail_gb` | Available memory in GiB at probe time. |
+| `memory` | Role-aware memory tier (added in schema `1.1`). `tier` (`excellent` / `good` / `marginal` / `poor`) and `reason` evaluate `mem_total_gb` against the threshold for `tier_basis.role` — the `--role` value, or `generic` when none is given. `tier_basis` = `{role, threshold_gib_good, role_supplied}`. When `--role` is not supplied, `tier_by_role` maps every role (`tls-server`, `tls-client`, `signing-service`, `firmware-signing`, `generic`) to `{tier, reason, threshold_gib_good}`. |
 | `isa_features` | Map of ISA feature flags relevant to PQC (AVX-512 family, ARMv8 crypto, CPACF MSA, …). |
 | `isa_score` | Numeric ISA score backing the tier classification. |
 | `isa_tier` | Coarse ISA tier (`excellent` / `good` / `marginal` / `poor`). |

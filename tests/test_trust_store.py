@@ -7,6 +7,8 @@ PQC certs (issue #10)."""
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -321,3 +323,89 @@ def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
     ts_res = [x for x in results if x["ruleId"] == "pqc-004-classical-only-trust-store"][0]
     assert "capped at 500 of 1200" in ts_res["message"]["text"]
     assert ts_res["properties"]["trust_store:truncated"] is True
+
+
+# ---------------------------------------------------------------------------
+# Field-deployment edge cases (issue #79): hardened hosts and minimal
+# containers often have no trust store, an empty one, or damaged files.
+# ---------------------------------------------------------------------------
+
+
+def _fail_if_called(cmd, timeout=None):  # noqa: ARG001
+    raise AssertionError(f"openssl must not run when there is nothing to scan: {cmd}")
+
+
+def test_scan_trust_store_all_default_dirs_missing(monkeypatch, tmp_path) -> None:
+    # Default-argument path: every TRUST_STORE_DIRS entry is absent.
+    monkeypatch.setattr(
+        pr, "TRUST_STORE_DIRS", [str(tmp_path / "a"), str(tmp_path / "b" / "c")]
+    )
+    monkeypatch.setattr(pr.shutil, "which", lambda name: "/usr/bin/openssl")
+    monkeypatch.setattr(pr, "_run", _fail_if_called)
+    result = pr.scan_trust_store()
+    assert result == {
+        "available": True,
+        "scanned_dirs": [],
+        "total_certs": 0,
+        "pqc_certs": 0,
+        "hybrid_certs": 0,
+        "cert_categories": {"classical": 0, "hybrid_composite": 0, "pure_pqc": 0},
+        "total_found": 0,
+        "scanned_count": 0,
+        "max_certs": pr.TRUST_STORE_MAX_CERTS_DEFAULT,
+        "truncated": False,
+    }
+
+
+def test_scan_trust_store_existing_empty_dir(monkeypatch, tmp_path) -> None:
+    # The dir exists (so it is reported as scanned) but holds no certs;
+    # files without .pem/.crt suffixes are ignored, not parsed.
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    noise = tmp_path / "noise"
+    (noise / "sub").mkdir(parents=True)
+    (noise / "README").write_text("not a cert")
+    (noise / "sub" / "bundle.txt").write_text("not a cert either")
+    monkeypatch.setattr(pr.shutil, "which", lambda name: "/usr/bin/openssl")
+    monkeypatch.setattr(pr, "_run", _fail_if_called)
+    result = pr.scan_trust_store(dirs=[str(empty), str(noise)])
+    assert result["available"] is True
+    assert result["scanned_dirs"] == [str(empty), str(noise)]
+    assert result["total_certs"] == 0
+    assert result["pqc_certs"] == 0
+    assert result["hybrid_certs"] == 0
+    assert sum(result["cert_categories"].values()) == 0
+
+
+@pytest.mark.skipif(shutil.which("openssl") is None, reason="needs the openssl CLI")
+def test_scan_trust_store_real_openssl_skips_truncated_pem(tmp_path) -> None:
+    # No monkeypatching: a genuine cert plus a truncated copy of it, parsed
+    # by the real openssl binary.  The truncated file must be skipped and
+    # the scan must carry on to count the good one.
+    good = tmp_path / "good.pem"
+    proc = subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "ec",
+            "-pkeyopt", "ec_paramgen_curve:prime256v1",
+            "-nodes", "-subj", "/CN=pqc-readiness-test", "-days", "1",
+            "-keyout", str(tmp_path / "key.pem"), "-out", str(good),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    pem = good.read_text()
+    (tmp_path / "truncated.pem").write_text(pem[: len(pem) // 2])
+    (tmp_path / "garbage.crt").write_text("-----BEGIN CERTIFICATE-----\n!!\n")
+
+    result = pr.scan_trust_store(dirs=[str(tmp_path)])
+    assert result["available"] is True
+    # key.pem is a .pem file too; openssl x509 rejects it, so it is skipped.
+    assert result["total_certs"] == 1
+    assert result["cert_categories"] == {
+        "classical": 1,
+        "hybrid_composite": 0,
+        "pure_pqc": 0,
+    }

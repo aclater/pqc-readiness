@@ -137,3 +137,33 @@ def test_launcher_passes_args_through(launcher_executable: Path) -> None:
     assert proc.returncode in (0, 1, 2, 3), proc.stderr
     assert proc.stdout.strip(), "expected a verdict line on stdout"
     assert proc.stdout.count("\n") <= 1, "--quiet should be one line"
+
+
+EL8_INSTALL_CMD = "sudo dnf module install -y python39"
+
+
+def test_launcher_and_readme_give_the_same_el8_prerequisite(
+    launcher_executable: Path, utils_path: str
+) -> None:
+    """Issue #36 was resolved by documenting the EL8 prerequisite rather
+    than supporting platform-python 3.6.  The wrapper's guidance on a
+    stock EL8 cloud image (no python3 on PATH) and the README must give
+    the operator the same copy-pasteable install command, and the README
+    must explain the bare-script failure mode operators actually see."""
+    proc = subprocess.run(
+        [str(launcher_executable)],
+        capture_output=True,
+        text=True,
+        env={"PATH": utils_path},
+        check=False,
+    )
+    assert proc.returncode == 127
+    assert EL8_INSTALL_CMD in proc.stderr
+    assert "platform-python" in proc.stderr
+
+    readme = REPO_ROOT / "README.md"
+    if not readme.exists():
+        pytest.skip("README.md not present in this checkout")
+    text = readme.read_text(encoding="utf-8")
+    assert EL8_INSTALL_CMD in text
+    assert "/usr/bin/env: 'python3': No such file or directory" in text

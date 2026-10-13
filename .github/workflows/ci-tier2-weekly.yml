@@ -1,0 +1,125 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI: weekly Tier 2 distro validation (#83).
+#
+# The README's distribution-support table promises Tier 2 distros a
+# "weekly" validation cadence.  This workflow is what backs that claim:
+# every Monday it runs the full pytest suite inside the stock container
+# image of each Tier 2 distro, under that distro's own Python and
+# OpenSSL.  EL8 is not listed here because ci-ubi8.yml already covers it
+# on every PR.
+#
+# Why container images, not VMs: GitHub-hosted runners cannot boot
+# per-distro VMs cheaply.  Container images exercise the distro's
+# userspace (interpreter, OpenSSL, OpenSSH, os-release), which is where
+# the script's cross-distro logic lives.  Full-VM validation against
+# stock cloud images stays out-of-band in aclater/distro-matrix.
+#
+# Why non-blocking: Tier 2 is "fixes accepted", not "gate every change".
+# Each matrix leg sets continue-on-error so one broken distro does not
+# hide the others; a failure still shows red on the job, so the run is
+# visible in the Actions tab without failing the workflow overall.
+#
+# Image choice: Red Hat UBI has no Fedora / Rocky / Alma / Debian /
+# Ubuntu / SLES equivalent, so each leg uses that distro's own official
+# image.  SLES uses SUSE BCI (freely redistributable SLE userspace).
+# Fedora tracks :latest on purpose — the Tier 2 row says "Fedora
+# (latest)".  Tags verified to exist on their registries at the time of
+# writing; bump deliberately.
+#
+# Action versions verified against upstream releases at the time of
+# writing (per CLAUDE.md); matched to the versions the other workflows use:
+#   actions/checkout@v6.0.2
+
+name: ci-tier2-weekly
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+  # Manual trigger so the matrix can be run on demand (e.g. after a
+  # change to cross-distro detection) without waiting for Monday.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tier2:
+    name: tier 2 pytest (${{ matrix.distro }})
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: fedora-latest
+            image: quay.io/fedora/fedora:latest
+            py: python3
+            setup: >-
+              dnf install -y python3 python3-pytest python3-jsonschema
+              openssl openssh-clients
+          - distro: rocky-9
+            image: docker.io/rockylinux/rockylinux:9
+            py: python3
+            setup: >-
+              dnf install -y python3 python3-pip openssl openssh-clients &&
+              python3 -m pip install pytest jsonschema referencing
+          - distro: rocky-10
+            image: docker.io/rockylinux/rockylinux:10
+            py: python3
+            setup: >-
+              dnf install -y python3 python3-pip openssl openssh-clients &&
+              python3 -m pip install pytest jsonschema referencing
+          - distro: almalinux-9
+            image: quay.io/almalinuxorg/almalinux:9
+            py: python3
+            setup: >-
+              dnf install -y python3 python3-pip openssl openssh-clients &&
+              python3 -m pip install pytest jsonschema referencing
+          - distro: almalinux-10
+            image: quay.io/almalinuxorg/almalinux:10
+            py: python3
+            setup: >-
+              dnf install -y python3 python3-pip openssl openssh-clients &&
+              python3 -m pip install pytest jsonschema referencing
+          - distro: debian-13
+            image: docker.io/library/debian:13-slim
+            py: python3
+            setup: >-
+              apt-get update &&
+              apt-get install -y --no-install-recommends python3
+              python3-pytest python3-jsonschema openssl openssh-client
+          - distro: ubuntu-25.10
+            image: docker.io/library/ubuntu:25.10
+            py: python3
+            setup: >-
+              apt-get update &&
+              apt-get install -y --no-install-recommends python3
+              python3-pytest python3-jsonschema openssl openssh-client
+          - distro: sles-15
+            # SLE 15's default python3 is 3.6; the script needs 3.9+, so
+            # install and use the python311 interpreter explicitly.
+            image: registry.suse.com/bci/bci-base:15.7
+            py: python3.11
+            setup: >-
+              zypper --non-interactive install --no-recommends
+              python311 python311-pip openssl openssh-clients &&
+              python3.11 -m pip install pytest jsonschema referencing
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Run pytest inside ${{ matrix.image }}
+        # The checkout is mounted read-only; bytecode and pytest's cache
+        # are disabled so nothing needs to write into it.
+        env:
+          IMAGE: ${{ matrix.image }}
+          SETUP: ${{ matrix.setup }}
+          PY: ${{ matrix.py }}
+        run: |
+          podman run --rm \
+            --user 0 \
+            -e PYTHONDONTWRITEBYTECODE=1 \
+            -e SETUP -e PY \
+            -v "$PWD:/src:ro" \
+            --workdir /src \
+            "$IMAGE" \
+            /bin/sh -c 'set -e; eval "$SETUP"; "$PY" -m pytest -p no:cacheprovider tests/ -q'

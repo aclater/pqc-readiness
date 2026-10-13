@@ -95,6 +95,97 @@ above, side by side, with no single "preferred" answer. Operators in
 unclear or multi-jurisdiction contexts should consult the side-by-side
 output and select the policy that matches their compliance scope.
 
+## Roles
+
+`--role` selects the workload the recommendation is for. Policy decides
+*which* algorithms are acceptable; role decides which operation is the
+bottleneck and therefore which host capabilities and caveats matter.
+Every implemented role emits the same record keys (`kem`, `signature`,
+`hash`, `host_capability_inputs`, `caveats`) so consumers never need to
+special-case a role.
+
+### `tls-server` (default)
+
+- **Bottleneck:** signing every handshake, plus KEM decapsulation.
+- **KEM / signature:** the policy primaries above. Below ISA tier
+  `excellent` (and without a PQC accelerator) the reason strings explain
+  why ML-DSA-65 rather than ML-DSA-87 is chosen on sign-latency grounds;
+  under CNSA 2.0 the mandated parameter sets are kept and a caveat is
+  emitted instead.
+- **Capability check:** the host's OpenSSL must advertise TLS 1.3 groups
+  for the chosen mode (hybrid or pure).
+
+### `tls-client`
+
+- **Bottleneck:** *verifying* the server's certificate chain. A TLS
+  client does not sign (outside mTLS), and ML-DSA verify is far cheaper
+  than sign, so ISA tier matters much less than for a server. Reason
+  strings and caveats reference verify throughput.
+- **KEM / hybrid vs pure:** same policy-driven choice as `tls-server`,
+  and the same OpenSSL TLS-group capability check.
+- **ClientHello size caveat:** the client places its ML-KEM
+  *encapsulation key* in the ClientHello `key_share` — 1184 bytes for
+  ML-KEM-768 and 1568 bytes for ML-KEM-1024 (FIPS 203: `384·k + 32`),
+  plus 32 bytes for the X25519 half of a hybrid group. When the share
+  exceeds 1200 bytes (ML-KEM-1024 under CNSA 2.0, or hybrid
+  X25519MLKEM768 under ANSSI/BSI) a caveat warns that some legacy
+  middleboxes mishandle large ClientHellos.
+
+### `signing-service`
+
+- **Bottleneck:** *signing* at request rate (certificate issuance, token
+  or artifact signing as a service). Reason strings and caveats quote the
+  per-core sign/s floors from `ALGO_THRESHOLDS`.
+- **KEM:** `{"algorithm": null, "mode": "n/a", "reason": ...}`. A
+  signing service does no key exchange; the field is kept (as null) so
+  every role's record has the same shape.
+- **Signature:** `ML-DSA-87` under CNSA 2.0, otherwise `ML-DSA-65`. Below
+  ISA tier `excellent` without an accelerator a sign-throughput caveat is
+  emitted. No TLS-group check: signing services negotiate no TLS groups.
+- **HSM-aware:** when a PQC-capable accelerator is present, the reason
+  and caveats point at offloading signing to it, and the ISA-tier
+  throughput caveat is dropped.
+- **SLH-DSA:** under every non-CNSA policy a caveat names
+  SLH-DSA-SHA2-128s as a conservative hash-based alternative for
+  low-volume signing. It stays a caveat, not the primary, because a
+  signing service implies request-rate signing and SLH-DSA signs at
+  single-digit ops/s. SLH-DSA is not a CNSA 2.0 algorithm, so it is not
+  offered under `cnsa-2.0`.
+
+### `firmware-signing`
+
+- **Bottleneck:** none at sign time. Firmware is signed at build time
+  and verified for the device's whole field life, so long-term
+  confidence in the primitive dominates and no ISA-tier or throughput
+  caveats are emitted.
+- **KEM:** `null` with `mode: "n/a"`, as for `signing-service`.
+- **Signature:**
+
+  | Policy | Signature | Reason |
+  |--------|-----------|--------|
+  | `cnsa-2.0` | `ML-DSA-87` | Mandated by CNSA 2.0 |
+  | `nist-civilian` | `SLH-DSA-SHA2-128s` | Hash-based, conservative for firmware |
+  | `eu-anssi-bsi` | `SLH-DSA-SHA2-128s` | Hash-based, conservative for firmware |
+  | `commercial` | `SLH-DSA-SHA2-128s` | Hash-based, most conservative choice |
+
+  SLH-DSA relies only on hash-function security (no lattice
+  assumptions). Its slow sign rate is irrelevant at build time and its
+  7856-byte signatures are negligible next to megabyte firmware images.
+  ML-DSA-65 is named in the reason as the alternative for
+  performance-sensitive build pipelines.
+- **CNSA 2.0 caveat:** SLH-DSA is not a CNSA 2.0 algorithm. CNSA 2.0's
+  hash-based option for software and firmware signing is the stateful
+  LMS / XMSS family (NIST SP 800-208), which the caveat points to; those
+  schemes need strict key-state management, typically inside an HSM.
+- **HSM:** when a PQC-capable accelerator is present a caveat recommends
+  keeping the signing key in it.
+
+### `generic`
+
+No workload profile, so there is nothing role-specific to optimise. It
+returns a stub record (`implemented: false`) carrying the policy basis.
+Pick one of the roles above for an algorithm recommendation.
+
 ## How a policy update should be made
 
 1. Edit `POLICY_PREFERENCES` in `pqc_readiness.py`. This is the only
@@ -104,8 +195,8 @@ output and select the policy that matches their compliance scope.
    the change.
 3. Update the policy tests in `tests/test_recommendation.py` so the
    expected algorithm names track the new policy.
-4. The engine itself (`recommend`, `_recommend_tls_server`,
-   `_recommend_one`) should not need changes for a routine policy
+4. The engine itself (`recommend`, the per-role `_recommend_*`
+   functions, `_recommend_one`) should not need changes for a routine policy
    update — if it does, that is a sign the policy table needs another
    field, not that the engine should special-case the new policy.
 

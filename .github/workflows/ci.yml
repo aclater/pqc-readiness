@@ -52,3 +52,25 @@ jobs:
 
       - name: README documents every --help flag
         run: bash scripts/check-readme-flags.sh
+
+  detect-secrets:
+    # Parity with the detect-secrets pre-commit hook (#94).  pre-commit is
+    # opt-in per clone and is bypassed entirely by GitHub web-UI edits, so
+    # CI is the only place this check is guaranteed to run.  Uses the same
+    # .secrets.baseline and the same detect-secrets version as
+    # .pre-commit-config.yaml; a finding not in the baseline exits
+    # nonzero and fails the PR.
+    name: detect-secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install detect-secrets
+        run: pip install detect-secrets==1.5.0
+
+      - name: Scan tracked files against .secrets.baseline
+        run: git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline

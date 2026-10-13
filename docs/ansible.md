@@ -8,6 +8,11 @@ runnable, copy-pasteable guide to that workflow: ad-hoc invocation,
 playbooks for `set_fact` and fleet aggregation, the privilege model,
 and the field shape downstream tasks can rely on.
 
+Because `--ansible` always exits 0, it takes precedence over `--check`
+and `--fips-strict`: passing either alongside it prints a `warning:` on
+stderr and has no effect on the exit code. Gate in the play instead,
+e.g. `failed_when: pqc_readiness.cnsa_2_0.status != "compliant"`.
+
 The example playbooks live under
 [`deploy/ansible/`](../deploy/ansible/) and have been validated
 against `ansible-core 2.20.5`.

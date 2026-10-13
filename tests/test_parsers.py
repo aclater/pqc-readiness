@@ -516,11 +516,36 @@ def test_parse_cgroup_for_container_bare_metal() -> None:
 
 
 def test_parse_rpm_packages() -> None:
-    text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
+    # Fixture mirrors `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` on a
+    # RHEL 10 host, incl. a multi-arch duplicate (openssl-libs i686+x86_64).
+    text = (FIXTURES / "packages" / "rpm-qa-sample.txt").read_text()
     out = pr.parse_whitespace_pkg_lines(text)
-    assert {"name": "openssl", "version": "3.5.5"} in out
-    assert {"name": "java-21-openjdk", "version": "21.0.5"} in out
-    assert len(out) == 4
+    assert {"name": "openssl-libs", "version": "3.5.1"} in out
+    assert {"name": "java-21-openjdk", "version": "21.0.8.0.9"} in out
+    assert {"name": "openssh-server", "version": "9.9p1"} in out
+    # The parser preserves duplicates; dedup happens in classify_bundled_crypto.
+    assert sum(1 for e in out if e["name"] == "openssl-libs") == 2
+    assert len(out) == 20
+    assert all(set(e.keys()) == {"name", "version"} for e in out)
+
+
+def test_classify_bundled_crypto_rhel_from_rpm_fixture() -> None:
+    text = (FIXTURES / "packages" / "rpm-qa-sample.txt").read_text()
+    pkgs = pr.parse_whitespace_pkg_lines(text)
+    out = pr.classify_bundled_crypto(pkgs, family="rhel")
+    names = [p["package"] for p in out]
+    assert len(names) == len(set(names))
+    assert set(names) == {
+        "java-21-openjdk",
+        "java-21-openjdk-headless",
+        "golang",
+        "nodejs",
+        "python3",
+        "firefox",
+    }
+    # System crypto libraries are not "bundled" crypto.
+    for system_lib in ("openssl", "openssl-libs", "nss", "gnutls", "libgcrypt"):
+        assert system_lib not in names
 
 
 def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
@@ -1407,6 +1432,56 @@ def test_classify_ssh_kex_drops_unrecognised_names() -> None:
         "gss-group14-sha256-",  # GSS-API kex; out of scope for PQC inventory
     ])
     assert out == {"pure_pqc": [], "hybrid": [], "classical": []}
+
+
+@pytest.mark.parametrize(
+    ("ssh_input", "tls_input"),
+    [
+        ([], []),
+        (
+            ["mlkem768x25519-sha256", "curve25519-sha256"],
+            ["X25519MLKEM768", "x25519"],
+        ),
+        (
+            (FIXTURES / "ssh-kex-rhel10.txt").read_text().split(),
+            ["MLKEM768", "X25519MLKEM768", "secp256r1", "ffdhe2048"],
+        ),
+    ],
+)
+def test_classify_ssh_kex_bucket_keys_match_classify_tls_groups(
+    ssh_input: list[str], tls_input: list[str]
+) -> None:
+    """ssh_pqc.kex_groups and openssl.tls_groups are documented as the
+    same three-bucket shape (audit #40, issue #71).  Assert key parity
+    directly so neither classifier can grow or lose a bucket alone."""
+    ssh_keys = set(pr.classify_ssh_kex(ssh_input).keys())
+    tls_keys = set(pr.classify_tls_groups(tls_input).keys())
+    assert ssh_keys == tls_keys == {"pure_pqc", "hybrid", "classical"}
+
+
+def test_classify_ssh_kex_real_classical_names_land_in_classical() -> None:
+    """Every classical kex OpenSSH ships (finite-field DH groups, DH
+    group-exchange, ECDH over NIST curves, curve25519/448 incl. the
+    @libssh.org alias) must land in `classical` and nowhere else."""
+    classical_names = [
+        "diffie-hellman-group1-sha1",
+        "diffie-hellman-group14-sha1",
+        "diffie-hellman-group14-sha256",
+        "diffie-hellman-group16-sha512",
+        "diffie-hellman-group18-sha512",
+        "diffie-hellman-group-exchange-sha1",
+        "diffie-hellman-group-exchange-sha256",
+        "ecdh-sha2-nistp256",
+        "ecdh-sha2-nistp384",
+        "ecdh-sha2-nistp521",
+        "curve25519-sha256",
+        "curve25519-sha256@libssh.org",
+        "curve448-sha512",
+    ]
+    out = pr.classify_ssh_kex(classical_names)
+    assert out["classical"] == sorted(classical_names)
+    assert out["pure_pqc"] == []
+    assert out["hybrid"] == []
 
 
 # ---------------------------------------------------------------------------
