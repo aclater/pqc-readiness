@@ -278,6 +278,7 @@
       "reboot_required": null,
       "subpolicies": []
     },
+    "dnssec": {},
     "exit_code": 1,
     "fips": {
       "enabled": false,
@@ -583,6 +584,7 @@
       "present": false
     },
     "trust_store": {},
+    "tunnels": {},
     "verdict": "GOOD - production-capable in software",
     "verdict_caveat": "Verdict reflects CPU instruction-set and memory only; no PQC microbenchmark was run on this host.  Re-run with --bench for measured per-algorithm rates and tier validation.",
     "verdict_reason": "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA. ISA: AVX2 + AES-NI + PCLMULQDQ - production-capable in software. Memory: 32.0 GiB >= 16 GiB threshold for role=generic."

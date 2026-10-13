@@ -277,6 +277,35 @@ def _full_trigger_report() -> pr.Report:
                 "pkinit_classical": False,
             },
         },
+        tunnels={
+            "available": True,
+            "wireguard": {
+                "summary": {"configured": True, "peers": 3, "peers_without_psk": 2}
+            },
+            "openvpn": {
+                "configs": [
+                    {
+                        "path": "/etc/openvpn/server/server.conf",
+                        "readable": True,
+                        "tls_groups": ["X25519", "secp256r1"],
+                        "tls_version_max": None,
+                        "pqc_key_exchange": False,
+                    }
+                ]
+            },
+        },
+        dnssec={
+            "available": True,
+            "summary": {
+                "signing_algorithms": [
+                    {"number": 5, "name": "RSASHA1", "status": "deprecated"},
+                    {"number": 13, "name": "ECDSAP256SHA256", "status": "classical"},
+                ],
+                "signing_configured": True,
+                "signing_pqc": False,
+                "deprecated_signing": ["RSASHA1"],
+            },
+        },
     )
     # The deployment-gap verdict (#107) is computed from the fields above,
     # as collect_report does; TLS and SSH are capable-not-configured here.

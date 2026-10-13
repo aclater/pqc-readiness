@@ -17,7 +17,9 @@ from ..detect import config_sshd as _config_sshd
 from ..detect import protocols_libraries as _libraries
 from ..detect import runtime_services as _services
 from ..detect import protocols_boot as _boot
+from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
+from ..detect import protocols_tunnels as _tunnels
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +417,47 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-031-kerberos-weak-enctypes.md",
     ),
+    RuleSpec(
+        id="pqc-032-wireguard-peer-without-psk",
+        short_description="WireGuard peers have no pre-shared key.",
+        full_description=(
+            "WireGuard's handshake is Curve25519 (Noise_IK).  Its only "
+            "post-quantum mitigation is the optional per-peer pre-shared key, "
+            "mixed into the key derivation; WireGuard's protocol "
+            "documentation names it as the layer for post-quantum "
+            "resistance.  Peers without one can be recorded today and "
+            "decrypted by a future quantum computer."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-032-wireguard-peer-without-psk.md",
+    ),
+    RuleSpec(
+        id="pqc-033-openvpn-classical-key-exchange",
+        short_description="An OpenVPN configuration rules out PQC key exchange.",
+        full_description=(
+            "OpenVPN's control channel is TLS.  This configuration sets "
+            "tls-groups without any ML-KEM group, or caps TLS at 1.2 (hybrid "
+            "ML-KEM groups are TLS 1.3 only), so its sessions stay classical "
+            "even when OpenSSL supports PQC.  Configurations that leave "
+            "tls-groups unset inherit OpenSSL's defaults and are covered by "
+            "the OpenSSL / crypto-policy checks instead."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-033-openvpn-classical-key-exchange.md",
+    ),
+    RuleSpec(
+        id="pqc-034-dnssec-classical-signing",
+        short_description="DNSSEC zones are signed with classical algorithms only.",
+        full_description=(
+            "An authoritative server on this host signs zones with classical "
+            "DNSSEC algorithms only.  The IANA registry lists ML-DSA-44 "
+            "(algorithm 18, from an Internet-Draft) as the only post-quantum "
+            "option so far.  A warning when an algorithm IANA marks MUST NOT "
+            "for signing is in use."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-034-dnssec-classical-signing.md",
+    ),
 )
 
 
@@ -471,6 +514,11 @@ SECURITY_SEVERITY: dict[str, str] = {
     # Deprecated enctypes are a classical weakness today, not only a
     # quantum one: medium (#109).
     "pqc-031-kerberos-weak-enctypes": "4.3",
+    # Recordable now, decryptable later (#113).
+    "pqc-032-wireguard-peer-without-psk": "5.3",
+    "pqc-033-openvpn-classical-key-exchange": "5.0",
+    # Signatures, not confidentiality; no PQC algorithm is standard yet.
+    "pqc-034-dnssec-classical-signing": "2.0",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
     # Software that will fail at PQC (#193).  A running service that can't
@@ -820,6 +868,51 @@ def build_findings(r: _report.Report) -> list[Finding]:
                     "kerberos:aes128_enctypes": ks.get("aes128_enctypes"),
                     "kerberos:enctypes_in_keytabs": ks.get("enctypes_in_keytabs"),
                     "kerberos:pkinit_classical": ks.get("pkinit_classical"),
+                },
+            )
+        )
+
+    wg_msg = _tunnels.describe_wireguard(r.tunnels)
+    if wg_msg:
+        wg = ((r.tunnels.get("wireguard") or {}).get("summary")) or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-032-wireguard-peer-without-psk",
+                level="warning",
+                message=wg_msg + ".",
+                properties={
+                    "wireguard:peers": wg.get("peers"),
+                    "wireguard:peers_without_psk": wg.get("peers_without_psk"),
+                },
+            )
+        )
+    ovpn = _tunnels.describe_openvpn(r.tunnels)
+    if ovpn:
+        findings.append(
+            Finding(
+                rule_id="pqc-033-openvpn-classical-key-exchange",
+                level="warning",
+                message="OpenVPN configurations without PQC key exchange: "
+                + "; ".join(ovpn)
+                + ".",
+                properties={"openvpn:configs": [m.split(":", 1)[0] for m in ovpn]},
+            )
+        )
+    dn_level, dn_msg = _dnssec.describe(r.dnssec)
+    if dn_level and dn_msg:
+        findings.append(
+            Finding(
+                rule_id="pqc-034-dnssec-classical-signing",
+                level=dn_level,
+                message=dn_msg + ".",
+                properties={
+                    "dnssec:signing_algorithms": [
+                        a["name"]
+                        for a in (r.dnssec.get("summary") or {}).get(
+                            "signing_algorithms"
+                        )
+                        or []
+                    ]
                 },
             )
         )
@@ -1297,6 +1390,46 @@ def _offline_openssl_findings(r: _report.Report) -> list[Finding]:
     return []
 
 
+def _tunnel_findings(r: _report.Report) -> list[Finding]:
+    """pqc-018 for tunnel and DNS server configs that couldn't be read
+    (#113): wg-quick configs, /etc/openvpn/{server,client} and named.conf
+    are root-only on common distributions, and an unread config is not
+    evidence that nothing is exposed."""
+    out: list[Finding] = []
+    dn = r.dnssec or {}
+    for u in (dn.get("summary") or {}).get("unreadable_configs") or []:
+        out.append(
+            _undetermined(
+                f"dnssec:{u['path']}",
+                f"DNSSEC signing configured in {u['path']} ({u['reason']})",
+                {"dnssec:config": u["path"]},
+            )
+        )
+    t = r.tunnels or {}
+    if not t.get("available"):
+        return out
+    for path in ((t.get("wireguard") or {}).get("summary") or {}).get(
+        "unreadable_configs"
+    ) or []:
+        out.append(
+            _undetermined(
+                f"wireguard:{path}",
+                f"WireGuard config {path} (unreadable: needs root)",
+                {"wireguard:config": path},
+            )
+        )
+    for c in (t.get("openvpn") or {}).get("configs") or []:
+        if not c.get("readable"):
+            out.append(
+                _undetermined(
+                    f"openvpn:{c['path']}",
+                    f"OpenVPN config {c['path']} ({c.get('reason')})",
+                    {"openvpn:config": c["path"]},
+                )
+            )
+    return out
+
+
 def pqc_failure_findings(r: _report.Report) -> list[Finding]:
     """Every finding for software that will fail at PQC (#193), in
     RULE_SPECS order (stable: subjects keep detection order within a
@@ -1308,6 +1441,7 @@ def pqc_failure_findings(r: _report.Report) -> list[Finding]:
         + _library_findings(r)
         + _ipsec_findings(r)
         + _bundled_findings(r)
+        + _tunnel_findings(r)
     )
     return sorted(found, key=lambda f: order[f.rule_id])
 

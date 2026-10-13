@@ -35,7 +35,9 @@ from ..detect import packages as _packages
 from ..detect import protocols as _protocols
 from ..detect import protocols_ike as _ike
 from ..detect import protocols_libraries as _libraries
+from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
+from ..detect import protocols_tunnels as _tunnels
 from ..detect import protocols_signing as _signing
 
 log = logging.getLogger("pqc-readiness")
@@ -310,6 +312,13 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
     kerberos: dict[str, Any] = {}
     if getattr(args, "scan_kerberos", False):
         kerberos = _kerberos.scan_kerberos()
+    # Tunnel and DNS configs are files; the live `wg show` is skipped (#113).
+    tunnels: dict[str, Any] = {}
+    if getattr(args, "scan_tunnels", False):
+        tunnels = _tunnels.scan_tunnels()
+    dnssec: dict[str, Any] = {}
+    if getattr(args, "scan_dnssec", False):
+        dnssec = _dnssec.scan_dnssec()
 
     return _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -343,6 +352,8 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         signing_keys=signing_keys,
         crypto_libraries=crypto_libraries,
         kerberos=kerberos,
+        tunnels=tunnels,
+        dnssec=dnssec,
         os_release=os_release,
         verdict=VERDICT,
         verdict_reason=scan_mode_record(root)["reason"],
