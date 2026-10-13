@@ -12,6 +12,7 @@ from typing import Any
 
 from .. import report as _report
 from .. import registry as _registry
+from . import cbom_profiles as _profiles
 
 
 # Canonical cryptographic-asset model ----------------------------------------
@@ -589,13 +590,13 @@ _CDX17_PROTOCOLS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         "protocol/tls",
         "TLS 1.3 (OpenSSL key-exchange groups)",
         "tls",
-        ("openssl_tls_hybrid", "openssl_tls_pqc"),
+        ("openssl_tls_hybrid", "openssl_tls_pqc", "openssl_tls_classical"),
     ),
     (
         "protocol/ssh",
         "SSH (OpenSSH key exchange)",
         "ssh",
-        ("ssh_kex_hybrid", "ssh_kex_pqc"),
+        ("ssh_kex_hybrid", "ssh_kex_pqc", "ssh_kex_classical"),
     ),
 )
 
@@ -703,20 +704,247 @@ def _cbom17_certificate_components(r: _report.Report) -> list[dict[str, Any]]:
     return out
 
 
-def render_cbom(r: _report.Report, spec_version: str = CBOM_DEFAULT_VERSION) -> str:
+# Profiles (--cbom-profile, #144) --------------------------------------------
+#
+# A profile adds regime-specific annotations to the same canonical assets.
+# All regime facts (functions, deadlines, sources, item lists) are data in
+# cbom_profiles.py; the code below only projects them.  With the default
+# profile ("none") and no --inventory-metadata, output is unchanged.
+
+
+def _profile_classical_assets(r: _report.Report) -> list[CryptoAsset]:
+    """Classical (quantum-vulnerable) key-exchange groups the host offers.
+    The default CBOM inventories PQC capability only; a federal inventory
+    is about the CRQC-vulnerable algorithms in use (M-23-02 item 4), so
+    the profile adds them."""
+    out: list[CryptoAsset] = []
+    osinfo = r.openssl or {}
+    if osinfo.get("available"):
+        src = f"openssl@{osinfo.get('version') or 'unknown'}"
+        for grp in (osinfo.get("tls_groups") or {}).get("classical") or []:
+            out.append(
+                CryptoAsset(
+                    key=f"openssl/tls-classical/{grp}",
+                    name=grp,
+                    category="openssl_tls_classical",
+                    asset_type="algorithm",
+                    primitive="key-agree",
+                    execution_environment="software-plain-ram",
+                    source=src,
+                    properties=(("tls:role", "classical-group"),),
+                )
+            )
+    ssh_info = r.ssh_pqc or {}
+    if ssh_info.get("available"):
+        src = f"openssh@{ssh_info.get('version') or 'unknown'}"
+        for kex in (ssh_info.get("kex_groups") or {}).get("classical") or []:
+            out.append(
+                CryptoAsset(
+                    key=f"ssh/kex/classical/{kex}",
+                    name=kex,
+                    category="ssh_kex_classical",
+                    asset_type="algorithm",
+                    primitive="key-agree",
+                    execution_environment="software-plain-ram",
+                    source=src,
+                    properties=(("ssh:role", "classical-kex"),),
+                )
+            )
+    return out
+
+
+def _prop(profile: dict[str, Any], name: str, value: str) -> dict[str, str]:
+    return {"name": f"{profile['prefix']}{name}", "value": value}
+
+
+def _vulnerability_props(
+    profile: dict[str, Any], function: str, vulnerable: bool | None
+) -> list[dict[str, str]]:
+    props = [
+        _prop(profile, "function", function),
+        _prop(
+            profile,
+            "quantum_vulnerable",
+            "unknown" if vulnerable is None else str(vulnerable).lower(),
+        ),
+    ]
+    if vulnerable:
+        date, clause = profile["deadlines"][function]
+        props.append(_prop(profile, "migration_deadline", date))
+        props.append(_prop(profile, "migration_deadline:source", clause))
+    return props
+
+
+def _asset_profile_props(
+    profile: dict[str, Any], asset: CryptoAsset
+) -> list[dict[str, str]]:
+    """Profile annotations for one algorithm asset; [] for assets the
+    profile has nothing to say about (ISA features, accelerators, …)."""
+    if asset.asset_type != "algorithm":
+        return []
+    function = profile["function_by_primitive"].get(asset.primitive)
+    if function is None:
+        return []
+    vulnerable = profile["quantum_vulnerable_by_category"].get(asset.category)
+    props = _vulnerability_props(profile, function, vulnerable)
+    props.append(
+        _prop(profile, "in_use_including_fallback", profile["in_use"]["value"])
+    )
+    props.append(_prop(profile, "in_use_basis", profile["in_use"]["basis"]))
+    return props
+
+
+def _apply_profile_to_components(
+    profile: dict[str, Any],
+    assets: list[CryptoAsset],
+    components: list[dict[str, Any]],
+) -> None:
+    """Append profile properties in place.  Algorithm components line up
+    with `assets` by bom-ref; certificate components get the signature
+    classification from their trust-store category."""
+    by_ref = {a.key: a for a in assets}
+    vuln_by_cat = profile["quantum_vulnerable_by_cert_category"]
+    for comp in components:
+        asset = by_ref.get(comp["bom-ref"])
+        if asset is not None:
+            comp.setdefault("properties", []).extend(
+                _asset_profile_props(profile, asset)
+            )
+            continue
+        if comp["cryptoProperties"].get("assetType") == "certificate":
+            cat = next(
+                (
+                    p["value"]
+                    for p in comp.get("properties", [])
+                    if p["name"] == "trust_store:category"
+                ),
+                None,
+            )
+            comp.setdefault("properties", []).extend(
+                _vulnerability_props(
+                    profile, "digital-signature", vuln_by_cat.get(str(cat))
+                )
+            )
+
+
+def _tls13_status(r: _report.Report) -> tuple[str, str]:
+    """(status, basis) for the TLS 1.3 deadline.  Library capability only:
+    OpenSSL >= 1.1.1 implements TLS 1.3.  Whether services enable it is a
+    configuration question (#106) and what they negotiate is #149."""
+    osinfo = r.openssl or {}
+    if not osinfo.get("available"):
+        return "unknown", "OpenSSL not detected"
+    vt = osinfo.get("version_tuple")
+    if not vt:
+        return "unknown", "OpenSSL version not parsed"
+    if tuple(vt[:3]) >= (1, 1, 1):
+        return (
+            "capable",
+            "OpenSSL >= 1.1.1 implements TLS 1.3; configuration not verified",
+        )
+    return "not-capable", "OpenSSL < 1.1.1 has no TLS 1.3"
+
+
+def _m23_02_status(r: _report.Report, source: str) -> str:
+    kind, _, what = source.partition(":")
+    if kind == "metadata":
+        return "provided" if (r.inventory_metadata or {}).get(what) else "not-provided"
+    if what == "assets":
+        return "collected"
+    if what == "packages":
+        return "partial" if (r.packages or {}).get("available") else "not-collected"
+    if what == "os":
+        return "collected" if (r.os_release or r.os) else "not-collected"
+    return "unknown"
+
+
+def _profile_metadata_props(
+    profile: dict[str, Any], r: _report.Report, components: list[dict[str, Any]]
+) -> list[dict[str, str]]:
+    props = [
+        _prop(profile, "profile", profile["id"]),
+        _prop(profile, "profile:status", profile["status"]),
+    ]
+    for key, url in profile["sources"].items():
+        props.append(_prop(profile, f"source:{key}", url))
+    tls_status, tls_basis = _tls13_status(r)
+    tls_date, tls_clause = profile["tls13_deadline"]
+    props += [
+        _prop(profile, "tls13_deadline", tls_date),
+        _prop(profile, "tls13_deadline:source", tls_clause),
+        _prop(profile, "tls13_status", tls_status),
+        _prop(profile, "tls13_basis", tls_basis),
+    ]
+    counts = {"true": 0, "false": 0}
+    for comp in components:
+        for p in comp.get("properties", []):
+            if (
+                p["name"] == f"{profile['prefix']}quantum_vulnerable"
+                and p["value"] in counts
+            ):
+                counts[p["value"]] += 1
+    props.append(_prop(profile, "quantum_vulnerable_assets", str(counts["true"])))
+    props.append(_prop(profile, "quantum_resistant_assets", str(counts["false"])))
+    for number, label, source in profile["m23_02_items"]:
+        props.append(_prop(profile, f"m23_02:item{number}", _m23_02_status(r, source)))
+        props.append(_prop(profile, f"m23_02:item{number}:label", label))
+    return props
+
+
+def _inventory_host_props(meta: dict[str, Any] | None) -> list[dict[str, str]]:
+    """--inventory-metadata facts as host-component properties.  Emitted
+    whenever the file was given, independent of the profile."""
+    if not meta:
+        return []
+    out: list[dict[str, str]] = []
+    for key in ("fisma_system_id", "fips199_categorization", "hva_id"):
+        if key in meta:
+            out.append({"name": f"inventory:{key}", "value": str(meta[key])})
+    hosting = meta.get("hosting") or {}
+    for key in ("model", "provider"):
+        if key in hosting:
+            out.append({"name": f"inventory:hosting:{key}", "value": hosting[key]})
+    life = meta.get("data_lifecycle") or {}
+    for cat in life.get("records_categories") or []:
+        out.append({"name": "inventory:data_lifecycle:records_category", "value": cat})
+    if "time_to_live_years" in life:
+        out.append(
+            {
+                "name": "inventory:data_lifecycle:time_to_live_years",
+                "value": str(life["time_to_live_years"]),
+            }
+        )
+    if "notes" in meta:
+        out.append({"name": "inventory:notes", "value": meta["notes"]})
+    return out
+
+
+def render_cbom(
+    r: _report.Report,
+    spec_version: str = CBOM_DEFAULT_VERSION,
+    profile: str = _profiles.PROFILE_NONE,
+) -> str:
     """Render the report as a CycloneDX CBOM (JSON), specVersion 1.7 by
     default or 1.6.  Both are schema-conformant — see tests/test_cbom.py.
     The 1.6 projection is unchanged from earlier releases; 1.7 enriches
-    the same assets and adds protocol / certificate components."""
+    the same assets and adds protocol / certificate components.
+    `profile` (see cbom_profiles.PROFILES) adds regime annotations."""
     if spec_version not in CBOM_VERSIONS:
         raise ValueError(f"unsupported CycloneDX version {spec_version!r}")
+    if profile not in _profiles.PROFILES:
+        raise ValueError(f"unsupported CBOM profile {profile!r}")
+    prof = _profiles.PROFILES[profile]
     assets = canonical_assets(r)
+    if prof is not None:
+        assets += _profile_classical_assets(r)
     if spec_version == "1.6":
         components = [_cbom_component(a) for a in assets]
     else:
         components = [_cbom17_component(a) for a in assets]
         components += _cbom17_protocol_components(assets)
         components += _cbom17_certificate_components(r)
+    if prof is not None:
+        _apply_profile_to_components(prof, assets, components)
 
     timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
@@ -733,6 +961,7 @@ def render_cbom(r: _report.Report, spec_version: str = CBOM_DEFAULT_VERSION) -> 
         host_props.append({"name": "host:arch", "value": r.arch})
     if r.cpu_model:
         host_props.append({"name": "host:cpu_model", "value": r.cpu_model})
+    host_props += _inventory_host_props(r.inventory_metadata)
     host_component: dict[str, Any] = {
         "type": "device",
         "bom-ref": host_bom_ref,
@@ -763,6 +992,8 @@ def render_cbom(r: _report.Report, spec_version: str = CBOM_DEFAULT_VERSION) -> 
         },
         "components": components,
     }
+    if prof is not None:
+        bom["metadata"]["properties"] = _profile_metadata_props(prof, r, components)
     return json.dumps(bom, indent=2)
 
 
@@ -771,6 +1002,20 @@ def render_cbom(r: _report.Report, spec_version: str = CBOM_DEFAULT_VERSION) -> 
 # runs on every parser build (each main() call) and resets it, so a
 # previous invocation in the same process never leaks into the next.
 _selected_version = CBOM_DEFAULT_VERSION
+_selected_profile = _profiles.PROFILE_NONE
+
+
+class _CbomProfileAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        global _selected_profile
+        _selected_profile = str(values)
+        setattr(namespace, self.dest, values)
 
 
 class _CbomVersionAction(argparse.Action):
@@ -800,9 +1045,10 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
 # stay together at the top of --help.
 @_registry.register_arguments(19)
 def add_version_argument(ap: argparse.ArgumentParser) -> None:
-    """--cbom-version."""
-    global _selected_version
+    """--cbom-version and --cbom-profile."""
+    global _selected_version, _selected_profile
     _selected_version = CBOM_DEFAULT_VERSION
+    _selected_profile = _profiles.PROFILE_NONE
     ap.add_argument(
         "--cbom-version",
         choices=list(CBOM_VERSIONS),
@@ -810,10 +1056,21 @@ def add_version_argument(ap: argparse.ArgumentParser) -> None:
         action=_CbomVersionAction,
         help=f"CycloneDX specVersion for --cbom (default {CBOM_DEFAULT_VERSION})",
     )
+    ap.add_argument(
+        "--cbom-profile",
+        choices=list(_profiles.PROFILES),
+        default=_profiles.PROFILE_NONE,
+        action=_CbomProfileAction,
+        help=(
+            "annotations for a reporting regime; federal-draft adds OMB "
+            "M-23-02 / M-26-15 / EO 14412 fields (draft until CISA/NIST "
+            "publish the minimum CBOM elements)"
+        ),
+    )
 
 
 def _render_selected(r: _report.Report) -> str:
-    return render_cbom(r, _selected_version)
+    return render_cbom(r, _selected_version, _selected_profile)
 
 
 _registry.register_output(_registry.OutputFormat("cbom", 10, _render_selected))
