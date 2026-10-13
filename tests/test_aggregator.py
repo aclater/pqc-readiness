@@ -226,6 +226,33 @@ def test_run_aggregator_malformed_json_skipped_others_aggregate(
     assert entry["reason"].startswith("unreadable: ")
 
 
+def test_run_aggregator_truncated_report_among_valid_ones(tmp_path: Path) -> None:
+    """Issue #76 scenario: two valid reports plus one truncated mid-object
+    (a pod killed while writing).  The truncated file is skipped with a
+    reason; both valid reports aggregate."""
+    (tmp_path / "a.json").write_text(json.dumps(_valid_report(cpu="cpu-a")))
+    (tmp_path / "c.json").write_text(
+        json.dumps(_valid_report(arch="aarch64", cpu="cpu-c"))
+    )
+    full = json.dumps(_valid_report(), indent=2)
+    truncated = tmp_path / "b.json"
+    truncated.write_text(full[: len(full) // 2])
+
+    out_text, exit_code = pr.run_aggregator(tmp_path, output="json")
+    assert exit_code == 0
+    rollup = json.loads(out_text)
+    assert rollup["total_hosts"] == 2
+    assert rollup["by_arch"] == {"x86_64": 1, "aarch64": 1}
+    assert rollup["unique_cpu_models"] == ["cpu-a", "cpu-c"]
+    assert len(rollup["skipped"]) == 1
+    assert rollup["skipped"][0]["file"] == str(truncated)
+    assert rollup["skipped"][0]["reason"].startswith("unreadable: ")
+    # CSV mode takes the same skip path without raising.
+    csv_text, csv_code = pr.run_aggregator(tmp_path, output="csv")
+    assert csv_code == 0
+    assert "total_hosts,,2" in csv_text.splitlines()
+
+
 @pytest.mark.parametrize(
     ("payload", "type_name"),
     [("[1, 2, 3]", "list"), ('"report"', "str"), ("42", "int"), ("null", "NoneType")],
