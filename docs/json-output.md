@@ -62,6 +62,7 @@ nothing was found.
 | `ipsec_pqc` | strongSwan / Libreswan presence and PQC (ML-KEM) key-exchange support. See [`ipsec_pqc`](#ipsec_pqc). |
 | `nss` | NSS PQC algorithm exposure: `{available, tool, version, pqc_capable, note?}`. `tool` is `certutil --version`, `rpmdb (sqlite)` / `rpmdb (bdb)` / `rpmdb (ndb)` (package `nss` / `mozilla-nss` read from the rpm database in-process; the suffix is the database format) or `rpm -q` (CLI fallback when the database cannot be read directly). Under `--host-mount` the host rpm database is consulted before `certutil`, because `certutil` belongs to the scanner image. |
 | `crypto_policy` | System-wide crypto policy (crypto-policies) and what it lets PQC do: active / configured policy, subpolicies, per-protocol `pqc_enabled`, and the parsed OpenSSL / GnuTLS / NSS / OpenSSH / libreswan back-ends. Read from files, so it works under `--host-mount` and on SUSE releases that ship the policy data without `update-crypto-policies`. `{available: false, reason}` where there is no `/etc/crypto-policies`. See [Nested fields](#crypto_policy). |
+| `sshd` | Effective sshd key exchange and host keys: the `KexAlgorithms` sshd actually offers (from `sshd -T` as root on a live host, otherwise by following `sshd_config` and its `Include` chain into the crypto-policies back-end), whether a PQC method is offered and first, and each HostKey's type, size and SHA-256 fingerprint read from its `.pub` file only. `{available: false, reason}` when no `sshd_config` exists. See [Nested fields](#sshd). |
 | `kernel_info` | Kernel release, OS identity copies kept for back-compat, `/etc/redhat-release` and PQC-named `/proc/crypto` drivers. See [`kernel_info`](#kernel_info). |
 | `fips_pqc_conflict` | `{in_conflict, explanation}`: `in_conflict` is true when kernel FIPS mode is on but PQC algorithms are exposed only through the non-FIPS default provider. See [`fips_pqc_conflict`](#fips_pqc_conflict). |
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
@@ -309,6 +310,52 @@ they overlap (`crypto_policies_active`, `crypto_policies_available_subpolicies`,
 SARIF rule `pqc-008-crypto-policy-blocks-pqc` fires when `openssl.tls_groups`
 lists hybrid or pure PQC groups but `pqc_enabled.tls_key_exchange` is false.
 
+
+### `sshd`
+
+`ssh_pqc` reports what the OpenSSH *client binary* supports (`ssh -Q kex`);
+`sshd` reports what the *server* offers. On every measured distro sshd reaches
+`KexAlgorithms` through an `Include` chain into
+`/etc/crypto-policies/back-ends/opensshserver.config`. Measured on cloud
+images (2026-10-13): Fedora 44, Rocky 10.2, AlmaLinux 10.2 and CentOS Stream
+10 offer `mlkem768x25519-sha256` first; openSUSE Leap 16.0 offers
+`sntrup761x25519-sha512` first; Rocky 9.8 (DEFAULT policy) offers no PQC key
+exchange although its OpenSSH 9.9 supports `mlkem768x25519-sha256`
+(SARIF `pqc-010`). The file-parsing path reproduced each host's `sshd -T`
+list exactly.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | `false` when no `sshd_config` exists in `/etc/ssh` or `/usr/etc/ssh` (SUSE vendor config). |
+| `reason` | string | Why `available` is false. |
+| `source` | string | `sshd -T` (root, no `--host-mount`) or `config files`. |
+| `config_files` | list of strings | Files read, in order, when `source` is `config files` (`Include` globs expanded lexically; parsing stops at the first `Match` block). |
+| `kex_offered` | list or null | Effective `KexAlgorithms`, in preference order. `null` when nothing sets it (OpenSSH's compiled-in default applies) or when it is set relative to that default. |
+| `kex_source` | string | `configured`, or `openssh-compiled-default` when `kex_offered` is null. |
+| `kex_modifier` | object | Present when `KexAlgorithms` starts with `+`, `-` or `^`: `{operator, algorithms}`. |
+| `kex_groups` | object | `pure_pqc` / `hybrid` / `classical` split of `kex_offered`, same classifier as `ssh_pqc.kex_groups`. |
+| `kex_references` | object | Registry facts (RFC 10042 / RFC 9941, draft/final status, CNSA 2.0 eligibility) for each offered PQC method, as `ssh_pqc.kex_references`. |
+| `first_kex` | string | The most-preferred offered method. |
+| `pqc_offered` | bool or null | Any PQC (hybrid or pure) method offered; null when unknown. |
+| `pqc_first` | bool or null | The most-preferred method is PQC; null when unknown. |
+| `host_key_algorithms` | list of strings | Effective `HostKeyAlgorithms` when set explicitly. |
+| `host_keys` | list | One entry per `HostKey` (OpenSSH's default three when none is configured). Read from `<path>.pub`; the private key file is never opened. |
+| `host_keys_pqc` | bool | Any host key is post-quantum. |
+| `openssh_supports_pqc_kex` | bool or null | Whether `ssh -Q kex` lists a PQC method (client and server ship in the same OpenSSH build); null when the client probe did not run. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`: the values describe the image, not the host. |
+
+Each `host_keys` entry:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `path` | string | The `HostKey` path as configured. |
+| `readable` | bool | Whether `<path>.pub` was found and parsed. |
+| `reason` | string | Why a readable `.pub` could not be parsed. |
+| `type` | string | Public key type, e.g. `ssh-ed25519`, `ecdsa-sha2-nistp256`, `ssh-rsa`. |
+| `bits` | int | Key size (RSA modulus bits; curve size for ECDSA / Ed25519 / Ed448). |
+| `fingerprint_sha256` | string | `SHA256:...` fingerprint, identical to `ssh-keygen -lf`. The key comment is not reported. |
+| `pqc` | bool | Whether the key type is a post-quantum signature (none shipped in OpenSSH as of 2026). |
+| `type_mismatch` | string | Present when the key blob's embedded type differs from the line's type field. |
 ### `kernel_info`
 
 | Key | Type | Meaning |

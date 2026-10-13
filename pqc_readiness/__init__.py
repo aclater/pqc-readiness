@@ -164,6 +164,13 @@ from .detect.protocols_signing import (  # noqa: F401
     parse_spki_pem,
     scan_signing_keys,
 )
+from .detect.config_sshd import (  # noqa: F401
+    describe_public_key,
+    detect_sshd,
+    parse_sshd_config,
+    parse_sshd_t,
+    sshd_pqc_gap,
+)
 from .detect.config_policy import (  # noqa: F401
     detect_crypto_policy,
     policy_blocks_capable_pqc,
@@ -337,6 +344,11 @@ __all__ = [
     "cpu_model",
     "detect_accelerators",
     "detect_crypto_policy",
+    "detect_sshd",
+    "parse_sshd_config",
+    "parse_sshd_t",
+    "describe_public_key",
+    "sshd_pqc_gap",
     "detect_fips_mode",
     "detect_fips_mode_from_providers_text",
     "detect_ipsec_pqc",

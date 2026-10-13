@@ -157,6 +157,7 @@ PATH_SECTIONS: dict[str, str] = {
     "ipsec_pqc": "`ipsec_pqc`",
     "nss": "`nss`",
     "crypto_policy": "`crypto_policy`",
+    "sshd": "`sshd`",
     "kernel_info": "`kernel_info`",
     "cnsa_2_0": "`cnsa_2_0`",
     "trust_store": "`trust_store`",
