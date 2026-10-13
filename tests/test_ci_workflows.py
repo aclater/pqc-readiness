@@ -22,7 +22,7 @@ referencing).  Adding PyYAML solely to grep four substrings out of two
 files is not warranted.
 
 Skip behaviour: ci-ubi8.yml builds an extension test image that COPYs
-only `tests/`, `pqc_readiness.py`, and the wrapper into the image — by
+only `tests/`, the `pqc_readiness/` package, the zipapp and the wrapper into the image — by
 design, the build infrastructure (`.github/workflows/`, the
 Containerfiles themselves) is *not* shipped into the test image.  When
 this test module runs inside that stripped environment the workflow /

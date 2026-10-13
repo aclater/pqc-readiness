@@ -31,7 +31,7 @@ WORKFLOW_REF = re.compile(r"([A-Za-z0-9_.-]+\.ya?ml)")
 # This is a repo-level integrity check: it cross-references README.md
 # against `.github/workflows/`. The UBI 8 test container in
 # `.github/workflows/ci-ubi8.yml` deliberately COPYs only `tests/`,
-# `pqc_readiness.py`, and the `pqc-readiness` wrapper into the image —
+# the `pqc_readiness/` package, the zipapp and the `pqc-readiness` wrapper into the image —
 # README.md and the workflow files are not shipped to customers and
 # are not present at runtime. Skip cleanly when either is missing
 # rather than failing on environments where the check is meaningless.

@@ -1,6 +1,6 @@
 # JSON output reference
 
-`./pqc_readiness.py --json` emits a stable, schema-versioned document.
+`pqc-readiness --json` emits a stable, schema-versioned document.
 The current `schema_version` is `"1.4"`. It follows the bump rules in
 [docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
 a rename, removal, or re-type is a major bump; an additive change
