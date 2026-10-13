@@ -24,6 +24,7 @@ fails if a registered rule has no page.
 | [pqc-016-ipsec-classical-only-ike](pqc-016-ipsec-classical-only-ike.md) | warning | An IPsec connection's IKE proposals are classical only |
 | [pqc-017-bundled-crypto-without-pqc](pqc-017-bundled-crypto-without-pqc.md) | warning | A package bundling its own crypto (OpenJDK, Go) cannot do PQC |
 | [pqc-018-pqc-capability-undetermined](pqc-018-pqc-capability-undetermined.md) | note | PQC capability could not be determined; verify by hand |
+| [pqc-020-pqc-capable-not-configured](pqc-020-pqc-capable-not-configured.md) | warning | PQC-capable software (TLS, SSH, IPsec or a service) is configured to stay classical (note: only restates pqc-008 / pqc-010) |
 
 Sources are cited with their status. **Draft** means the document is not
 final, for example NIST IR 8547, which is still an initial public draft.

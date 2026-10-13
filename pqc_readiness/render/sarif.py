@@ -353,6 +353,28 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="note",
         help_uri=f"{SARIF_HELP_BASE}/pqc-018-pqc-capability-undetermined.md",
     ),
+    # pqc-020: the capability-vs-configuration summary (#107).  Numbered
+    # apart from pqc-011.. so failure rules added in parallel (#193) can't
+    # collide with it.
+    RuleSpec(
+        id="pqc-020-pqc-capable-not-configured",
+        short_description=(
+            "PQC-capable software on this host is configured to stay classical."
+        ),
+        full_description=(
+            "The per-host deployment-gap verdict (pqc_deployment_gap) found "
+            "protocols or listening services whose software can negotiate "
+            "post-quantum key exchange but whose configuration keeps it "
+            "classical: the TLS default groups or crypto policy, sshd's "
+            "KexAlgorithms, or the configured IKE proposals.  A "
+            "configuration change, not an upgrade, closes the gap.  "
+            "Reported as a warning when it covers IPsec or individual "
+            "services, and as a note when it only restates the TLS / SSH "
+            "gaps already reported by pqc-008 and pqc-010."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-020-pqc-capable-not-configured.md",
+    ),
 )
 
 
@@ -420,6 +442,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-014-crypto-library-pre-standard-mlkem": "3.1",
     # Nothing known to be wrong; a prompt to check by hand: lowest.
     "pqc-018-pqc-capability-undetermined": "1.0",
+    # Capability-vs-configuration summary (#107): a config change fixes it;
+    # below pqc-008 / pqc-010, which it partly restates.
+    "pqc-020-pqc-capable-not-configured": "4.5",
 }
 
 # partialFingerprints key.  SARIF lets producers name their own
@@ -713,7 +738,56 @@ def build_findings(r: _report.Report) -> list[Finding]:
         )
 
     findings.extend(pqc_failure_findings(r))
+    gap_finding = _capable_not_configured_finding(r)
+    if gap_finding is not None:
+        findings.append(gap_finding)
+
     return findings
+
+
+def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
+    """pqc-020 (#107): one host-level result listing every protocol and
+    service in the capable_not_configured state."""
+    g = r.pqc_deployment_gap or {}
+    protocols = [
+        name
+        for name, v in (g.get("protocols") or {}).items()
+        if v.get("state") == "capable_not_configured"
+    ]
+    services = [
+        f"{s.get('process')} {s.get('protocol')}/{s.get('port')}"
+        for s in (g.get("services") or {}).get("items") or []
+        # Services that only follow the host default restate the TLS / SSH
+        # verdict; list the ones that differ.
+        if s.get("state") == "capable_not_configured"
+        and not s.get("follows_host_default")
+    ]
+    if not protocols and not services:
+        return None
+    # Only TLS / SSH protocol gaps: pqc-008 / pqc-010 already report them.
+    restates_only = not services and set(protocols) <= {"tls", "ssh"}
+    parts = []
+    if protocols:
+        parts.append("protocols: " + ", ".join(protocols))
+    if services:
+        parts.append(
+            "services: "
+            + ", ".join(services[:6])
+            + (", ..." if len(services) > 6 else "")
+        )
+    return Finding(
+        rule_id="pqc-020-pqc-capable-not-configured",
+        level="note" if restates_only else "warning",
+        message=(
+            "PQC-capable software is configured to stay classical ("
+            + "; ".join(parts)
+            + "); a configuration change closes the gap."
+        ),
+        properties={
+            "gap:protocols": protocols,
+            "gap:services": services,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

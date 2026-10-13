@@ -99,8 +99,10 @@ listener in another network namespace still matches, with a note that it
 is reachable only through port mapping. Loopback-only listeners never
 match.
 
-Each matched endpoint gets three labels, which the three-state verdict
-(#107) builds on:
+Each matched endpoint gets three labels, plus the deployment-gap `state`
+derived from the first two by the same rules as the host's own
+`pqc_deployment_gap` (#107), so an endpoint's state can't disagree with its
+host's:
 
 - **capable**: for TLS, QUIC and DTLS, the listener's crypto library
   version ships hybrid ML-KEM, or it is a Go binary whose default offers
@@ -108,11 +110,18 @@ Each matched endpoint gets three labels, which the three-state verdict
   the IPsec stack supports ML-KEM.
 - **configured**: TLS uses the system crypto policy (`crypto_policy.pqc_enabled.tls_key_exchange`),
   falling back to the OpenSSL default groups, except for Go listeners,
-  which ignore the system policy. SSH uses the policy's server
-  setting. IKEv2 uses whether any configured connection offers ML-KEM.
+  which ignore the system policy. SSH uses sshd's effective
+  `KexAlgorithms` (`sshd.pqc_offered`), falling back to the policy's
+  server setting. IKEv2 uses whether any configured connection offers ML-KEM.
   These are host defaults, not per-service settings.
 - **observed**: `pure_pqc`, `hybrid`, `classical` or `unknown`, from
   `negotiated_group`.
+
+The rollup counts endpoints per `{protocol, state, observed}`
+(`observations.by_gap_state`). The combinations that need attention:
+`deployed` but observed `classical` (a client, proxy or per-application
+setting is holding it back) and `capable_not_configured` observed
+`classical` (the configuration gap is live on the wire).
 
 An observation made more than `--observations-max-age-days` (default 7)
 before or after the matched host's report is flagged `stale`. It is still

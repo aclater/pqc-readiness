@@ -92,6 +92,9 @@ class Report:
     # GnuTLS / libgcrypt / libssh / wolfSSL / AWS-LC / JDK / Go PQC
     # capability (--scan-crypto-libraries, #110); {} when not requested.
     crypto_libraries: dict[str, Any] = field(default_factory=dict)
+    # Capability vs configuration verdict per protocol (TLS / SSH / IPsec)
+    # and per crypto-linked service, computed from the fields above (#107).
+    pqc_deployment_gap: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is

@@ -141,6 +141,10 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "run_aggregator": (AGGREGATE,),
     "join_observations": (OBSERVATIONS_JOIN,),
     "_compact_listener": (OBSERVATIONS_JOIN,),
+    "listener_capability": (OBSERVATIONS_JOIN, "`pqc_deployment_gap`"),
+    "_verdict": ("`pqc_deployment_gap`",),
+    "_services": ("`pqc_deployment_gap`",),
+    "compute_gap": ("`pqc_deployment_gap`",),
 }
 
 # Keys that a producing function builds for internal use and never emits.
@@ -185,6 +189,7 @@ PATH_SECTIONS: dict[str, str] = {
     "host_fs_detections_unavailable": "`host_fs_detections_unavailable`",
     "packages": "`packages`",
     "crypto_libraries": "`crypto_libraries`",
+    "pqc_deployment_gap": "`pqc_deployment_gap`",
     "os_release": "`os_release`",
     "pqc_sizes": "`pqc_sizes`",
     "benchmark": "`benchmark`",
