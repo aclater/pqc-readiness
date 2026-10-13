@@ -66,6 +66,7 @@ nothing was found.
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
 | `trust_store` | Trust-store summary. Populated only when `--scan-trust-store` is set (`{}` otherwise). Certificates are classified from the signature-algorithm and SubjectPublicKeyInfo OIDs in their DER encoding (independent of the installed OpenSSL), every certificate in multi-certificate bundle files is inspected, and counts are per **unique certificate** (SHA-256 of the DER; a `TRUSTED CERTIFICATE` block counts as its embedded certificate). Keys: `available`, `scanned_dirs`, `total_certs` (unique certificates whose DER parsed), `pqc_certs` (signature or key algorithm is ML-DSA / SLH-DSA), `hybrid_certs` (pre-standard hybrid OIDs), `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found` (unique certificates found across all `*.pem` / `*.crt` files after symlink de-duplication), `scanned_count` (certificates classified, ≤ `max_certs`), `max_certs` (cap in effect, default 500, set by `--trust-store-max-certs`), and `truncated` (true when `total_found > max_certs`; certificates are taken in sorted file order, then file order, so a capped scan is deterministic). Earlier releases counted *files*, read only the first certificate in each, and missed PQC certificates on OpenSSL ≥ 3.5 (#116); the field shapes are unchanged, but the count semantics changed in schema `1.3`, so counts from older reports are not comparable (the fleet aggregator already refuses to mix versions). |
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
+| `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
@@ -240,6 +241,42 @@ Each list item describes one detected device or HSM client configuration:
 | --- | --- | --- |
 | `environment` | string | `container` or `host`. |
 | `evidence` | string | The marker that decided it: `/.dockerenv present`, `/run/.containerenv present`, `cgroup marker <m>`, or `no container markers`. |
+
+### `service_crypto_linkage`
+
+`{}` unless `--scan-services`. Built from `/proc/<pid>/net/{tcp,tcp6,udp,udp6}` (read once per network namespace), `/proc/<pid>/fd`, `/proc/<pid>/maps`, and the executable and libraries as the process itself sees them (`/proc/<pid>/root`, or `/proc/<pid>/map_files` for a deleted library). Without root, or CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, other users' processes can't be read. They are counted in `unreadable_pids`, never guessed.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | Scan ran. When false only `reason` follows (not Linux, or `/proc` unreadable). |
+| `listeners` | list[object] | One entry per listening TCP socket or bound, unconnected UDP socket; see the listener table below. |
+| `summary` | object | `listeners` (count), `unattributed_listeners` (no readable owning process), `listeners_by_crypto_family` (`openssl` / `libressl` / `boringssl` / `aws-lc` / `gnutls` / `nss` / `wolfssl` / `go` / `none` → count), `listeners_with_deleted_crypto_library` (the service still maps a library that an upgrade replaced: restart it to pick up the new one). |
+| `scanned_pids` | int | Processes inspected. |
+| `unreadable_pids` | int | Processes whose file-descriptor table could not be read (permissions). |
+| `truncated` | bool | The scan stopped at `limits.max_pids` or `limits.time_budget_s`, so later processes were not inspected. |
+| `limits` | object | `max_pids` (default 4096) and `time_budget_s` (default 15). |
+| `note` | string | Present when `unreadable_pids` > 0: how to get complete attribution. |
+| `reason` | string | Present when `available` is false, or with `unavailable_in_container` (running in a container without `--host-mount` / hostPID: the scan only sees the container's own processes). |
+
+Listener entries. `protocol`, `address`, `port` and `bind_scope` are the join keys that endpoint-observation ingestion (#149) matches against what a network scan saw on this host's addresses:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `protocol` | string | `tcp` or `udp` (UDP covers QUIC, DTLS and IKE listeners). |
+| `family` | string | `ipv4` or `ipv6`. |
+| `address` | string | Bound address as the kernel reports it (IPv4-mapped IPv6 kept as written). |
+| `port` | int | Bound port. |
+| `bind_scope` | string | `any` (wildcard), `loopback`, `multicast`, `link-local` or `specific`. A remote observation can only match `any` or `specific`. |
+| `network_namespace` | string | `host` (same namespace as PID 1) or `other` (e.g. a container with its own network: reachable from outside only through port mapping). |
+| `pid` | int \| null | Lowest owning PID; `null` when no readable process holds the socket. |
+| `pids` | list[int] | Every readable process holding the socket (e.g. a server's master and workers). |
+| `process` | string \| null | `comm` of `pid`. |
+| `exe` | string \| null | Executable path of `pid`, in its own mount namespace. |
+| `systemd_unit` | string \| null | Unit (`*.service` / `*.scope`) from the process's cgroup, when it has one. |
+| `cgroup` | string \| null | The process's cgroup path (last 200 characters). |
+| `crypto_libraries` | list[object] | Crypto libraries the process maps: `{family, path, version, version_source, deleted, library_pqc_capable}`. `family` is `openssl`, `libressl`, `boringssl`, `aws-lc`, `gnutls`, `nss` or `wolfssl` (OpenSSL forks share sonames and are told apart by their embedded strings). `version_source` is `embedded` (version string inside the library), `filename` (e.g. `libssl.so.3.5.9`), `sibling-libcrypto` (libssl takes the version of the libcrypto beside it) or `null`. `deleted` is true when the mapped file was replaced on disk. `library_pqc_capable` is whether that library *version* ships ML-KEM hybrid TLS key exchange (OpenSSL ≥ 3.5, NSS ≥ 3.108); `null` where no verified threshold is encoded yet. Whether the service turns it on is configuration (#106 / #107). |
+| `static_binary` | bool \| null | The executable has no ELF interpreter (statically linked); `null` when it could not be read. |
+| `go` | object \| null | For Go binaries: `go_version` (e.g. `go1.24.4`, from the embedded build info; `null` for pre-1.18 binaries), `main_module`, `cgo_enabled`, `default_hybrid_kex` and `godebug_reverts`. `default_hybrid_kex` is the hybrid key exchange crypto/tls offers when the program leaves `CurvePreferences` unset: `X25519MLKEM768` from Go 1.24 (which also removed the Kyber draft), `X25519Kyber768Draft00` on Go 1.23, else `null`. `godebug_reverts` lists `tlsmlkem` / `tlskyber` / `tlssecpmlkem` set to `0` by the binary's `DefaultGODEBUG` or the process's `GODEBUG` environment variable, which turn those defaults off. Only `GODEBUG` is read from the environment; nothing else is kept. |
 
 ### `host_fs_detections_unavailable`
 
