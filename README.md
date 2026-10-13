@@ -255,7 +255,7 @@ example Ansible playbooks already use the zipapp.
 | (default) | Coloured text report | Operator console |
 | `--markdown` | Markdown | Pasting into tickets |
 | `--json` | Stable JSON schema | Fleet aggregation, automation |
-| `--cbom` | CycloneDX 1.6 CBOM | Cryptographic-inventory (CBOM) pipelines |
+| `--cbom` | CycloneDX 1.6 CBOM | NIST IR 8547 inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
 | `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
@@ -278,9 +278,10 @@ accelerators, OpenSSL primitives, OpenSSH KEX, IPsec, PKCS#11 modules,
 trust-store summary — becomes a `cryptographic-asset` component with
 `assetType`, `algorithmProperties` where applicable, and a
 `detectedBy: pqc-readiness@<version>` provenance property. Validates
-against the official CycloneDX 1.6 JSON schema. (NIST IR 8547 is
-still an [initial public draft](https://csrc.nist.gov/pubs/ir/8547/ipd);
-it sets transition timelines and does not define an inventory format.)
+against the official CycloneDX 1.6 JSON schema. NIST IR 8547
+([final](https://csrc.nist.gov/pubs/ir/8547/final)) references
+CycloneDX 1.6 as the standard exchange format for cryptographic
+inventory.
 
 **SPDX.** `--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
 JSON-LD document with `core` + `software` + `security` profile
@@ -477,6 +478,27 @@ ready-to-deploy image is shipped at
 `make container-ubi8`); the existing `--host-mount` DaemonSet pattern
 is identical to the UBI 10 image. CI runs the full test suite inside the
 UBI 8 image on every PR and push to `main` (`ci-ubi8.yml`).
+
+**SLES 15 / openSUSE Leap 15 specifics.** SLES 15 and openSUSE Leap 15
+ship Python 3.6 as `/usr/bin/python3`; the openSUSE Leap 15.6 cloud
+image has nothing newer. On such a host the `pqc-readiness` wrapper
+exits 127 and prints SUSE-specific guidance. The fix is a one-time
+install of a newer interpreter alongside the system one. The wrapper
+finds `python3.11` on its own, and the system `python3` is left
+untouched:
+
+```bash
+sudo zypper --gpg-auto-import-keys ref   # refresh repo metadata (and import repo keys) first
+sudo zypper -n in python311              # provides /usr/bin/python3.11
+./pqc-readiness --json
+```
+
+These exact steps were tested on a booted openSUSE Leap 15.6 cloud image
+(`python311` gives Python 3.11.15). The scanner then ran normally and
+read the Berkeley DB rpm database in-process. openSUSE Leap 16.0 and Tumbleweed already ship Python 3.13 as
+`python3` (checked by booting their cloud images). The wrapper picks its install hint from `ID` / `ID_LIKE`
+in `/etc/os-release`. SUSE, RHEL-family and Debian/Ubuntu hosts each get
+their own hint ([#127](https://github.com/aclater/pqc-readiness/issues/127)).
 
 Out of scope for this tool: Windows / WSL, BSD, musl-specific behaviour
 beyond Alpine. macOS support is best-effort and limited to the paths
