@@ -1,0 +1,3 @@
+gpg-pubkey 09d9ea69 68595a8c (none)
+libgpg-error0 1.58 160000.2.1 x86_64
+mozilla-nss 3.125 160000.2.1 x86_64

@@ -1504,6 +1504,14 @@ def parse_nss_version(text: str) -> tuple[int, int, int] | None:
 NSS_RPM_PACKAGE_NAMES = ("nss", "mozilla-nss")
 
 
+# nss.tool label for each packages.source value; the CLI path is `rpm -q`.
+_NSS_TOOL_BY_SOURCE: dict[str, str] = {
+    "rpmdb-sqlite": "rpmdb (sqlite)",
+    "rpmdb-bdb": "rpmdb (bdb)",
+    "rpmdb-ndb": "rpmdb (ndb)",
+}
+
+
 def _nss_from_rpmdb() -> dict[str, Any] | None:
     """NSS version from the shared rpm inventory (#125), or None when the
     inventory is unavailable or has no NSS package.  Multi-arch installs
@@ -1517,7 +1525,7 @@ def _nss_from_rpmdb() -> dict[str, Any] | None:
     parsed = [(parse_nss_version(v), v) for v in versions]
     known = [(ver, raw) for ver, raw in parsed if ver is not None]
     ver, raw = max(known) if known else (None, versions[0])
-    tool = "rpmdb (sqlite)" if inv["source"] == "rpmdb-sqlite" else "rpm -qa"
+    tool = _NSS_TOOL_BY_SOURCE.get(inv["source"], "rpm -q")
     return {
         "available": True,
         "tool": tool,
@@ -2963,6 +2971,228 @@ def read_rpmdb_sqlite_named(
     return [parse_rpm_header(blob) for blob in blobs]
 
 
+# ---------------------------------------------------------------------------
+# Berkeley DB (EL8, Leap 15 cloud images) and ndb (SUSE) readers (#134)
+# ---------------------------------------------------------------------------
+#
+# Both formats are read with positional reads (os.pread), never mmap: if
+# rpm truncates or compacts the file while we read it, an mmap access past
+# the new end of file raises SIGBUS and kills the whole scanner, whereas a
+# short pread is just treated as corruption and falls back to the CLI.
+# Layouts follow rpm's own read-only implementations, lib/backend/bdb_ro.cc
+# and lib/backend/ndb/rpmpkg.c (rpm-software-management/rpm).
+
+_BDB_HASH_MAGIC = 0x00061561
+_BDB_PAGE_TYPES_HASH = (2, 13)  # P_HASH_UNSORTED, P_HASH
+_BDB_PAGE_OVERFLOW = 7
+_BDB_ITEM_KEYDATA = 1
+_BDB_ITEM_OFFPAGE = 3
+_BDB_PAGE_HEADER = 26
+
+_NDB_PAGE = 4096
+_NDB_SLOT = 16
+_NDB_BLK = 16
+_NDB_HEADER = 32  # first two slots hold the file header
+_NDB_BLOBHEAD = 16
+_NDB_BLOBTAIL = 12
+_NDB_MAX_SLOTNPAGES = 0xFFFFFFFF // (_NDB_PAGE // _NDB_BLK)
+
+
+def _pread_exact(fd: int, length: int, offset: int) -> bytes:
+    data = os.pread(fd, length, offset)
+    if len(data) != length:
+        raise RpmdbError(f"short read: {len(data)} of {length} bytes at {offset}")
+    return data
+
+
+def _iter_bdb_hash_values(fd: int, size: int) -> Iterator[bytes]:
+    """Yield every Packages value (an rpm header blob) from a Berkeley DB
+    hash file.  Walks buckets and their next-page chains exactly as rpm's
+    bdb_ro does, rather than scanning pages by type, so freed pages that
+    still carry a hash type are never read.  Raises RpmdbError on any
+    inconsistency."""
+    meta = _pread_exact(fd, 512, 0)
+    for bo in ("<", ">"):
+        if struct.unpack_from(bo + "I", meta, 12)[0] == _BDB_HASH_MAGIC:
+            break
+    else:
+        raise RpmdbError("not a Berkeley DB hash database")
+    version, pagesize = struct.unpack_from(bo + "II", meta, 16)
+    lastpage = struct.unpack_from(bo + "I", meta, 32)[0]
+    maxbucket = struct.unpack_from(bo + "I", meta, 72)[0]
+    spares = struct.unpack_from(bo + "32I", meta, 96)
+    if not 8 <= version <= 10:
+        raise RpmdbError(f"unsupported Berkeley DB hash version {version}")
+    if pagesize < 512 or pagesize > 65536 or pagesize & (pagesize - 1):
+        raise RpmdbError(f"implausible Berkeley DB page size {pagesize}")
+    if (lastpage + 1) * pagesize > size:
+        raise RpmdbError("Berkeley DB file shorter than its last page")
+    if maxbucket > lastpage:
+        raise RpmdbError(f"implausible bucket count {maxbucket}")
+
+    def page(pgno: int) -> bytes:
+        if not 0 < pgno <= lastpage:
+            raise RpmdbError(f"page {pgno} out of range")
+        pg = _pread_exact(fd, pagesize, pgno * pagesize)
+        if struct.unpack_from(bo + "I", pg, 8)[0] != pgno:
+            raise RpmdbError(f"page {pgno} carries the wrong page number")
+        return pg
+
+    def overflow(pgno: int, total: int) -> bytes:
+        if total <= 0:
+            raise RpmdbError("empty overflow item")
+        out = bytearray()
+        seen: set[int] = set()
+        while len(out) < total:
+            if pgno in seen:
+                raise RpmdbError(f"overflow chain loops at page {pgno}")
+            seen.add(pgno)
+            pg = page(pgno)
+            if pg[25] != _BDB_PAGE_OVERFLOW:
+                raise RpmdbError(f"page {pgno} is not an overflow page")
+            used = struct.unpack_from(bo + "H", pg, 22)[0]
+            if used == 0 or used + _BDB_PAGE_HEADER > pagesize or len(out) + used > total:
+                raise RpmdbError(f"bad overflow length on page {pgno}")
+            out += pg[_BDB_PAGE_HEADER:_BDB_PAGE_HEADER + used]
+            pgno = struct.unpack_from(bo + "I", pg, 16)[0]
+        return bytes(out)
+
+    def item(pg: bytes, off: int, length: int) -> bytes:
+        if length <= 0 or off + length > pagesize:
+            raise RpmdbError("hash item outside its page")
+        kind = pg[off]
+        if kind == _BDB_ITEM_KEYDATA:
+            return pg[off + 1:off + length]
+        if kind == _BDB_ITEM_OFFPAGE and length == 12:
+            pgno, total = struct.unpack_from(bo + "II", pg, off + 4)
+            return overflow(pgno, total)
+        raise RpmdbError(f"unsupported hash item type {kind}")
+
+    visited: set[int] = set()
+    for bucket in range(maxbucket + 1):
+        pgno = bucket + spares[bucket.bit_length()]
+        while pgno:
+            if pgno in visited:
+                raise RpmdbError(f"bucket chain loops at page {pgno}")
+            visited.add(pgno)
+            pg = page(pgno)
+            if pg[25] not in _BDB_PAGE_TYPES_HASH:
+                raise RpmdbError(f"page {pgno} is not a hash page")
+            nent = struct.unpack_from(bo + "H", pg, 20)[0]
+            if nent > (pagesize - _BDB_PAGE_HEADER) // 2:
+                raise RpmdbError(f"page {pgno} claims {nent} entries")
+            offs = struct.unpack_from(bo + f"{nent}H", pg, _BDB_PAGE_HEADER)
+            for idx in range(0, nent - 1, 2):
+                koff, voff = offs[idx], offs[idx + 1]
+                kend = pagesize if idx == 0 else offs[idx - 1]
+                if not voff < koff < kend <= pagesize:
+                    raise RpmdbError(f"page {pgno} entry {idx} overlaps")
+                key = item(pg, koff, kend - koff)
+                # Packages is keyed by the 4-byte header number; record 0
+                # is rpm's instance counter, not a package.
+                if len(key) != 4 or struct.unpack(bo + "I", key)[0] == 0:
+                    continue
+                yield item(pg, voff, koff - voff)
+            pgno = struct.unpack_from(bo + "I", pg, 16)[0]
+
+
+def _iter_ndb_blobs(fd: int, size: int) -> Iterator[bytes]:
+    """Yield every package header blob from an ndb Packages.db (always
+    little-endian).  Checks slots, blob head/tail and, when zlib is
+    available, the per-blob Adler-32, so a torn or corrupt entry raises
+    RpmdbError instead of yielding garbage."""
+    try:
+        import zlib
+    except ImportError:  # minimal builds; head/tail checks still apply
+        zlib = None  # type: ignore[assignment]
+    head = _pread_exact(fd, _NDB_HEADER, 0)
+    magic, version, _generation, slotnpages = struct.unpack_from("<4sIII", head, 0)
+    if magic != _NDB_MAGIC:
+        raise RpmdbError("not an ndb database")
+    if version != 0:
+        raise RpmdbError(f"unsupported ndb version {version}")
+    if size % _NDB_BLK or not 0 < slotnpages <= _NDB_MAX_SLOTNPAGES:
+        raise RpmdbError("implausible ndb file size or slot page count")
+    if slotnpages * _NDB_PAGE > size:
+        raise RpmdbError("ndb file shorter than its slot pages")
+    fileblks = size // _NDB_BLK
+    minblkoff = slotnpages * (_NDB_PAGE // _NDB_BLK)
+    slots = _pread_exact(fd, slotnpages * _NDB_PAGE, 0)
+    for off in range(_NDB_HEADER, len(slots), _NDB_SLOT):
+        smagic, pkgidx, blkoff, blkcnt = struct.unpack_from("<4sIII", slots, off)
+        if smagic != b"Slot":
+            raise RpmdbError(f"bad ndb slot magic at offset {off}")
+        if blkoff == 0:
+            continue  # free slot
+        if not pkgidx or blkoff < minblkoff or blkoff + blkcnt > fileblks:
+            raise RpmdbError(f"bad ndb slot at offset {off}")
+        region = _pread_exact(fd, blkcnt * _NDB_BLK, blkoff * _NDB_BLK)
+        bmagic, bidx, _gen, blen = struct.unpack_from("<4sIII", region, 0)
+        need = -(-(_NDB_BLOBHEAD + blen + _NDB_BLOBTAIL) // _NDB_BLK)
+        if bmagic != b"BlbS" or bidx != pkgidx or blkcnt != need:
+            raise RpmdbError(f"bad ndb blob for package index {pkgidx}")
+        adl, tlen, tmagic = struct.unpack_from("<I I 4s", region, len(region) - _NDB_BLOBTAIL)
+        if tmagic != b"BlbE" or tlen != blen:
+            raise RpmdbError(f"bad ndb blob trailer for package index {pkgidx}")
+        if zlib is not None and zlib.adler32(region[:-_NDB_BLOBTAIL]) != adl:
+            raise RpmdbError(f"ndb blob checksum mismatch for package index {pkgidx}")
+        yield region[_NDB_BLOBHEAD:_NDB_BLOBHEAD + blen]
+
+
+_RPMDB_FILE_BY_BACKEND: dict[str, str] = {
+    "sqlite": "rpmdb.sqlite",
+    "ndb": "Packages.db",
+    "bdb": "Packages",
+}
+_RPMDB_BLOB_READERS: dict[str, Callable[[int, int], Iterator[bytes]]] = {
+    "bdb": _iter_bdb_hash_values,
+    "ndb": _iter_ndb_blobs,
+}
+
+
+def read_rpmdb_blobs(
+    backend: str, db_file: Path, names: tuple[str, ...] | None = None
+) -> list[dict[str, Any]]:
+    """Read a Berkeley DB or ndb rpm database in-process, keeping only the
+    packages in `names` when given.  There is no name index to use, and a
+    substring prefilter measured slower than parsing: headers average
+    ~60 KB, while parse_rpm_header only touches the small tag index.  A
+    database with no packages is invalid, as for sqlite.  Raises
+    RpmdbError; never returns a partial inventory."""
+    reader = _RPMDB_BLOB_READERS[backend]
+    try:
+        fd = os.open(db_file, os.O_RDONLY)
+    except OSError as e:
+        raise RpmdbError(f"cannot open {db_file}: {e}") from e
+    try:
+        size = os.fstat(fd).st_size
+        out: list[dict[str, Any]] = []
+        count = 0
+        for blob in reader(fd, size):
+            count += 1
+            pkg = parse_rpm_header(blob)
+            if names is None or pkg["name"] in names:
+                out.append(pkg)
+    except (OSError, struct.error) as e:
+        raise RpmdbError(f"cannot read {db_file}: {e}") from e
+    finally:
+        os.close(fd)
+    if count == 0:
+        raise RpmdbError(f"{db_file} holds 0 packages; treating as invalid")
+    return out
+
+
+def _read_rpmdb_direct(
+    db: tuple[str, Path, str], names: tuple[str, ...] | None = None
+) -> list[dict[str, Any]]:
+    """In-process read of any supported backend; raises RpmdbError."""
+    backend = db[2]
+    db_file = db[1] / _RPMDB_FILE_BY_BACKEND[backend]
+    if backend == "sqlite":
+        return read_rpmdb_sqlite(db_file) if names is None else read_rpmdb_sqlite_named(db_file, names)
+    return read_rpmdb_blobs(backend, db_file, names)
+
+
 def parse_rpm_qa_nvra(text: str) -> list[dict[str, Any]]:
     """Parse `rpm -qa --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n'`.
 
@@ -2989,8 +3219,9 @@ _RPM_QA_ARGV = ["rpm", "-qa", "--queryformat", _RPM_NVRA_QUERYFORMAT]
 
 
 def _query_rpm_cli(db: tuple[str, Path, str] | None) -> dict[str, Any]:
-    """Fallback inventory through the rpm binary (bdb on EL8, ndb on SUSE,
-    no sqlite3 module, or a failed direct read).  Under --host-mount the
+    """Fallback inventory through the rpm binary, used only when the
+    database cannot be read in-process (unrecognised or corrupt file, or
+    no sqlite3 module for an sqlite database).  Under --host-mount the
     binary belongs to the scanner image, so it is pointed at the host with
     --root plus the located --dbpath (interpreted inside the root); with no
     host database located it refuses rather than silently reporting the
@@ -3022,27 +3253,32 @@ def _query_rpm_cli(db: tuple[str, Path, str] | None) -> dict[str, Any]:
 def _query_rpm_packages_cached(host_prefix: str) -> dict[str, Any]:
     # host_prefix is the cache key only; locate_rpmdb() reads HOST_PREFIX.
     db = locate_rpmdb()
-    if db is not None and db[2] == "sqlite":
+    if db is not None:
         try:
-            pkgs = read_rpmdb_sqlite(db[1] / "rpmdb.sqlite")
+            pkgs = _read_rpmdb_direct(db)
         except RpmdbError as e:
             log.debug("rpmdb: direct read failed, falling back to rpm CLI: %s", e)
         else:
-            return {
-                "available": True,
-                "source": "rpmdb-sqlite",
-                "db_root": db[0],
-                "backend": "sqlite",
-                "packages": pkgs,
-            }
+            return _direct_result(db, pkgs)
     return _query_rpm_cli(db)
+
+
+def _direct_result(db: tuple[str, Path, str], pkgs: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "available": True,
+        "source": f"rpmdb-{db[2]}",
+        "db_root": db[0],
+        "backend": db[2],
+        "packages": pkgs,
+    }
 
 
 def query_rpm_packages() -> dict[str, Any]:
     """Installed-RPM inventory, read once per process and shared by
-    scan_packages() and detect_nss().  Prefers the in-process sqlite read;
-    BDB (EL8), ndb (SUSE), a missing sqlite3 module or any read error take
-    the rpm CLI path.  Result: {available, source, db_root, backend,
+    scan_packages() and detect_nss().  Reads sqlite, Berkeley DB (EL8,
+    Leap 15 cloud images) and ndb (SUSE) databases in-process; only an
+    unreadable database (or a missing sqlite3 module) takes the rpm CLI
+    path.  Result: {available, source, db_root, backend,
     packages: [{name, version, release?, epoch?, arch?}]} or
     {available: False, reason}.  Tests reset the cache with
     _query_rpm_packages_cached.cache_clear()."""
@@ -3079,26 +3315,30 @@ def query_rpm_named(names: tuple[str, ...]) -> dict[str, Any]:
     """Look up specific packages without reading the whole inventory.
 
     Reuses the full inventory when this process already read it
-    (--scan-packages); otherwise uses the sqlite Name index, or `rpm -q`
-    on CLI-backed databases (bdb on EL8, ndb on SUSE).  Same result shape
-    as query_rpm_packages(), restricted to `names`."""
+    (--scan-packages); otherwise uses the sqlite Name index.  Berkeley DB
+    and ndb have no index we read, so a direct lookup walks the whole
+    database (10-60 ms on real EL8 / SUSE VMs) while `rpm -q` uses rpm's
+    own index (~4 ms); there `rpm -q` comes first and the direct read is
+    the fallback when the binary is missing or fails (#134).  Same result
+    shape as query_rpm_packages(), restricted to `names`."""
     if _query_rpm_packages_cached.cache_info().currsize:
         return query_rpm_named_from_inventory(names)
     db = locate_rpmdb()
-    if db is not None and db[2] == "sqlite":
-        try:
-            pkgs = read_rpmdb_sqlite_named(db[1] / "rpmdb.sqlite", names)
-        except RpmdbError as e:
+    if db is None:
+        return _query_rpm_named_cli(db, names)
+    if db[2] in ("bdb", "ndb"):
+        cli = _query_rpm_named_cli(db, names)
+        if cli.get("available"):
+            return cli
+        log.debug("rpmdb: rpm -q unavailable (%s); reading %s directly", cli.get("reason"), db[2])
+    try:
+        return _direct_result(db, _read_rpmdb_direct(db, names))
+    except RpmdbError as e:
+        if db[2] == "sqlite":  # e.g. no Name table: full read, then CLI
             log.debug("rpmdb: indexed lookup failed, using full inventory: %s", e)
             return query_rpm_named_from_inventory(names)
-        return {
-            "available": True,
-            "source": "rpmdb-sqlite",
-            "db_root": db[0],
-            "backend": "sqlite",
-            "packages": pkgs,
-        }
-    return _query_rpm_named_cli(db, names)
+        log.debug("rpmdb: direct read failed, falling back to rpm -q: %s", e)
+        return _query_rpm_named_cli(db, names)
 
 
 def query_rpm_named_from_inventory(names: tuple[str, ...]) -> dict[str, Any]:

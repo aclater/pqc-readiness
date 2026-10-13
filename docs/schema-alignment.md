@@ -360,6 +360,11 @@ If a future patch *does* introduce a rename, the bump rule is:
 - Adding a new field → minor bump (`1.0` → `1.1`); pure additions are
   backward-compatible for the aggregator.
 - Re-typing an existing field → major bump.
+- Adding a value to an enumerated string field (e.g. `packages.source`
+  gaining `rpmdb-bdb` / `rpmdb-ndb`) → no bump; the field, its type and
+  existing values are unchanged, and the new value is documented in
+  [json-output.md](json-output.md). Consumers should treat unknown
+  values of such fields as opaque strings.
 
 The aggregator (`run_aggregator()` in `pqc_readiness.py`) already
 filters mismatched `schema_version` files into the `skipped` bucket
