@@ -1508,12 +1508,10 @@ def _nss_from_rpmdb() -> dict[str, Any] | None:
     """NSS version from the shared rpm inventory (#125), or None when the
     inventory is unavailable or has no NSS package.  Multi-arch installs
     (i686 + x86_64) report the highest parsed version."""
-    inv = query_rpm_packages()
+    inv = query_rpm_named(NSS_RPM_PACKAGE_NAMES)
     if not inv.get("available"):
         return None
-    versions = [
-        p["version"] for p in inv["packages"] if p["name"] in NSS_RPM_PACKAGE_NAMES
-    ]
+    versions = [p["version"] for p in inv["packages"]]
     if not versions:
         return None
     parsed = [(parse_nss_version(v), v) for v in versions]
@@ -2803,8 +2801,9 @@ def parse_rpm_header(blob: bytes) -> dict[str, Any]:
     if base + dl > len(blob):
         raise RpmdbError("header blob truncated")
     out: dict[str, Any] = {}
-    for i in range(il):
-        tag, typ, off, _count = struct.unpack_from(">IIII", blob, 8 + 16 * i)
+    # iter_unpack walks the whole index in C; ~1.5x faster than one
+    # unpack_from per entry on a full inventory (#128).
+    for tag, typ, off, _count in struct.iter_unpack(">IIII", blob[8:base]):
         key = _RPMTAG_NAMES.get(tag)
         if key is None:
             continue
@@ -2901,13 +2900,17 @@ def locate_rpmdb() -> tuple[str, Path, str] | None:
     return None
 
 
-def read_rpmdb_sqlite(db_file: Path) -> list[dict[str, Any]]:
-    """Read every installed package header from an rpmdb.sqlite file.
+def _fetch_rpmdb_sqlite(
+    db_file: Path, sql: str, params: tuple[str, ...] = ()
+) -> list[bytes]:
+    """Run one read-only blob query against an rpmdb.sqlite file.
 
-    Opened read-only.  A read-only bind mount of a WAL-mode database
-    cannot open with mode=ro when the -shm file is missing, so retry with
-    immutable=1 in that case only (verified with a ro podman mount).
-    Raises RpmdbError on any failure; never returns a partial list."""
+    A read-only bind mount of a WAL-mode database cannot open with mode=ro
+    when the -shm file is missing, so retry with immutable=1 in that case
+    only (verified with a ro podman mount).  An empty Packages table is
+    never a real install (Oracle Linux 9 ships a stray empty rpmdb.sqlite)
+    and is rejected even when the query itself legitimately matches
+    nothing.  Raises RpmdbError on any failure."""
     try:
         import sqlite3
     except ImportError as e:  # minimal Python builds can lack _sqlite3
@@ -2916,27 +2919,48 @@ def read_rpmdb_sqlite(db_file: Path) -> list[dict[str, Any]]:
 
     uri_path = quote(str(db_file))
     last_err: Exception | None = None
-    for params in ("mode=ro", "mode=ro&immutable=1"):
+    for uri_params in ("mode=ro", "mode=ro&immutable=1"):
         try:
-            con = sqlite3.connect(f"file:{uri_path}?{params}", uri=True, timeout=2)
+            con = sqlite3.connect(f"file:{uri_path}?{uri_params}", uri=True, timeout=2)
         except sqlite3.Error as e:
             last_err = e
-            log.debug("rpmdb: open %s (%s) failed: %s", db_file, params, e)
+            log.debug("rpmdb: open %s (%s) failed: %s", db_file, uri_params, e)
             continue
         try:
-            rows = con.execute("SELECT blob FROM Packages").fetchall()
+            if con.execute("SELECT EXISTS(SELECT 1 FROM Packages)").fetchone()[0] == 0:
+                raise RpmdbError(f"{db_file} holds 0 packages; treating as invalid")
+            return [bytes(blob) for (blob,) in con.execute(sql, params).fetchall()]
         except sqlite3.Error as e:
             last_err = e
-            log.debug("rpmdb: query %s (%s) failed: %s", db_file, params, e)
+            log.debug("rpmdb: query %s (%s) failed: %s", db_file, uri_params, e)
             continue
         finally:
             con.close()
-        if not rows:
-            # An empty database is never a real install: Oracle Linux 9
-            # ships a stray empty rpmdb.sqlite.  Treat it as invalid.
-            raise RpmdbError(f"{db_file} holds 0 packages; treating as invalid")
-        return [parse_rpm_header(bytes(blob)) for (blob,) in rows]
     raise RpmdbError(f"cannot read {db_file}: {last_err}")
+
+
+def read_rpmdb_sqlite(db_file: Path) -> list[dict[str, Any]]:
+    """Read every installed package header from an rpmdb.sqlite file.
+    Raises RpmdbError on any failure; never returns a partial list."""
+    blobs = _fetch_rpmdb_sqlite(db_file, "SELECT blob FROM Packages")
+    return [parse_rpm_header(blob) for blob in blobs]
+
+
+def read_rpmdb_sqlite_named(
+    db_file: Path, names: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    """Read only the headers of packages called `names`, through rpm's own
+    Name index table: a fraction of a millisecond, versus reading and
+    parsing every header (#128).  Raises RpmdbError (e.g. no Name table)
+    so callers can fall back to the full read."""
+    marks = ",".join("?" * len(names))
+    blobs = _fetch_rpmdb_sqlite(
+        db_file,
+        f"SELECT blob FROM Packages WHERE hnum IN "
+        f"(SELECT hnum FROM Name WHERE key IN ({marks}))",
+        names,
+    )
+    return [parse_rpm_header(blob) for blob in blobs]
 
 
 def parse_rpm_qa_nvra(text: str) -> list[dict[str, Any]]:
@@ -2960,7 +2984,8 @@ def parse_rpm_qa_nvra(text: str) -> list[dict[str, Any]]:
     return out
 
 
-_RPM_QA_ARGV = ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n"]
+_RPM_NVRA_QUERYFORMAT = "%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n"
+_RPM_QA_ARGV = ["rpm", "-qa", "--queryformat", _RPM_NVRA_QUERYFORMAT]
 
 
 def _query_rpm_cli(db: tuple[str, Path, str] | None) -> dict[str, Any]:
@@ -3022,6 +3047,66 @@ def query_rpm_packages() -> dict[str, Any]:
     {available: False, reason}.  Tests reset the cache with
     _query_rpm_packages_cached.cache_clear()."""
     return _query_rpm_packages_cached(HOST_PREFIX)
+
+
+def _query_rpm_named_cli(
+    db: tuple[str, Path, str] | None, names: tuple[str, ...]
+) -> dict[str, Any]:
+    """`rpm -q <names>` through the binary, pointed at the host the same
+    way as _query_rpm_cli.  rpm exits non-zero for each name that is not
+    installed, so its exit code alone does not mean failure."""
+    if HOST_PREFIX and db is None:
+        return {"available": False, "reason": f"no rpm database found under {HOST_PREFIX}"}
+    if not shutil.which("rpm"):
+        return {"available": False, "reason": "rpm not on PATH"}
+    argv = ["rpm", "-q", "--queryformat", _RPM_NVRA_QUERYFORMAT, *names]
+    if HOST_PREFIX and db is not None:
+        argv[1:1] = ["--root", HOST_PREFIX, "--dbpath", db[0]]
+    rc, out = _run(argv, timeout=10)
+    pkgs = parse_rpm_qa_nvra(out)
+    if rc != 0 and not pkgs and "is not installed" not in out:
+        return {"available": False, "reason": f"rpm -q failed (rc={rc})"}
+    return {
+        "available": True,
+        "source": "rpm-cli",
+        "db_root": db[0] if db else None,
+        "backend": db[2] if db else None,
+        "packages": pkgs,
+    }
+
+
+def query_rpm_named(names: tuple[str, ...]) -> dict[str, Any]:
+    """Look up specific packages without reading the whole inventory.
+
+    Reuses the full inventory when this process already read it
+    (--scan-packages); otherwise uses the sqlite Name index, or `rpm -q`
+    on CLI-backed databases (bdb on EL8, ndb on SUSE).  Same result shape
+    as query_rpm_packages(), restricted to `names`."""
+    if _query_rpm_packages_cached.cache_info().currsize:
+        return query_rpm_named_from_inventory(names)
+    db = locate_rpmdb()
+    if db is not None and db[2] == "sqlite":
+        try:
+            pkgs = read_rpmdb_sqlite_named(db[1] / "rpmdb.sqlite", names)
+        except RpmdbError as e:
+            log.debug("rpmdb: indexed lookup failed, using full inventory: %s", e)
+            return query_rpm_named_from_inventory(names)
+        return {
+            "available": True,
+            "source": "rpmdb-sqlite",
+            "db_root": db[0],
+            "backend": "sqlite",
+            "packages": pkgs,
+        }
+    return _query_rpm_named_cli(db, names)
+
+
+def query_rpm_named_from_inventory(names: tuple[str, ...]) -> dict[str, Any]:
+    """Fallback for query_rpm_named(): filter the full (cached) inventory."""
+    inv = query_rpm_packages()
+    if not inv.get("available"):
+        return inv
+    return {**inv, "packages": [p for p in inv["packages"] if p["name"] in names]}
 
 
 # Per-family commands for --scan-packages.  The first tuple element is the
