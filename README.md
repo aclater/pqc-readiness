@@ -301,8 +301,13 @@ adds:
   X25519MLKEM768 have no single family.
 - TLS and SSH `protocol` components that link the key-exchange groups
   they can negotiate through `relatedCryptographicAssets`.
-- `certificate` assets keyed by SHA-256 fingerprint once the
-  per-certificate inventory (#108) is available.
+- `certificate` assets keyed by SHA-256 fingerprint, one per unique
+  certificate from `--scan-trust-store` and `--scan-crypto-material`
+  (merged when a certificate is in both). Properties record
+  `certificate:role` (`ca` / `leaf`), `certificate:source`
+  (`trust-store` / `host-filesystem`) and the discovered
+  `crypto_material:path` values. Certificates are a 1.7-only projection;
+  `--cbom-version 1.6` output is unchanged.
 
 Both versions validate against the official schemas bundled under
 `tests/fixtures/cyclonedx/`. NIST IR 8547, the US transition guidance,
