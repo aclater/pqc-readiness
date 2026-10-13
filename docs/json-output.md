@@ -634,7 +634,8 @@ join](#--aggregate-observations-join)).
 | --- | --- | --- |
 | `protocols` | object | `tls`, `ssh` and `ipsec`, each a verdict (below). |
 | `services` | object | Per-service verdicts; `{available: false}` without `--scan-services`. |
-| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`). Empty when there is nothing to fix. |
+| `clients` | object | Per outbound-client process group verdicts (#202); `{available: false}` without `--scan-processes`. |
+| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`), and every such client group (`client:<exe>:<state>`). Empty when there is nothing to fix. |
 
 A verdict (each `protocols.*` entry, and each service item):
 
@@ -670,9 +671,41 @@ Each `services.items[]` entry adds to the verdict keys:
 | `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, or a Go binary using its own default; only those count in `gaps` and `pqc-020`. |
 | `listeners` | list[string] | JSON paths of the `service_crypto_linkage.listeners[]` entries behind this item. |
 
+`clients` (#202): one verdict per `process_crypto_linkage.groups[]` entry
+with at least one process in the `client` role (outbound-only TLS clients a
+service scan can't see). Listening servers are covered by `services`; idle
+processes negotiate nothing. A Go binary is judged on its own crypto/tls
+default: Go 1.24+ is capable, and `GODEBUG tlsmlkem=0` (environment, or
+`DefaultGODEBUG` from an old `go` line in go.mod) makes it
+`capable_not_configured`; older Go is `not_capable`. Otherwise the group
+negotiates with the libraries it maps under the host's TLS configuration and
+is not capable when any of them is known not to be, the same judgement the
+`pqc-011` / `pqc-013` failure findings use (`library_capable`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | `--scan-processes` ran (`process_crypto_linkage.available`). |
+| `items` | list[object] | One verdict per client process group, ordered by state (`deployed` first) then client process count. |
+| `by_state` | object | Client group count per `state`. |
+| `client_processes_by_state` | object | Client process count per `state`. |
+| `differing_from_host` | int | Items with `follows_host_default: false`. |
+| `groups_omitted_by_scan` | int | Optional. Process groups the scan dropped at its group cap (`process_crypto_linkage.omitted_groups`); they have no verdict. |
+
+Each `clients.items[]` entry adds to the verdict keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `exe` | string | Executable path of the group. |
+| `process` | string | Process name. |
+| `systemd_units` | list[string] | Units of the group's processes. |
+| `client_processes` | int | Processes in the group in the `client` role. |
+| `crypto_families` | list[string] | Library families the group maps, plus `go`. |
+| `follows_host_default` | bool | The group reached the host's TLS verdict through the host default; false for a Go binary (its own default) or a group whose libraries give a different state. Only groups with `false` count in `gaps` and `pqc-020`. |
+| `group` | string | JSON path of the `process_crypto_linkage.groups[]` entry. |
+
 SARIF / NDJSON: rule `pqc-020-pqc-capable-not-configured` reports one
-host-level result listing every protocol, and every service that differs
-from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
+host-level result listing every protocol, and every service and client
+group that differs from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
 when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`).
 ### `boot_chain`
 
@@ -1022,7 +1055,7 @@ from the scanner's are not merged.
 | `host_fs_detections_unavailable_host_count` | object | Hosts on which each detection was flagged `unavailable_in_container`. |
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
-| `pqc_deployment_gap` | object | Capability vs configuration across the fleet (#107): `hosts_by_protocol_state` (for `tls`, `ssh`, `ipsec`: host count per state), `services_by_state` (service count per state across all hosts), and `hosts_with_gap` (hosts with at least one protocol or service in `capable_not_configured` / `configured_not_capable`). Reports without their own `pqc_deployment_gap` are evaluated from their fields. CSV rows: `pqc_deployment_gap_<protocol>`, `pqc_deployment_gap_services`, `pqc_deployment_gap_hosts_with`. |
+| `pqc_deployment_gap` | object | Capability vs configuration across the fleet (#107): `hosts_by_protocol_state` (for `tls`, `ssh`, `ipsec`: host count per state), `services_by_state` (service count per state across all hosts), `client_groups_by_state` / `client_processes_by_state` (outbound-client process groups from `--scan-processes`, and their client process counts, per state; #202), and `hosts_with_gap` (hosts with at least one protocol, service or client group in `capable_not_configured` / `configured_not_capable`). Reports without their own `pqc_deployment_gap` are evaluated from their fields. CSV rows: `pqc_deployment_gap_<protocol>`, `pqc_deployment_gap_services`, `pqc_deployment_gap_client_groups`, `pqc_deployment_gap_client_processes`, `pqc_deployment_gap_hosts_with`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
 | `observations` | object | Present only with `--observations FILE`: endpoint observations joined to the hosts and listening services in the reports (#149). See [`--aggregate` observations join](#--aggregate-observations-join). |
 

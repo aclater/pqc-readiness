@@ -400,6 +400,9 @@
     "per_algo": {},
     "pkcs11_modules": [],
     "pqc_deployment_gap": {
+      "clients": {
+        "available": false
+      },
       "gaps": [],
       "protocols": {
         "ipsec": {
