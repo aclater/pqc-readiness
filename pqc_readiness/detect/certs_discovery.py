@@ -463,32 +463,36 @@ def _attach_public_halves(
     certificates: dict[str, dict[str, Any]],
     file_certs: dict[str, list[str]],
 ) -> None:
-    """Give each key its algorithm/size from a public half: a leaf
-    certificate in the same file (definitive) or, failing that, the
-    single leaf certificate whose file has the same stem (heuristic, e.g.
-    /etc/pki/tls/private/localhost.key <-> /etc/pki/tls/certs/localhost.crt)."""
-    by_stem: dict[str, set[str]] = {}
+    """Give each key its algorithm/size from a public half: a certificate
+    in the same file (definitive) or, failing that, a certificate whose
+    file has the same stem (heuristic, e.g. /etc/pki/tls/private/web.key
+    <-> /etc/pki/tls/certs/web.crt).
+
+    Any certificate qualifies, not just leaves: `openssl req -x509` marks
+    self-signed service certificates CA:TRUE.  Leaves are preferred when a
+    file or stem holds several certificates; an ambiguous stem gives no
+    public half rather than a guess."""
+
+    def pick(shas: list[str]) -> str | None:
+        unique = list(dict.fromkeys(shas))
+        leaves = [s for s in unique if certificates[s]["role"] == "leaf"]
+        if len(leaves) == 1:
+            return leaves[0]
+        return unique[0] if len(unique) == 1 else None
+
+    by_stem: dict[str, list[str]] = {}
     for where, shas in file_certs.items():
-        for sha in shas:
-            if certificates[sha]["role"] == "leaf":
-                by_stem.setdefault(Path(where).stem, set()).add(sha)
+        by_stem.setdefault(Path(where).stem, []).extend(shas)
     for key in keys:
-        same_file = [
-            s
-            for s in file_certs.get(key["path"], [])
-            if certificates[s]["role"] == "leaf"
-        ]
-        if same_file:
-            sha, source = same_file[0], "certificate in the same file"
-        else:
-            stem_matches = by_stem.get(Path(key["path"]).stem, set())
-            if len(stem_matches) != 1:
-                key["public_half"] = None
-                continue
-            sha, source = (
-                next(iter(stem_matches)),
-                "certificate with the same file stem (heuristic)",
-            )
+        in_file = file_certs.get(key["path"], [])
+        sha = pick(in_file) if in_file else None
+        source = "certificate in the same file"
+        if sha is None and not in_file:
+            sha = pick(by_stem.get(Path(key["path"]).stem, []))
+            source = "certificate with the same file stem (heuristic)"
+        if sha is None:
+            key["public_half"] = None
+            continue
         cert = certificates[sha]
         key["public_half"] = {
             "certificate_sha256": sha,

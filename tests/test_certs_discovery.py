@@ -296,6 +296,32 @@ def test_ambiguous_stem_gives_no_public_half(tmp_path) -> None:
     assert k["public_half"] is None
 
 
+def test_self_signed_ca_true_service_cert_pairs_with_its_key(tmp_path) -> None:
+    """`openssl req -x509` marks self-signed service certs CA:TRUE; the
+    key must still get its public half (found on real VMs, #108)."""
+    cert = build_cert(
+        subject="pq.example", issuer="pq.example", basic_constraints_ca=True
+    )
+    _write(tmp_path / "certs/pq.crt", to_pem(cert), 0o644)
+    key_pem, _ = fake_key_pem()
+    _write(tmp_path / "private/pq.key", key_pem)
+    (k,) = _scan(tmp_path)["private_keys"]
+    assert k["public_half"]["key_algorithm"] == "RSA"
+    assert k["public_half"]["source"].endswith("(heuristic)")
+
+
+def test_combined_file_prefers_the_leaf_over_its_chain(tmp_path) -> None:
+    leaf = build_cert(subject="svc.example", spki=_ec_spki("1.3.132.0.34"))
+    ca = build_cert(
+        subject="Chain CA", issuer="Chain CA", basic_constraints_ca=True, serial=99
+    )
+    key_pem, _ = fake_key_pem("EC")
+    _write(tmp_path / "svc.pem", to_pem(ca) + to_pem(leaf) + key_pem)
+    (k,) = _scan(tmp_path)["private_keys"]
+    assert k["public_half"]["key_algorithm"] == "EC P-384"
+    assert k["public_half"]["source"] == "certificate in the same file"
+
+
 def test_private_key_permissions_and_encryption(tmp_path) -> None:
     open_pem, _ = fake_key_pem("RSA")
     _write(tmp_path / "open.key", open_pem, 0o644)
