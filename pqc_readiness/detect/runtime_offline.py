@@ -79,6 +79,7 @@ NOT_APPLICABLE_FIELDS: tuple[str, ...] = (
     "cnsa_2_0",
     "runtime_environment",
     "service_crypto_linkage",
+    "process_crypto_linkage",
     "host_fs_detections_unavailable",
     "benchmark",
     "benchmark_tls_handshake",
@@ -94,6 +95,7 @@ _INCOMPATIBLE_FLAGS: tuple[tuple[str, str], ...] = (
     ("bench", "--bench"),
     ("bench_tls", "--bench-tls"),
     ("scan_services", "--scan-services"),
+    ("scan_processes", "--scan-processes"),
     # Secure Boot / TPM / lockdown are firmware and kernel state (#112).
     ("scan_boot_chain", "--scan-boot-chain"),
     ("check", "--check"),
@@ -325,6 +327,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         crypto_material=crypto_material,
         runtime_environment=dict(host_state),
         service_crypto_linkage=dict(host_state),
+        process_crypto_linkage=dict(host_state),
         packages=packages,
         signing_keys=signing_keys,
         os_release=os_release,

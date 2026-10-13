@@ -69,6 +69,7 @@ from .detect.runtime import (  # noqa: F401
     parse_cgroup_for_container,
 )
 from .detect.runtime_offline import collect_offline_report  # noqa: F401
+from .detect.runtime_processes import scan_processes  # noqa: F401
 from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,
@@ -442,6 +443,7 @@ __all__ = [
     "parse_certificate",
     "scan_crypto_material",
     "scan_packages",
+    "scan_processes",
     "scan_services",
     "scan_trust_store",
     "set_host_prefix",

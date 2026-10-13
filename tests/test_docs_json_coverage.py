@@ -99,6 +99,7 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "_process_details": ("`service_crypto_linkage`",),
     "_library_details": ("`service_crypto_linkage`",),
     "go_tls_kex_default": ("`service_crypto_linkage`",),
+    "scan_processes": ("`process_crypto_linkage`",),
     "_scan_rpm_packages": ("`packages`",),
     "classify_bundled_crypto": ("`packages`",),
     "scan_signing_keys": ("`signing_keys`",),
