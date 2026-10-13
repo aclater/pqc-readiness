@@ -135,3 +135,15 @@ def test_weekly_cadence_claims_reference_scheduled_workflow() -> None:
         "README tier rows claim weekly validation without naming a "
         f"workflow that has a schedule: trigger. Offending rows: {offenders}"
     )
+
+
+def test_el8_cadence_names_its_per_pr_workflow() -> None:
+    """EL8 sits in the Tier 2 row but is validated per PR, not weekly
+    (#85). The row must say so and name ci-ubi8.yml, so the table never
+    again understates (weekly) or overstates (bare metal) EL8 coverage."""
+    rows = {tier: (distros, cadence) for tier, distros, cadence in _tier_rows()}
+    distros, cadence = rows["2"]
+    assert "RHEL 8" in distros
+    assert "ci-ubi8.yml" in cadence
+    assert "every PR" in cadence
+    assert "not a booted EL8 host" in cadence

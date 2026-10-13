@@ -202,7 +202,7 @@ CI or in maintainer testing — not a support contract.
 | Tier | Distros | Validation cadence |
 | --- | --- | --- |
 | **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every PR runs `pytest` + `ruff` + `mypy --strict` on the GitHub-hosted `ubuntu-latest` runner under CPython 3.11 / 3.12 / 3.13 (`.github/workflows/ci.yml`); per-OS validation against the actual Tier 1 images runs out-of-band — see *"What 'every change' actually means"* below. |
-| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Weekly — `.github/workflows/ci-tier2-weekly.yml` runs the full `pytest` suite inside each distro's stock container image every Monday (non-blocking; fixes accepted). EL8 is additionally covered every PR: `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the resulting image. |
+| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Weekly — `.github/workflows/ci-tier2-weekly.yml` runs the full `pytest` suite inside each distro's stock container image every Monday (non-blocking; fixes accepted). **EL8 (RHEL 8, Rocky 8, AlmaLinux 8) is the exception:** it is not in the weekly matrix but runs on every PR instead — `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the UBI 8 image (a container image, not a booted EL8 host). EL8 stays Tier 2 because stock EL8 cloud images need a manual Python prerequisite (see *RHEL 8 / Rocky 8 / AlmaLinux 8 specifics*). |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
 Cross-distro probing uses a single `detect_os()` source of truth that
@@ -255,8 +255,8 @@ caveat in the verdict; the inventory probe still works. A
 ready-to-deploy image is shipped at
 [`Containerfile.ubi8`](Containerfile.ubi8) (build via
 `make container-ubi8`); the existing `--host-mount` DaemonSet pattern
-is identical to the UBI 10 image. CI validates every push against the
-UBI 8 image.
+is identical to the UBI 10 image. CI runs the full test suite inside the
+UBI 8 image on every PR and push to `main` (`ci-ubi8.yml`).
 
 Out of scope for this tool: Windows / WSL, BSD, musl-specific behaviour
 beyond Alpine. macOS support is best-effort and limited to the paths
