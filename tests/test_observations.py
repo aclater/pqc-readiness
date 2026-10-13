@@ -740,7 +740,8 @@ def test_jsonl_bare_carriage_return_is_one_bad_record(tmp_path: Path) -> None:
     good = json.dumps(_record(observation_schema_version="1.0", fqdn="a.example"))
     bad = good.replace("X25519MLKEM768", "X25519MLKEM768\r")
     f = tmp_path / "obs.jsonl"
-    f.write_text("\n".join([good, bad, good]) + "\n", newline="")
+    # write_bytes: Path.write_text(newline=) needs Python 3.10; CI runs 3.9.
+    f.write_bytes(("\n".join([good, bad, good]) + "\n").encode())
     loaded = obs.load_observations(f)
     assert len(loaded.records) == 2
     assert [i["record"] for i in loaded.invalid] == [2]
