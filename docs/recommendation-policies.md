@@ -41,7 +41,8 @@ not require touching the engine.
   - FIPS 203 (ML-KEM): https://csrc.nist.gov/pubs/fips/203/final
   - FIPS 204 (ML-DSA): https://csrc.nist.gov/pubs/fips/204/final
   - FIPS 205 (SLH-DSA): https://csrc.nist.gov/pubs/fips/205/final
-  - NIST IR 8547: https://csrc.nist.gov/pubs/ir/8547/final
+  - NIST IR 8547 (initial public draft, 12 Nov 2024; no final version):
+    https://csrc.nist.gov/pubs/ir/8547/ipd
   - NIST SP 800-56C Rev. 2:
     https://csrc.nist.gov/pubs/sp/800/56/c/r2/final
   - NIST SP 800-227: https://csrc.nist.gov/pubs/sp/800/227/final
