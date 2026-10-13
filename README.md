@@ -102,12 +102,21 @@ versions.
 | `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
 | Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
 
-The rpm database is read in-process on SQLite-backed systems (EL9,
-EL10, Fedora, CentOS Stream, Oracle Linux 9, Amazon Linux 2023). Single
-lookups such as the NSS version use rpm's own `Name` index.
-Berkeley DB (EL8, openSUSE Leap 15.6) and ndb (SLES 15, Leap 16,
-Tumbleweed) databases still go through `rpm`, pointed at the host with
-`--root` under `--host-mount`. The database format is detected from the
+The rpm database is read in-process, without the `rpm` binary, in all
+three formats rpm uses:
+- **SQLite:** EL9, EL10, Fedora, CentOS Stream, Oracle Linux 9 and
+  Amazon Linux 2023. Single lookups such as the NSS version use rpm's own
+  `Name` index.
+- **Berkeley DB:** EL8 and openSUSE Leap 15.6 cloud images (#134).
+- **ndb:** SLES 15, Leap 16 and Tumbleweed (#134).
+
+On the Berkeley DB and ndb databases copied from UBI 8, Rocky 8,
+AlmaLinux 8, SLES 15 SP6/SP7, Leap 16 and Tumbleweed images, a full
+inventory reads in 2–8 ms and matches `rpm -qa` exactly; `rpm -qa` takes
+47–68 ms inside those images. `rpm` is used only when a database can't be
+read directly, and is then pointed at the host with `--root` under
+`--host-mount`. So a container no longer depends on its own `rpm` being
+able to read the host's format. The database format is detected from the
 file contents, never assumed from the distro version, because hosts
 upgraded in place can keep an older format.
 
@@ -285,7 +294,7 @@ Flags below are grouped by purpose.
 | `--seconds N` | Override per-operation benchmark duration. Larger values reduce variance at the cost of run time. |
 | `--scan-trust-store` | Walk system trust-store directories and classify every certificate (bundles included) as PQC, hybrid composite, or classical by reading its algorithm OIDs directly; no `openssl` binary needed. |
 | `--trust-store-max-certs N` | Cap on unique certificates classified by `--scan-trust-store` (default 500). When the cap is hit, `trust_store.truncated` is `true` and the text, CBOM, and SARIF outputs say how many certificates were not inspected. |
-| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; `rpmdb.sqlite` is read in-process, with `rpm -qa` as the fallback for Berkeley DB / ndb databases), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
+| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
 | `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 
 ### Recommendation engine
