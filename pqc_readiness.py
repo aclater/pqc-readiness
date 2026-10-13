@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import logging
 import os
 import platform
 import re
@@ -60,7 +61,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Iterator
+
+# Module logger.  Silent by default (WARNING); --debug routes DEBUG to
+# stderr so field operators can tell "tool absent" from "tool present but
+# read/parse failed" without reading the source.
+log = logging.getLogger("pqc-readiness")
 
 SCRIPT_VERSION = "2.0.0"
 SCHEMA_VERSION = "1.1"
@@ -476,9 +482,11 @@ class Report:
 def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, (p.stdout or "") + (p.stderr or "")
     except (subprocess.TimeoutExpired, OSError) as e:
+        log.debug("run %s failed: %s", cmd, e)
         return 127, str(e)
+    log.debug("run %s -> rc=%d", cmd, p.returncode)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
 # openssl version output is constant for the process lifetime; cache to
@@ -526,7 +534,8 @@ def parse_cpuinfo_flags(text: str) -> set[str]:
 def linux_cpu_flags() -> set[str]:
     try:
         return parse_cpuinfo_flags(host_path("/proc/cpuinfo").read_text())
-    except OSError:
+    except OSError as e:
+        log.debug("linux_cpu_flags: cannot read /proc/cpuinfo: %s", e)
         return set()
 
 
@@ -560,8 +569,8 @@ def cpu_model() -> str:
             for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if line.startswith(("model name", "Hardware", "cpu model", "machine")):
                     return line.split(":", 1)[1].strip()
-        except OSError:
-            pass
+        except OSError as e:
+            log.debug("cpu_model: cannot read /proc/cpuinfo: %s", e)
     if is_macos():
         m = _sysctl("machdep.cpu.brand_string")
         if m:
@@ -577,20 +586,21 @@ def cpu_freq_mhz() -> float:
         ):
             try:
                 return int(Path(path).read_text().strip()) / 1000.0
-            except (OSError, ValueError):
+            except (OSError, ValueError) as e:
+                log.debug("cpu_freq_mhz: cannot read %s: %s", path, e)
                 continue
         try:
             for line in host_path("/proc/cpuinfo").read_text().splitlines():
                 if "cpu MHz" in line:
                     return float(line.split(":", 1)[1].strip())
-        except OSError:
-            pass
+        except OSError as e:
+            log.debug("cpu_freq_mhz: cannot read /proc/cpuinfo: %s", e)
     if is_macos():
         v = _sysctl("hw.cpufrequency_max")
         try:
             return float(v) / 1_000_000 if v else 0.0
-        except ValueError:
-            pass
+        except ValueError as e:
+            log.debug("cpu_freq_mhz: unparseable hw.cpufrequency_max %r: %s", v, e)
     return 0.0
 
 
@@ -611,13 +621,15 @@ def core_counts() -> tuple[int, int]:
                     seen.add((cur_phys, cur_core))
                     cur_phys = cur_core = None
             physical = len(seen) or logical
-        except OSError:
+        except OSError as e:
+            log.debug("core_counts: cannot read /proc/cpuinfo: %s", e)
             physical = logical
     elif is_macos():
         try:
             physical = int(_sysctl("hw.physicalcpu") or "0") or logical
             logical = int(_sysctl("hw.logicalcpu") or str(logical))
-        except ValueError:
+        except ValueError as e:
+            log.debug("core_counts: unparseable hw.physicalcpu/hw.logicalcpu: %s", e)
             physical = logical
     return logical, physical
 
@@ -633,13 +645,13 @@ def memory_info() -> tuple[float, float]:
                     total = int(v) / 1024 / 1024
                 elif k == "MemAvailable":
                     avail = int(v) / 1024 / 1024
-        except OSError:
-            pass
+        except OSError as e:
+            log.debug("memory_info: cannot read /proc/meminfo: %s", e)
     elif is_macos():
         try:
             total = int(_sysctl("hw.memsize") or "0") / (1024**3)
-        except ValueError:
-            pass
+        except ValueError as e:
+            log.debug("memory_info: unparseable hw.memsize: %s", e)
         rc, out = _run(["vm_stat"], timeout=3)
         if rc == 0:
             page = 16384
@@ -896,7 +908,8 @@ def detect_kernel_crypto_hw() -> list[str]:
         return []
     try:
         text = host_path("/proc/crypto").read_text()
-    except OSError:
+    except OSError as e:
+        log.debug("detect_kernel_crypto_hw: cannot read /proc/crypto: %s", e)
         return []
     hw_suffixes = (
         "-ni",
@@ -928,8 +941,8 @@ def detect_ktls() -> bool | None:
         mods = host_path("/proc/modules").read_text()
         if "tls " in mods:
             return True
-    except OSError:
-        pass
+    except OSError as e:
+        log.debug("detect_ktls: cannot read /proc/modules: %s", e)
     if host_path("/sys/module/tls").exists():
         return True
     rc, out = _run(["modinfo", "tls"], timeout=3)
@@ -969,8 +982,8 @@ def detect_fips_mode() -> dict[str, Any]:
         info["kernel"] = (
             host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
         )
-    except OSError:
-        pass
+    except OSError as e:
+        log.debug("detect_fips_mode: cannot read /proc/sys/crypto/fips_enabled: %s", e)
     if shutil.which("openssl"):
         rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
         if rc == 0:
@@ -1595,7 +1608,8 @@ def _detect_os_impl() -> dict[str, Any]:
         p = host_path(candidate)
         try:
             text = p.read_text()
-        except OSError:
+        except OSError as e:
+            log.debug("detect_os: cannot read %s: %s", candidate, e)
             continue
         out = parse_os_release(text)
         out["package_manager"] = _resolve_package_manager(out["family"])
@@ -1614,7 +1628,8 @@ def _detect_os_impl() -> dict[str, Any]:
     if host_path("/etc/debian_version").exists():
         try:
             deb_ver: str | None = host_path("/etc/debian_version").read_text().strip()
-        except OSError:
+        except OSError as e:
+            log.debug("detect_os: cannot read /etc/debian_version: %s", e)
             deb_ver = None
         return {
             "family": "debian",
@@ -1781,13 +1796,14 @@ def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, An
     if rh.exists():
         try:
             info["redhat_release"] = parse_redhat_release(rh.read_text())
-        except OSError:
-            pass
+        except OSError as e:
+            log.debug("detect_kernel_info: cannot read /etc/redhat-release: %s", e)
     try:
         info["proc_crypto_pqc"] = parse_proc_crypto_pqc(
             host_path("/proc/crypto").read_text()
         )
-    except OSError:
+    except OSError as e:
+        log.debug("detect_kernel_info: cannot read /proc/crypto: %s", e)
         info["proc_crypto_pqc"] = []
     note = host_fs_unavailable_note(
         "Kernel info detection",
@@ -2003,8 +2019,8 @@ def parse_proc_crypto_cnsa(text: str) -> dict[str, Any]:
             try:
                 if int(b.get("max keysize", "0")) >= 32:
                     aes_256 = True
-            except ValueError:
-                pass
+            except ValueError as e:
+                log.debug("parse_proc_crypto_cnsa: unparseable max keysize %r for %s: %s", b.get("max keysize"), name, e)
         if name == "sha384" and sha_384_hw is None:
             if any(s in driver for s in _HW_DRIVER_SUFFIXES):
                 sha_384_hw = driver
@@ -2173,7 +2189,8 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
         for cert in list(p.rglob("*.pem")) + list(p.rglob("*.crt")):
             try:
                 key = str(cert.resolve())
-            except OSError:
+            except OSError as e:
+                log.debug("scan_trust_store: cannot resolve %s: %s", cert, e)
                 continue
             if key in seen:
                 continue
@@ -2287,7 +2304,8 @@ def detect_runtime_environment() -> dict[str, Any]:
         return {"environment": "container", "evidence": "/run/.containerenv present"}
     try:
         cg = Path("/proc/1/cgroup").read_text()
-    except OSError:
+    except OSError as e:
+        log.debug("detect_runtime_environment: cannot read /proc/1/cgroup: %s", e)
         cg = ""
     marker = parse_cgroup_for_container(cg)
     if marker:
@@ -2491,7 +2509,21 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up an in-memory list of per-host reports into a fleet view.
+
+    Convenience wrapper over `_aggregate_iter` for tests and programmatic
+    callers that already hold the reports in memory.  `run_aggregator`
+    streams files through `_aggregate_iter` directly instead.
+    """
+    return _aggregate_iter(reports)
+
+
+def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Roll up many per-host reports into a single fleet view.
+
+    Consumes `reports` one at a time and keeps only counters, so memory
+    is O(rollup size) rather than O(fleet size) — a 100K-host fleet does
+    not need every parsed report resident at once (#88).
 
     Accepts only reports with matching schema_version; other entries are
     counted as `skipped_schema_mismatch` and listed by file (caller
@@ -2507,10 +2539,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     """
     from collections import Counter
 
-    out: dict[str, Any] = {
-        "total_hosts": len(reports),
-        "schema_version": SCHEMA_VERSION,
-    }
+    total_hosts = 0
     by_arch: Counter[str] = Counter()
     by_os: Counter[str] = Counter()
     by_isa: Counter[str] = Counter()
@@ -2521,6 +2550,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     detections_unavailable: Counter[str] = Counter()
     replace_required = 0
     for r in reports:
+        total_hosts += 1
         by_arch[r.get("arch", "?")] += 1
         kinfo = r.get("kernel_info") or {}
         by_os[kinfo.get("os_release_id") or "?"] += 1
@@ -2545,6 +2575,10 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
                 detections_unavailable[det_key] += 1
         if r.get("replace_required"):
             replace_required += 1
+    out: dict[str, Any] = {
+        "total_hosts": total_hosts,
+        "schema_version": SCHEMA_VERSION,
+    }
     out["by_arch"] = dict(by_arch)
     out["by_os_release_id"] = dict(by_os)
     out["by_isa_tier"] = dict(by_isa)
@@ -2585,16 +2619,27 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
-def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
-    """Read every *.json under DIR, validate schema, return (output, exit_code).
-    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view)."""
-    reports: list[dict[str, Any]] = []
-    skipped: list[dict[str, str]] = []
+def _iter_aggregator_reports(
+    dir_path: Path, skipped: list[dict[str, str]]
+) -> Iterator[dict[str, Any]]:
+    """Yield each valid report under DIR one at a time, parsing lazily.
+
+    Unreadable, non-object and schema-mismatched files are appended to
+    `skipped` (in sorted path order) instead of being yielded.  Only the
+    sorted path list is held in memory, never the parsed reports."""
     for fp in sorted(dir_path.glob("**/*.json")):
         try:
             data = json.loads(fp.read_text())
         except (OSError, json.JSONDecodeError) as e:
             skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
+            continue
+        if not isinstance(data, dict):
+            skipped.append(
+                {
+                    "file": str(fp),
+                    "reason": f"unreadable: expected a JSON object, got {type(data).__name__}",
+                }
+            )
             continue
         sv = data.get("schema_version")
         if sv != SCHEMA_VERSION:
@@ -2605,8 +2650,17 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
                 }
             )
             continue
-        reports.append(data)
-    rollup = aggregate_reports(reports)
+        yield data
+
+
+def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
+    """Read every *.json under DIR, validate schema, return (output, exit_code).
+    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view).
+
+    Files are parsed and reduced one at a time (#88), so peak memory does
+    not grow with fleet size."""
+    skipped: list[dict[str, str]] = []
+    rollup = _aggregate_iter(_iter_aggregator_reports(dir_path, skipped))
     rollup["skipped"] = skipped
     if output == "csv":
         return aggregate_to_csv(rollup), 0
@@ -3160,7 +3214,8 @@ def _tls_byte_counting_proxy(
                 upstream = socket.create_connection(
                     ("127.0.0.1", target_port), timeout=2.0
                 )
-            except OSError:
+            except OSError as e:
+                log.debug("tls proxy: upstream connect to port %d failed: %s", target_port, e)
                 client.close()
                 continue
             client.settimeout(None)
@@ -3193,12 +3248,12 @@ def _tls_byte_counting_proxy(
             finally:
                 try:
                     client.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug("tls proxy: client shutdown failed: %s", e)
                 try:
                     upstream.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
+                except OSError as e:
+                    log.debug("tls proxy: upstream shutdown failed: %s", e)
                 client.close()
                 upstream.close()
             accumulator["total"] += conn_bytes
@@ -3365,15 +3420,15 @@ def _tls_bench_one_suite(
             try:
                 server.kill()
                 server.wait(timeout=2)
-            except OSError:
-                pass
-        except OSError:
-            pass
+            except OSError as e:
+                log.debug("tls bench: s_server kill failed: %s", e)
+        except OSError as e:
+            log.debug("tls bench: s_server terminate failed: %s", e)
         if server.stderr:
             try:
                 server.stderr.close()
-            except OSError:
-                pass
+            except OSError as e:
+                log.debug("tls bench: closing s_server stderr failed: %s", e)
     if not times:
         return {"error": "no successful handshakes"}
     total = sum(times)
@@ -3537,6 +3592,7 @@ def memory_bandwidth_probe() -> tuple[float | None, str]:
         gb_per_s = bytes_moved / elapsed / (1024**3)
         return round(gb_per_s, 1), "STREAM-triad (numpy)"
     except (MemoryError, OSError) as e:
+        log.debug("memory_bandwidth_probe: STREAM-triad failed: %s", e)
         return None, f"probe failed: {e}"
 
 
@@ -6294,6 +6350,46 @@ def render_markdown(r: Report) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Exit code when --output FILE cannot be written after the probe ran.
+# Distinct from 0-4 so a write failure is never mistaken for a verdict.
+EXIT_OUTPUT_WRITE_FAILED = 5
+
+
+def _validate_output_path(
+    ap: argparse.ArgumentParser, output: str | None
+) -> Path | None:
+    """Fail fast (argparse usage error, exit 2) before any probing when
+    --output FILE cannot possibly be written.  The parent directory is
+    deliberately never created: a typo should not leave stray directory
+    trees on a customer host."""
+    if not output:
+        return None
+    path = Path(output)
+    parent = path.parent
+    if not parent.is_dir():
+        ap.error(f"--output: parent directory {str(parent)!r} does not exist")
+    if path.is_dir():
+        ap.error(f"--output: {output!r} is a directory")
+    if not os.access(parent, os.W_OK):
+        ap.error(f"--output: parent directory {str(parent)!r} is not writable")
+    return path
+
+
+def _emit(text: str, path: Path | None) -> bool:
+    """Write report text to stdout, or to --output FILE when given.
+    Returns False (after reporting on stderr) if the file write fails."""
+    if path is None:
+        print(text)
+        return True
+    try:
+        path.write_text(text + "\n")
+    except OSError as e:
+        print(f"--output: cannot write {str(path)!r}: {e}", file=sys.stderr)
+        return False
+    log.debug("wrote report to %s", path)
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -6342,8 +6438,18 @@ def main() -> int:
             "behavior."
         ),
     )
-    ap.add_argument(
+    dest = ap.add_mutually_exclusive_group()
+    dest.add_argument(
         "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
+    )
+    dest.add_argument(
+        "--output",
+        metavar="FILE",
+        help=(
+            "write the report (any format, incl. --aggregate/--recommend/"
+            "--ansible) to FILE instead of stdout; the parent directory "
+            "must already exist.  Mutually exclusive with --save"
+        ),
     )
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
@@ -6413,11 +6519,28 @@ def main() -> int:
         help="output format for --aggregate (default: json)",
     )
     ap.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "log detection diagnostics (failed reads, subprocess exit "
+            "codes) to stderr; report output on stdout is unchanged"
+        ),
+    )
+    ap.add_argument(
         "--version",
         action="version",
         version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})",
     )
     args = ap.parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format="%(name)s: %(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+    out_path = _validate_output_path(ap, args.output)
+
+    def emit(text: str) -> bool:
+        return _emit(text, out_path)
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
     if args.aggregate:
@@ -6426,8 +6549,7 @@ def main() -> int:
             print(f"--aggregate: {d} is not a directory", file=sys.stderr)
             return 2
         body, code = run_aggregator(d, output=args.aggregate_format)
-        print(body)
-        return code
+        return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
 
     global HOST_PREFIX
     if args.host_mount:
@@ -6435,6 +6557,7 @@ def main() -> int:
 
     C.configure(
         sys.stdout.isatty()
+        and out_path is None
         and not args.no_color
         and not args.json
         and not args.markdown
@@ -6484,7 +6607,8 @@ def main() -> int:
     if is_linux():
         try:
             proc_crypto_text = host_path("/proc/crypto").read_text()
-        except OSError:
+        except OSError as e:
+            log.debug("main: cannot read /proc/crypto for CNSA 2.0 evaluation: %s", e)
             proc_crypto_text = None
     cnsa_2_0 = evaluate_cnsa_2_0(osinfo, proc_crypto_text)
     trust_store_info: dict[str, Any] = {}
@@ -6591,31 +6715,34 @@ def main() -> int:
         # Ansible's set_fact / register patterns expect a top-level
         # ansible_facts wrapper.  The task must always exit 0 or Ansible
         # will mark the play as failed regardless of the report content.
-        print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
+        if not emit(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2)):
+            return EXIT_OUTPUT_WRITE_FAILED
         return 0
     if args.recommend:
         rec = recommend(r, policy=args.policy, role=args.role or "tls-server")
         if args.json:
-            print(json.dumps(rec, indent=2))
+            rec_text = json.dumps(rec, indent=2)
         elif args.markdown:
-            print(render_recommendation_markdown(r, rec))
+            rec_text = render_recommendation_markdown(r, rec)
         else:
-            print(render_recommendation_text(r, rec))
-        return 0
+            rec_text = render_recommendation_text(r, rec)
+        return 0 if emit(rec_text) else EXIT_OUTPUT_WRITE_FAILED
     if args.json:
-        print(json.dumps(asdict(r), indent=2))
+        report_text = json.dumps(asdict(r), indent=2)
     elif args.cbom:
-        print(render_cbom(r))
+        report_text = render_cbom(r)
     elif args.spdx:
-        print(render_spdx(r))
+        report_text = render_spdx(r)
     elif args.sarif:
-        print(render_sarif(r))
+        report_text = render_sarif(r)
     elif args.markdown:
-        print(render_markdown(r))
+        report_text = render_markdown(r)
     elif args.quiet:
-        print(r.verdict)
+        report_text = r.verdict
     else:
-        print(render_text(r))
+        report_text = render_text(r)
+    if not emit(report_text):
+        return EXIT_OUTPUT_WRITE_FAILED
 
     if args.fips_strict and r.fips.get("fence_check_active") and not r.fips.get(
         "algorithm_fence_engaged"
