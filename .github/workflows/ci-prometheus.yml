@@ -23,7 +23,15 @@ jobs:
           python-version: "3.13"
 
       - name: Render metrics on the runner
-        run: python -m pqc_readiness --prometheus --scan-trust-store --scan-packages --output metrics.prom
+        # Exit codes 0-3 are the readiness verdict (the runner is usually
+        # "Marginal"), not errors; 4 and 5 (gate failure, unwritable
+        # --output) or anything else fail the step.
+        run: |
+          set +e
+          python -m pqc_readiness --prometheus --scan-trust-store --scan-packages --output metrics.prom
+          rc=$?
+          if [ "$rc" -gt 3 ]; then echo "pqc-readiness exited $rc"; exit 1; fi
+          test -s metrics.prom
 
       - name: promtool check metrics
         # Pinned image tag (verified as the current Prometheus release).
