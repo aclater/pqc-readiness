@@ -40,6 +40,7 @@ pytestmark = pytest.mark.skipif(
 TOP_LEVEL = "Top-level keys"
 RECOMMEND = "`--recommend --json` document"
 RECORD = "Recommendation record"
+POLICY_SOURCES = "Policy sources"
 AGGREGATE = "`--aggregate` rollup"
 
 # Producing function -> doc section(s) its keys must appear in.
@@ -259,7 +260,16 @@ def test_every_recommend_key_path_is_documented(role: str, policy: str) -> None:
             if key not in pr.VALID_POLICIES:
                 missing.append(f"recommendations.{key}")
             continue
-        title = RECOMMEND if not parent else RECORD
+        if parent == "policy_sources":
+            # Map keyed by jurisdiction id; the ids are listed in the
+            # `policy_sources` row of the document table.
+            if not _documented(_section(sections, RECOMMEND), key):
+                missing.append(f"policy_sources.{key}")
+            continue
+        if parent.startswith("policy_sources."):
+            title = POLICY_SOURCES
+        else:
+            title = RECOMMEND if not parent else RECORD
         if not _documented(_section(sections, title), key):
             missing.append(f"{parent}.{key}" if parent else key)
     assert not missing, f"undocumented --recommend keys ({role}, {policy}): {missing}"

@@ -247,6 +247,7 @@ from .cli import (  # noqa: F401
 )
 from . import detect, render  # noqa: F401
 from .render import json_report  # noqa: F401  (registers --json)
+from . import inventory_metadata  # noqa: F401  (registers --inventory-metadata)
 
 __all__ = [
     "ACCEL_PCI_HINTS",

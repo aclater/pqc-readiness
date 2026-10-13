@@ -79,6 +79,7 @@ nothing was found.
 | `verdict_reason` | One-line explanation for the verdict. |
 | `verdict_caveat` | `""` when `--bench` measured the PQC primitives; otherwise an explanation that the verdict reflects CPU instruction set and memory only. |
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](../README.md#exit-codes) table in the README. |
+| `inventory_metadata` | Operator-supplied inventory facts from `--inventory-metadata FILE` (OMB M-23-02 items the host can't know), validated and normalised; `null` when the flag isn't given. See [`inventory_metadata`](#inventory_metadata). |
 
 ## Nested fields
 
@@ -365,6 +366,32 @@ Each `suites[]` entry:
 
 Each rate key appears only when the matching `per_algo` entry has a measured rate.
 
+### `inventory_metadata`
+
+`null` unless `--inventory-metadata FILE` is given. Every key is optional;
+the file is rejected (exit 2, before any probing) if it contains unknown
+keys or invalid values. Values are echoed as supplied, so the file must
+hold **identifiers only**: OMB M-23-02 footnote 13 forbids names that
+reveal a system's function or location.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `fisma_system_id` | string | FISMA system identifier (M-23-02 item 1). |
+| `fips199_categorization` | string | `Low`, `Moderate` or `High` (item 2); input is case-insensitive. |
+| `hva_id` | string | High Value Asset identifier, if the system is an HVA (item 3). |
+| `hosting` | object | Hosting model (item 7): `{model, provider?}`. |
+| `hosting.model` | string | `on-premises`, `commercial-csp`, `government-csp` or `hybrid`. |
+| `hosting.provider` | string | Provider name(s); required for every model except `on-premises`. |
+| `data_lifecycle` | object | Data lifecycle (item 8): `{records_categories?, time_to_live_years?}`. |
+| `data_lifecycle.records_categories` | list of string | Records-management categories of the data. |
+| `data_lifecycle.time_to_live_years` | number | How long the data and metadata need protection. |
+| `notes` | string | Free text (item 9). |
+
+The same facts appear in `--cbom` as `inventory:*` properties on the host
+component. With `--cbom-profile federal-draft` the CBOM also reports, per
+item, whether it was `provided`, `collected`, `partial` or
+`not-provided`; see [docs/inventory-methodology.md](inventory-methodology.md).
+
 ## `--ansible` variant
 
 `--ansible` returns a single top-level key `ansible_facts`, whose value
@@ -389,6 +416,28 @@ instead of the readiness report.
 | `hostname` | string | Host the recommendation is for. |
 | `generated_at` | string | ISO 8601 UTC timestamp of the underlying probe. |
 | `recommendations` | object | Keyed by policy (`cnsa-2.0`, `nist-civilian`, `eu-anssi-bsi`, `commercial`; only the requested one in `single` mode). Each value is a recommendation record. |
+| `policy_sources` | object | The migration timelines and their sources, keyed by jurisdiction: `us-nss-cnsa-2.0`, `us-nist`, `eu`, `de-bsi`, `fr-anssi`, `uk-ncsc`, `ca-cccs`, `au-asd`. Always the full set, so national timelines that are not engine policies are still reported. See *Policy sources* below. |
+
+### Policy sources
+
+Each value in `policy_sources`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `authority` | string | Issuing body. |
+| `documents` | list[object] | `{title, date, status, url}` per source document. `status` is `final` or `draft` (e.g. NIST IR 8547 is `draft`); `date` is `null` when the document carries none. |
+| `title` | string | Inside `documents[]`: document title, with version where it has one. |
+| `date` | string \| null | Inside `documents[]`: publication date (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`). |
+| `status` | string | Inside `documents[]`: `final` or `draft`. |
+| `url` | string | Inside `documents[]`: the publisher's URL. |
+| `milestones` | list[object] | `{by, event}` deadlines from the documents; empty when the source states a position rather than dates (BSI, ANSSI). |
+| `by` | string | Inside `milestones[]`: the deadline (`YYYY`, `YYYY-MM` or `YYYY-MM-DD`). |
+| `event` | string | Inside `milestones[]`: what is due. Draft-sourced milestones say "(draft)". |
+| `categories` | object | `us-nss-cnsa-2.0` only: per CNSA 2.0 category (`software-firmware-signing`, `web-browsers-servers-cloud`, `traditional-networking`, `operating-systems`, `niche-equipment`, `custom-legacy`), `{support_and_prefer, exclusive_use}` years from the 2022 advisory. `support_and_prefer` is `null` for `custom-legacy`. |
+| `support_and_prefer` | string \| null | Inside `categories`: year by which CNSA 2.0 must be supported and preferred. |
+| `exclusive_use` | string | Inside `categories`: year by which CNSA 2.0 must be used exclusively (`custom-legacy`: update or replace by). |
+| `notes` | list[string] | Positions without dates (e.g. hybrid requirements, approved algorithms). |
+| `verified` | string | When the entry was checked against the publisher's own document, and how if not fetched directly. |
 
 ### Recommendation record
 
@@ -414,6 +463,10 @@ instead of the readiness report.
 | `fips_kernel` | bool | Inside `host_capability_inputs`: `fips.kernel`. |
 | `openssl_version` | string | Inside `host_capability_inputs`: `openssl.version` (`""` when unknown). |
 | `kernel_release` | string | Inside `host_capability_inputs`: `kernel_info.release` (`""` when unknown). |
+| `timeline` | object | `{sources, cnsa_2_0_category?}`. `sources` lists the `policy_sources` keys behind this policy (empty for `commercial`). `cnsa_2_0_category` appears for `cnsa-2.0` on implemented roles: `{category, support_and_prefer, exclusive_use}`; TLS roles map to `web-browsers-servers-cloud` (exclusive use 2033), signing roles to `software-firmware-signing` (2030). |
+| `sources` | list[string] | Inside `timeline`: keys into the document's `policy_sources`. |
+| `cnsa_2_0_category` | object | Inside `timeline`: the CNSA 2.0 deadline category for the role. |
+| `category` | string | Inside `cnsa_2_0_category`: category id, as in `policy_sources.us-nss-cnsa-2.0.categories`. |
 | `caveats` | list[string] | Host- and policy-specific warnings (missing TLS groups, FIPS mode required, middlebox ClientHello size, HSM considerations, …). |
 
 The policy-to-preference mapping, issuing authorities and sources are
