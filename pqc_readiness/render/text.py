@@ -461,6 +461,41 @@ def _render_text_verdict(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_signing_keys(r: _report.Report) -> list[str]:
+    """Package-signing trust anchors (--scan-signing-keys, #153)."""
+    sk = r.signing_keys
+    if not sk.get("available"):
+        return []
+    summary = sk.get("summary") or {}
+    L: list[str] = [C.wrap(C.BOLD, "11. Package-signing keys")]
+    L.append(
+        f"   Trusted keys:     {summary.get('total', 0)} "
+        f"(classical={summary.get('classical', 0)}, hybrid={summary.get('hybrid', 0)}, "
+        f"pure_pqc={summary.get('pure_pqc', 0)})"
+    )
+    for key in sk.get("keys") or []:
+        size = key.get("bits") or key.get("curve") or ""
+        uid = key.get("uid") or ""
+        L.append(
+            f"   {str(key.get('key_id') or '-'):<18} {key.get('algorithm', '?')} "
+            f"{size} [{key.get('signing_pqc_category')}] {uid}".rstrip()
+        )
+    errors = [src for src in sk.get("sources") or [] if src.get("error")]
+    for src in errors:
+        L.append(
+            C.wrap(C.YELLOW, f"   Unreadable:       {src['source']} ({src['error']})")
+        )
+    if summary.get("all_classical"):
+        L.append(
+            C.wrap(
+                C.YELLOW,
+                "   All trusted signing keys are classical (no ML-DSA / SLH-DSA).",
+            )
+        )
+    L.append("")
+    return L
+
+
 def render_text(r: _report.Report) -> str:
     """Render the full report as plain text (color-aware via the module-
     level C). Composes per-section helpers in numbered order; each helper
@@ -478,6 +513,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_production_estimate(r))
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_cnsa_2_0(r))
+    L.extend(_render_text_signing_keys(r))
     L.extend(_render_text_verdict(r))
     return "\n".join(L)
 

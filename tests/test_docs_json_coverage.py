@@ -72,6 +72,10 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "scan_packages": ("`packages`",),
     "_scan_rpm_packages": ("`packages`",),
     "classify_bundled_crypto": ("`packages`",),
+    "scan_signing_keys": ("`signing_keys`",),
+    "parse_public_key_packet": ("`signing_keys`",),
+    "parse_openpgp_keys": ("`signing_keys`",),
+    "parse_spki_pem": ("`signing_keys`",),
     "parse_os_release": ("`os_release`",),
     "_detect_os_impl": ("`os_release`",),
     "run_benchmarks": ("`benchmark`",),
@@ -99,6 +103,8 @@ INTERNAL_KEYS: dict[str, set[str]] = {
     "_tls_bench_one_suite": {"n", "total"},
     # intermediate {name, version} list handed to classify_bundled_crypto
     "_scan_rpm_packages": {"name"},
+    # subkey marker, popped before the subkey is attached to its primary
+    "parse_public_key_packet": {"subkey"},
 }
 
 # Object paths whose immediate child keys are open-ended data, not schema.

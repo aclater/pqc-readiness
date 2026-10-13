@@ -209,6 +209,7 @@
       "evidence": []
     },
     "schema_version": "1.4",
+    "signing_keys": {},
     "ssh_pqc": {
       "available": false
     },
