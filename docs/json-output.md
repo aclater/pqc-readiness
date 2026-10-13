@@ -71,6 +71,7 @@ nothing was found.
 | `crypto_material` | Filesystem discovery of certificates, private keys and Java keystores (#108). Populated only when `--scan-crypto-material` is set (`{}` otherwise); see [`crypto_material`](#crypto_material). Private keys are reported as metadata only — their content is never read into the report. |
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
 | `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
+| `process_crypto_linkage` | Every running process (servers and outbound-only TLS clients) mapped to the crypto library or Go runtime it has loaded, grouped by executable and library version. Populated only when `--scan-processes` is set (`{}` otherwise). Pure `/proc` reads; see [`process_crypto_linkage`](#process_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
@@ -481,9 +482,46 @@ Listener entries. `protocol`, `address`, `port` and `bind_scope` are the join ke
 | `exe` | string \| null | Executable path of `pid`, in its own mount namespace. |
 | `systemd_unit` | string \| null | Unit (`*.service` / `*.scope`) from the process's cgroup, when it has one. |
 | `cgroup` | string \| null | The process's cgroup path (last 200 characters). |
-| `crypto_libraries` | list[object] | Crypto libraries the process maps: `{family, path, version, version_source, deleted, library_pqc_capable}`. `family` is `openssl`, `libressl`, `boringssl`, `aws-lc`, `gnutls`, `nss` or `wolfssl` (OpenSSL forks share sonames and are told apart by their embedded strings). `version_source` is `embedded` (version string inside the library), `filename` (e.g. `libssl.so.3.5.9`), `sibling-libcrypto` (libssl takes the version of the libcrypto beside it) or `null`. `deleted` is true when the mapped file was replaced on disk. `library_pqc_capable` is whether that library *version* ships ML-KEM hybrid TLS key exchange (OpenSSL ≥ 3.5, NSS ≥ 3.108); `null` where no verified threshold is encoded yet. Whether the service turns it on is configuration (#106 / #107). |
+| `crypto_libraries` | list[object] | Crypto libraries the process maps: `{family, path, version, version_source, deleted, library_pqc_capable, pqc_evidence}`. `family` is `openssl`, `libressl`, `boringssl`, `aws-lc`, `gnutls`, `nss` or `wolfssl` (OpenSSL forks share sonames and are told apart by their embedded strings). `version_source` is `embedded` (version string inside the library), `filename` (e.g. `libssl.so.3.5.9`), `sibling-libcrypto` (libssl takes the version of the libcrypto beside it) or `null`. `deleted` is true when the mapped file was replaced on disk. `library_pqc_capable` is whether that library ships ML-KEM hybrid TLS key exchange: decided by the library binary itself when it contains the hybrid TLS group names (`pqc_evidence: "binary"`, GnuTLS / wolfSSL / AWS-LC, using the markers from `crypto_libraries`), otherwise by version (`pqc_evidence: "version"`: OpenSSL ≥ 3.5, NSS ≥ 3.108); `null` with `pqc_evidence: null` when neither applies. A library a sandboxed process can't open through its own root is identified by the device and inode in `/proc/<pid>/maps` when another process mapped the same file. Whether the service turns it on is configuration (#106 / #107). |
 | `static_binary` | bool \| null | The executable has no ELF interpreter (statically linked); `null` when it could not be read. |
 | `go` | object \| null | For Go binaries: `go_version` (e.g. `go1.24.4`, from the embedded build info; `null` for pre-1.18 binaries), `main_module`, `cgo_enabled`, `default_hybrid_kex` and `godebug_reverts`. `default_hybrid_kex` is the hybrid key exchange crypto/tls offers when the program leaves `CurvePreferences` unset: `X25519MLKEM768` from Go 1.24 (which also removed the Kyber draft), `X25519Kyber768Draft00` on Go 1.23, else `null`. `godebug_reverts` lists `tlsmlkem` / `tlskyber` / `tlssecpmlkem` set to `0` by the binary's `DefaultGODEBUG` or the process's `GODEBUG` environment variable, which turn those defaults off. Only `GODEBUG` is read from the environment; nothing else is kept. |
+
+### `process_crypto_linkage`
+
+`{}` unless `--scan-processes`. The same `/proc` inspection as [`service_crypto_linkage`](#service_crypto_linkage), applied to **every** process rather than only socket owners, so TLS *clients* (package managers, agents, backup and monitoring daemons that only connect out) are covered: their PQC readiness is client-side readiness, and a process with no listening socket never appears in a service scan. Processes are grouped by executable, the crypto libraries they map (family, version, path, deleted) and, for Go binaries, the toolchain version and TLS default, so output size follows the number of distinct binaries rather than the number of processes. Groups that cannot do PQC sort first.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | Scan ran. When false only `reason` follows (not Linux, or `/proc` unreadable). |
+| `groups` | list[object] | One entry per (executable, libraries, Go default); see the group table below. Capped at `limits.max_groups`. |
+| `summary` | object | `groups` (all groups, including omitted ones), `processes_with_crypto`, `processes_without_crypto` (user-space processes mapping no crypto library and not Go), `processes_by_crypto_family` (family → process count; a process mapping several families counts once in each), `processes_not_pqc_capable` (processes in groups with `pqc_capable: false`), `client_processes_not_pqc_capable` (of those, processes in the `client` role), `processes_with_deleted_crypto_library`. |
+| `scanned_pids` | int | Processes whose `maps` was read. |
+| `unreadable_pids` | int | Processes whose `/proc/<pid>/maps` could not be read (permissions); counted, never guessed. |
+| `kernel_threads` | int | Processes with no address space and no executable link. |
+| `truncated` | bool | The scan stopped at `limits.max_pids` or `limits.time_budget_s`. |
+| `omitted_groups` | int | Groups beyond `limits.max_groups` (left out of `groups`, still counted in `summary`). |
+| `limits` | object | `max_pids` (default 16384), `time_budget_s` (default 30), `max_groups` (default 500). |
+| `note` | string | Present when `unreadable_pids` > 0: how to get complete attribution. |
+| `reason` | string | Present when `available` is false, or with `unavailable_in_container`. |
+
+Each `groups[]` entry:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `exe` | string \| null | Executable path, in the process's own mount namespace. |
+| `process` | string \| null | `comm` of the first process in the group. |
+| `crypto_libraries` | list[object] | As in `service_crypto_linkage`: `{family, path, version, version_source, deleted, library_pqc_capable, pqc_evidence}`. |
+| `static_binary` | bool \| null | No ELF interpreter (statically linked). |
+| `go` | object \| null | As in `service_crypto_linkage`. |
+| `pqc_capable` | bool \| null | `false` when any mapped crypto library is known not to ship hybrid ML-KEM TLS (it may be the one the process uses) or a Go binary has no hybrid default; `true` when every library / the Go runtime is known capable; `null` when unknown. Capability only: configuration decides whether it is used. |
+| `process_count` | int | Processes in the group. |
+| `sample_pids` | list[int] | Up to five PIDs. |
+| `systemd_units` | list[string] | Units (`*.service` / `*.scope`) of the group's processes, at most ten. |
+| `systemd_units_omitted` | int | Present when more than ten units were seen. |
+| `network_namespaces` | list[string] | `host` and/or `other`, as in `service_crypto_linkage`. |
+| `roles` | object | Process counts by role: `server` (holds a listening TCP or bound UDP socket), `client` (holds established TCP connections and no listening socket: outbound-only), `idle` (neither). "Established TCP" says nothing about TLS on the connection. |
+| `established_tcp_connections` | int | Established TCP sockets held by the group's processes. |
+| `fd_unreadable_processes` | int | Processes whose file-descriptor table could not be read, so their role is `idle` by default. |
 
 ### `host_fs_detections_unavailable`
 

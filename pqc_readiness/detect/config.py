@@ -350,19 +350,48 @@ def openssl_upgrade_path(
                 "requires Python 3.9+ via the `python39` (or higher) "
                 "AppStream module: `dnf module install python39`."
             )
-        if id_ == "rhel" and major and int(major) <= 9:
+        # EL9 / EL10 minors that first ship OpenSSL >= 3.5 in the base
+        # channel, measured 2026-10-13 with `rpm -q openssl-libs` in the
+        # official images (ubi9/ubi:9.4-9.8, ubi10/ubi:10.0-10.2,
+        # rockylinux:9.4-9.8, almalinux:9.4-9.8, oraclelinux:9,
+        # centos:stream9): 9.4 = 3.0.7, 9.5/9.6 = 3.2.2, 9.7 = 3.5.1,
+        # 9.8 = 3.5.5-3.5.8; 10.0 = 3.2.2, 10.1 = 3.5.1, 10.2 = 3.5.8 (#184).
+        # Advice keys on the detected OpenSSL version (this branch is only
+        # reached below 3.5) plus the minor, never on the major alone.
+        el_minor_with_35 = {"9": 7, "10": 1}
+        if (
+            id_ in {"rhel", "rocky", "almalinux", "centos", "ol"}
+            and major in el_minor_with_35
+        ):
+            need = el_minor_with_35[major]
+            name = "RHEL" if id_ == "rhel" else "This EL distribution"
+            minor = ver[1] if len(ver) > 1 and ver[1].isdigit() else None
+            if minor is not None and int(minor) >= need:
+                return (
+                    f"{name} {major}.{minor} ships OpenSSL 3.5 in the base "
+                    "channel, but this host reports an older OpenSSL; check "
+                    "for excluded, version-locked or third-party OpenSSL "
+                    "packages (`dnf list --showduplicates openssl-libs`) and "
+                    "apply pending updates."
+                )
             return (
-                "RHEL 9 base channel ships OpenSSL 3.0/3.2; PQC requires "
-                "RHEL 10 or a Red Hat-supported channel with newer crypto."
+                f"{name} {major} ships OpenSSL 3.5 from {major}.{need} "
+                f"onward (earlier minors carry 3.0/3.2); update to "
+                f"{major}.{need} or later (`dnf update`) to get PQC."
             )
         if id_ == "fedora" and major and int(major) < 41:
             return (
                 f"Fedora {major} predates OpenSSL 3.5; upgrade to Fedora 41 or newer."
             )
-        if id_ in {"rocky", "almalinux", "centos", "ol"} and major and int(major) <= 9:
+        if (
+            id_ in {"rhel", "centos", "ol"}
+            and major
+            and major.isdigit()
+            and int(major) < 8
+        ):
             return (
-                "EL9-class distributions ship OpenSSL 3.0/3.2; PQC requires "
-                "the EL10 release of this distribution or a backport channel."
+                f"EL{major} ships OpenSSL 1.0.2, which has no PQC; PQC "
+                "requires EL 9.7+ or EL 10.1+ (OpenSSL 3.5 in the base channel)."
             )
     elif family == "debian":
         if id_ == "debian":
