@@ -5,6 +5,7 @@
     "arch": "x86_64",
     "benchmark": null,
     "benchmark_tls_handshake": null,
+    "boot_chain": {},
     "cnsa_2_0": {
       "hash_compliant": false,
       "kem_compliant": false,

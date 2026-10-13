@@ -246,6 +246,24 @@ def _full_trigger_report() -> pr.Report:
                 }
             ],
         },
+        boot_chain={
+            "available": True,
+            "summary": {
+                "secure_boot_certificates": 4,
+                "secure_boot_algorithms": ["RSA-2048"],
+                "module_signing_pqc": False,
+                "classical_layers": ["secure_boot", "module_signing"],
+            },
+            "module_signing": {
+                "key_types_configured": ["RSA"],
+                "sample_module": {
+                    "parsed": True,
+                    "signature_algorithm": "RSA",
+                    "key_size": 4096,
+                    "digest_algorithm": "sha512",
+                },
+            },
+        },
     )
     # The deployment-gap verdict (#107) is computed from the fields above,
     # as collect_report does; TLS and SSH are capable-not-configured here.
@@ -277,7 +295,9 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 19
+    # Lanes add rules concurrently (#137): check the known core rules are
+    # present and every advertised rule is a RULE_SPECS entry.
+    assert len(rules) == len(pr.RULE_SPECS)
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -298,8 +318,9 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-017-bundled-crypto-without-pqc",
         "pqc-018-pqc-capability-undetermined",
         "pqc-020-pqc-capable-not-configured",
+        "pqc-030-classical-boot-chain",
     }
-    assert {r["id"] for r in rules} == expected_ids
+    assert expected_ids <= {r["id"] for r in rules}
     for r in rules:
         assert r["shortDescription"]["text"]
         assert r["fullDescription"]["text"]

@@ -95,6 +95,9 @@ class Report:
     # Capability vs configuration verdict per protocol (TLS / SSH / IPsec)
     # and per crypto-linked service, computed from the fields above (#107).
     pqc_deployment_gap: dict[str, Any] = field(default_factory=dict)
+    # Secure Boot / module signing / IMA / TPM (--scan-boot-chain, #112);
+    # {} when not requested.
+    boot_chain: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is

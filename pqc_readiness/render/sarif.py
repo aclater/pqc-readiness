@@ -16,6 +16,7 @@ from ..detect import config_policy as _config_policy
 from ..detect import config_sshd as _config_sshd
 from ..detect import protocols_libraries as _libraries
 from ..detect import runtime_services as _services
+from ..detect import protocols_boot as _boot
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +377,24 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-020-pqc-capable-not-configured.md",
     ),
+    # pqc-030 .. pqc-039: detect-protocols lane (#137 rule-ID blocks).
+    RuleSpec(
+        id="pqc-030-classical-boot-chain",
+        short_description="The boot chain's signing keys are all classical.",
+        full_description=(
+            "The keys that authorise boot code and kernel code (UEFI Secure "
+            "Boot PK / KEK / db, shim MOK, the kernel module signing key, IMA "
+            "code-signing certificates) use classical algorithms only, and "
+            "the TPM reports no ML-KEM / ML-DSA support.  CNSA 2.0 expects "
+            "software and firmware signing to use ML-DSA-87 or LMS / XMSS by "
+            "2030; Linux supports ML-DSA module signing from 7.0.  "
+            "Informational: these keys belong to the firmware vendor, the "
+            "distribution and the machine owner, and are the slowest to "
+            "rotate, so they need planning early."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-030-classical-boot-chain.md",
+    ),
 )
 
 
@@ -426,6 +445,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     # Package-signing trust anchors need rotating to PQC keys; the fix is
     # upstream's, the host only has to trust the new key: low.
     "pqc-009-classical-package-signing-keys": "3.1",
+    # Boot-chain trust anchors: long rotation lead time, fix is the
+    # vendor's / distribution's: low, like pqc-009 (#112).
+    "pqc-030-classical-boot-chain": "3.1",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
     # Software that will fail at PQC (#193).  A running service that can't
@@ -742,6 +764,24 @@ def build_findings(r: _report.Report) -> list[Finding]:
     gap_finding = _capable_not_configured_finding(r)
     if gap_finding is not None:
         findings.append(gap_finding)
+    boot = r.boot_chain
+    layers = _boot.describe_classical_layers(boot)
+    if layers:
+        summary = boot.get("summary") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-030-classical-boot-chain",
+                level="note",
+                message="Boot chain is classical: " + "; ".join(layers) + ".",
+                properties={
+                    "boot_chain:classical_layers": summary.get("classical_layers"),
+                    "boot_chain:secure_boot_algorithms": summary.get(
+                        "secure_boot_algorithms"
+                    ),
+                    "boot_chain:module_signing_pqc": summary.get("module_signing_pqc"),
+                },
+            )
+        )
 
     return findings
 
