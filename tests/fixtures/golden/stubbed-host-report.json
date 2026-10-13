@@ -43,6 +43,7 @@
     "cores_physical": 8,
     "cpu_freq_mhz": 3000.0,
     "cpu_model": "Stub CPU @ 3.0GHz",
+    "crypto_libraries": {},
     "crypto_material": {},
     "crypto_policy": {
       "active": "DEFAULT",
@@ -440,6 +441,7 @@
       "environment": "bare_metal",
       "evidence": []
     },
+    "scan_mode": null,
     "schema_version": "1.5",
     "service_crypto_linkage": {},
     "signing_keys": {},

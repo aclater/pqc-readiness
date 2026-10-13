@@ -18,6 +18,7 @@ from typing import Any
 
 from . import _platform as _platform
 from . import aggregate as _aggregate
+from . import observations as _observations
 from . import algorithms as _algorithms
 from . import bench as _bench
 from .detect import certs as _certs
@@ -29,8 +30,10 @@ from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
 from .detect import packages as _packages
 from .detect import protocols as _protocols
+from .detect import protocols_libraries as _libraries
 from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
+from .detect import runtime_offline as _runtime_offline
 from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
 from .render import text as _text
@@ -162,6 +165,8 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     Side-effect free apart from the probes themselves: --host-mount must
     already be applied (set_host_prefix) and output/colour handling is
     the caller's job."""
+    if _platform.OFFLINE_ROOT:
+        return _runtime_offline.collect_offline_report(args)
     arch = platform.machine().lower()
     flags = _hardware.cpu_flags(arch)
     total_gb, avail_gb = _hardware.memory_info()
@@ -227,6 +232,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     signing_keys_info: dict[str, Any] = {}
     if getattr(args, "scan_signing_keys", False):
         signing_keys_info = _signing.scan_signing_keys(os_release)
+    crypto_libraries_info: dict[str, Any] = {}
+    if getattr(args, "scan_crypto_libraries", False):
+        crypto_libraries_info = _libraries.scan_crypto_libraries(os_release)
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
         services_info = _runtime_services.scan_services()
@@ -312,6 +320,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
         signing_keys=signing_keys_info,
+        crypto_libraries=crypto_libraries_info,
         replace_required=replace_required,
         os_release=os_release,
         benchmark=bench,
@@ -422,14 +431,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"warning: {warning}", file=sys.stderr)
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
+    if args.observations and not args.aggregate:
+        print("--observations requires --aggregate DIR", file=sys.stderr)
+        return 2
     if args.aggregate:
         d = Path(args.aggregate)
         if not d.is_dir():
             print(f"--aggregate: {d} is not a directory", file=sys.stderr)
             return 2
-        body, code = _aggregate.run_aggregator(d, output=args.aggregate_format)
+        try:
+            body, code = _aggregate.run_aggregator(
+                d,
+                output=args.aggregate_format,
+                observations=Path(args.observations) if args.observations else None,
+                observations_max_age_days=args.observations_max_age_days,
+            )
+        except _observations.ObservationFileError as e:
+            print(f"--observations: {e}", file=sys.stderr)
+            return 2
         return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
 
+    _runtime_offline.apply_root(ap, args)
     if args.host_mount:
         _platform.set_host_prefix(args.host_mount)
     _text.C.configure(_use_color(args, out_path))

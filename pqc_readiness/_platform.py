@@ -60,6 +60,23 @@ def set_host_prefix(prefix: str) -> None:
     HOST_PREFIX = prefix.rstrip("/")
 
 
+# Offline scan of a filesystem tree (--root PATH, #152).  Reuses the
+# HOST_PREFIX redirection for every file read; OFFLINE_ROOT additionally
+# tells collection that there is no live kernel, CPU or process table
+# behind the tree, and that binaries on PATH belong to the scanning
+# machine rather than the tree.  Empty in live scans.
+OFFLINE_ROOT: str = ""
+
+
+def set_offline_root(root: str) -> None:
+    """Apply --root.  Sets HOST_PREFIX too, so prefix-aware readers (rpm,
+    dpkg, certificates, crypto policies, openssl.cnf) read the tree.  An
+    empty string restores live behaviour."""
+    global OFFLINE_ROOT
+    OFFLINE_ROOT = root.rstrip("/")
+    set_host_prefix(root)
+
+
 def host_path(p: str) -> Path:
     """Return Path(p) under HOST_PREFIX when --host-mount is in effect
     and p targets a kernel/state namespace.  Bare-metal callers and

@@ -317,7 +317,7 @@ def _sarif_host_properties(r: _report.Report) -> dict[str, Any]:
     SARIF 2.1.0 lets us attach an arbitrary `properties` bag at the
     `run` level so consumers (Splunk dashboards, custom scripts) can
     correlate findings to a specific host without scraping `message`."""
-    return {
+    props: dict[str, Any] = {
         "host:hostname": r.hostname,
         "host:os": r.os,
         "host:arch": r.arch,
@@ -325,6 +325,12 @@ def _sarif_host_properties(r: _report.Report) -> dict[str, Any]:
         "tool:version": _report.SCRIPT_VERSION,
         "report:generated_at": r.generated_at,
     }
+    if r.scan_mode:
+        # Offline --root scan (#152): findings describe a filesystem tree.
+        props["scan:mode"] = r.scan_mode.get("mode")
+        props["scan:root"] = r.scan_mode.get("root")
+        props["scan:not_applicable"] = list(r.scan_mode.get("not_applicable") or [])
+    return props
 
 
 def build_findings(r: _report.Report) -> list[Finding]:

@@ -74,6 +74,7 @@ nothing was found.
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
+| `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -86,6 +87,7 @@ nothing was found.
 | `verdict_caveat` | `""` when `--bench` measured the PQC primitives; otherwise an explanation that the verdict reflects CPU instruction set and memory only. |
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](../README.md#exit-codes) table in the README. |
 | `inventory_metadata` | Operator-supplied inventory facts from `--inventory-metadata FILE` (OMB M-23-02 items the host can't know), validated and normalised; `null` when the flag isn't given. See [`inventory_metadata`](#inventory_metadata). |
+| `scan_mode` | `null` for live scans. For an offline `--root PATH` scan of a filesystem tree, `{mode, root, not_applicable, partial, reason}`: which fields cannot be answered from a tree and are marked not applicable. See [`scan_mode`](#scan_mode). |
 
 ## Nested fields
 
@@ -93,6 +95,7 @@ One subsection per object-valued field. Conventions used throughout:
 
 - A detection that could not run returns `{"available": false, "reason": "<why>"}` in place of its normal keys (e.g. `openssl` when the binary is missing, `ssh_pqc` when `ssh` is absent).
 - Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
+- In an offline `--root` scan, object-valued sections that need a live host carry `{"available": false, "not_applicable": true, "reason": "<why>"}`; see [`scan_mode`](#scan_mode). `not_applicable` never appears in live scans.
 - Rates are operations per second; sizes are bytes; memory is GiB unless stated.
 
 ### `memory`
@@ -168,6 +171,9 @@ Each list item describes one detected device or HSM client configuration:
 | `third_party_algorithms` | object | `kem` / `signature`: lists of `{name, provider}` from `openssl list -kem-algorithms` / `-signature-algorithms` lines tagged `@ <provider>` for a non-built-in provider (e.g. `p256_mldsa44 @ oqsprovider`). |
 | `config` | object | What the host's OpenSSL configuration sets by default (#106); see below. Read from files through the host prefix, so it describes the host under `--host-mount`. |
 | `upgrade_path` | string \| null | Family-aware advice for reaching OpenSSL ≥ 3.5; `null` when already there or no advice applies. |
+| `not_applicable` | bool | Offline `--root` scan only: the capability probes (which run the scanner's own `openssl`) did not run; `available` is false and `reason` explains. `package`, `version_tuple`, `pqc_native_expected` and `config` describe the tree. |
+| `package` | object \| null | Offline `--root` scan only: the tree's OpenSSL library package `{name, version}` from its package database (e.g. `openssl-libs`, `libssl3t64`), or `null` when none is installed. |
+| `pqc_native_expected` | bool \| null | Offline `--root` scan only: the packaged version is ≥ 3.5; `null` when no version is known. |
 | `reason` | string | Present only when `available` is false. |
 
 #### `openssl.config`
@@ -474,9 +480,9 @@ Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `available` | bool | Inventory succeeded. When false only `reason` follows. |
-| `package_manager` | string | `rpm`, `dpkg-query`, `pacman` or `apk`. |
-| `source` | string | RPM families only: `rpmdb-sqlite`, `rpmdb-bdb` or `rpmdb-ndb` (database read in-process; the suffix is its format) or `rpm-cli` (fallback when it cannot be read directly). |
-| `db_root` | string \| null | RPM families only: host-relative rpm database directory. |
+| `package_manager` | string | `rpm`, `dpkg-query`, `pacman` or `apk` for live scans; `dpkg`, `pacman` or `apk` when the database was read in-process under `--host-mount` / `--root`. |
+| `source` | string | RPM families: `rpmdb-sqlite`, `rpmdb-bdb` or `rpmdb-ndb` (database read in-process; the suffix is its format) or `rpm-cli` (fallback when it cannot be read directly). Debian / Alpine / Arch under `--host-mount` or `--root`: `dpkg-status`, `apk-installed-db` or `pacman-local-db`, read in-process because their CLIs would read the scanner's own database. Absent for live non-RPM scans. |
+| `db_root` | string \| null | Host-relative database location: the rpm database directory, or the dpkg `status` file, apk `installed` file or pacman `local` directory when `source` names one of those. |
 | `total_packages` | int | Installed packages counted (on RPM hosts this includes `gpg-pubkey` entries, as `rpm -qa` does). |
 | `bundled_crypto` | list[object] | Packages that embed their own crypto stack, each `{package, version, note}` where `note` names the stack (e.g. `Go runtime (crypto/tls embedded)`). |
 | `reason` | string | Present when `available` is false, or with `unavailable_in_container`. |
@@ -513,6 +519,45 @@ Each `keys[]` entry:
 | `uid` | string | First User ID packet, e.g. `Red Hat, Inc. (release key 4) <security@redhat.com>`. |
 | `subkeys` | list[object] | Subkeys, each with `fingerprint`, `key_id`, `version`, `algorithm`, `algorithm_id`, `capability`, `pqc_category`, `created` and `bits` / `curve` where they apply. |
 | `origins` | list[object] | Every `{origin, source}` that carries this key. |
+
+### `crypto_libraries`
+
+`{}` unless `--scan-crypto-libraries`. For each library the primary evidence is the installed shared library itself: the probe reads the file (at most 64 MiB) and looks for the algorithm and TLS / SSH group names that library embeds when it implements them, so a distribution backport or a build without a PQC backend is reported correctly. When no library file can be read, the package or embedded version is compared with the upstream thresholds, cited in the source code from each project's release notes. AWS-LC is found by the `AWS-LC x.y.z` string in a `libcrypto` file, because some distributions install it under OpenSSL's file names; its `libssl` is only the exact sibling of that file.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False off Linux; then only `reason` follows. |
+| `reason` | string | Why the probes did not run, or with `unavailable_in_container`. |
+| `libraries` | object | One entry per probe: `gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`, `java`, `go`. A library that is not installed is `{installed: false}`. |
+| `summary` | object | `{installed, pqc_capable, classical_only, unknown}`: lists of library names. `unknown` holds libraries whose capability could not be decided (no readable file and a build-dependent library above its version threshold, or no version). |
+
+Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `installed` | bool | A package or library file was found. |
+| `version` | string \| null | Package version, else the version the library embeds (AWS-LC). |
+| `version_source` | string \| null | `package` or `library`. |
+| `packages` | list[object] | Matching installed packages, `{name, version}`, from the rpm database (in-process or `rpm -q`), `/var/lib/dpkg/status`, `/lib/apk/db/installed` or `/var/lib/pacman/local`. |
+| `files` | list[string] | Host paths of the library files read. |
+| `evidence` | string | `binary` (capability read from the library file), `version` (threshold comparison only) or `none`. |
+| `pqc_capable` | bool \| null | Binary evidence: any PQC name found. Version evidence: any threshold met, except `null` for a build-dependent library (GnuTLS, wolfSSL), which may be built without PQC. |
+| `algorithms` | object | Names found in the binary, by kind: `tls_hybrid_groups` (e.g. `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`), `kem` (e.g. `ML-KEM-768`, `sntrup761`), `signatures` (e.g. `ML-DSA-65`), `ssh_kex` (libssh: `mlkem768x25519-sha256`, `mlkem768nistp256-sha256`, `mlkem1024nistp384-sha384`, `sntrup761x25519-sha512`). Empty when no file was read. |
+| `version_thresholds` | object | Capability → `{minimum_version, met, note}`; `met` is `null` without a version. GnuTLS: `tls_hybrid_mlkem768` 3.8.8, `tls_hybrid_mlkem1024` and `ml_dsa` 3.8.9, `ml_dsa_tls` 3.8.10. libgcrypt: `ml_kem_draft` 1.11.0, `ml_kem` 1.11.1, `ml_dsa` 1.12.0. libssh: `ssh_pqc_kex` 0.12.0. wolfSSL: `ml_kem_final` 5.7.4, `ml_kem_default` 5.9.1. AWS-LC: `ml_kem` 1.35.0, `tls_hybrid_mlkem768` 1.35.1, `ml_dsa` 1.41.0, `tls_hybrid_mlkem1024` 1.50.0. |
+| `build_dependent` | bool | PQC support depends on build options (GnuTLS needs a PQC backend; wolfSSL before 5.9.1 needs `--enable-mlkem`). |
+| `caveats` | list[string] | Set when the version is known to be below a release that changed the algorithm to its final standard while the binary still carries PQC names: libgcrypt before 1.11.1 (FIPS 203 initial public draft Kyber), wolfSSL before 5.7.4 (pre-final Kyber / Dilithium). Distribution builds may carry the final-standard patch. |
+| `reference` | string | The release notes the thresholds come from. |
+
+`java` and `go` entries (toolchains, from files: each JDK's `release` file under `/usr/lib/jvm`, `/usr/lib64/jvm`, `/usr/java`, `/opt/java`; each Go root's `VERSION` file):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `installed` | bool | At least one install was found. |
+| `installs` | list[object] | `java`: `{path, version, implementor, jca_ml_kem_ml_dsa, tls_hybrid_default}`; `go`: `{path, version, tls_mlkem_default}`. `jca_ml_kem_ml_dsa` is JDK ≥ 24 (JEP 496 / 497, JCA APIs only); `tls_hybrid_default` is JDK ≥ 27 (JEP 527, X25519MLKEM768 on by default in TLS 1.3); `tls_mlkem_default` is Go ≥ 1.24 (X25519MLKEM768 on by default in `crypto/tls`; `GODEBUG=tlsmlkem=0` reverts it). |
+| `evidence` | string | Always `version`. |
+| `pqc_capable` | bool | Any install meets the first threshold. |
+| `version_thresholds` | object | As above, `{minimum_version, note}` per capability. |
+| `reference` | string | JEP / Go release-note URLs. |
 
 ### `os_release`
 
@@ -642,6 +687,30 @@ component. With `--cbom-profile federal-draft` the CBOM also reports, per
 item, whether it was `provided`, `collected`, `partial` or
 `not-provided`; see [docs/inventory-methodology.md](inventory-methodology.md).
 
+### `scan_mode`
+
+`null` unless `--root PATH` is given. An offline scan reads a filesystem tree (a
+mounted disk image or an extracted container rootfs) instead of a live host:
+packages, certificates, keys, crypto policies, `openssl.cnf` and package-signing
+keys come from the tree; nothing about the scanning machine (its CPU, kernel,
+processes or binaries on `PATH`) is reported. `verdict` is
+`NOT APPLICABLE - offline filesystem scan`, `isa_tier` is `not_applicable`,
+`exit_code` is 0, and `hostname` comes from the tree's `/etc/hostname` (empty
+when it has none). `arch` is read from the ELF header of the tree's
+`/usr/bin/env` or `/bin/sh`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `mode` | string | Always `offline_root`. |
+| `root` | string | Absolute path of the scanned tree. |
+| `not_applicable` | list[string] | Report fields that cannot be answered from a tree. Object-valued ones hold the `{available: false, not_applicable: true, reason}` marker; scalar and list ones keep their empty defaults and are listed here so consumers don't read them as "probed, nothing found". |
+| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (configured proposals, no capability) and `nss` (version from the tree's rpm database when present). Values are human-readable explanations. |
+| `reason` | string | One-sentence summary; also used as `verdict_reason`. |
+
+`--root` cannot be combined with `--host-mount`, `--bench`, `--bench-tls`,
+`--scan-services`, `--check`, `--fips-strict` or `--recommend` (usage error,
+exit 2): each needs a live host or a readiness tier.
+
 ## `--ansible` variant
 
 `--ansible` returns a single top-level key `ansible_facts`, whose value
@@ -743,6 +812,49 @@ from the scanner's are not merged.
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
+| `observations` | object | Present only with `--observations FILE`: endpoint observations joined to the hosts and listening services in the reports (#149). See [`--aggregate` observations join](#--aggregate-observations-join). |
+
+### `--aggregate` observations join
+
+`--aggregate DIR --observations FILE` adds an `observations` object. The
+record format and the matching rules are in
+[endpoint-observations.md](endpoint-observations.md).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `observation_schema_version` | string | Observation schema this scanner validates against (`1.0`). |
+| `file_format` | string | `envelope` (one JSON object) or `jsonl` (one record per line). |
+| `total` | int | Records read, valid or not. |
+| `valid` | int | Records that passed validation and were joined. |
+| `invalid` | list[object] | Rejected records, each `{record, reason}`: `record` is the 1-based position in the envelope list, or the line number in JSON Lines. |
+| `max_age_days` | number | `--observations-max-age-days` in effect (default 7). |
+| `stale` | int | Matched records made more than `max_age_days` before or after their host's report. |
+| `by_status` | object | Record count per `status` (see `matches[]`). |
+| `by_observed_class` | object | Record count per observed class: `pure_pqc`, `hybrid`, `classical`, `unknown`. |
+| `states` | list[object] | One entry per combination seen on endpoints attributed to a host (`matched` or `no_service_scan`): `{capable, configured, observed, endpoints}`. `capable` and `configured` are `yes`, `no` or `unknown`; `observed` is the class. This is the input to the three-state verdict (#107). |
+| `per_host` | object | Keyed by `hostname`: `{endpoints, by_observed_class, capable_but_observed_classical, configured_but_observed_classical, stale}` over that host's attributed endpoints. |
+| `matches` | list[object] | One entry per valid record, in file order (fields below). |
+
+`matches[]` entries:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `record` | int | Position of the record in the file (as in `invalid`). |
+| `id` | string \| null | The record's own `id`. |
+| `protocol` / `port` / `fqdn` / `ip` / `sni` | | Copied from the record. |
+| `observed_group` | string \| null | `negotiated_group` normalised: codepoints and spelling variants mapped to the IANA name (e.g. `0x11EC` → `X25519MLKEM768`); for IKEv2, initial and additional key exchanges joined with `+`. |
+| `observed_class` | string | `pure_pqc`, `hybrid`, `classical` or `unknown`. |
+| `source_category` | string | The record's `source.category`. |
+| `status` | string | `matched` (host and listener found), `no_service_scan` (host found; its report has no `service_crypto_linkage`), `unmatched_listener` (host found; nothing reachable listening on that transport and port), `ambiguous` (more than one host fits; see `candidates`), `unmatched_host`. |
+| `match_basis` | string \| null | Key that identified the host: `fqdn`, `sni`, `ip`, `short-name`, `certificate`, or one of the first four with `+certificate` when the fingerprint broke a tie. |
+| `host` | string \| null | Matched report's `hostname`. |
+| `candidates` | list[string] | `ambiguous` only: hostnames of the hosts that fit. |
+| `listener` | object \| null | The matched listener: `protocol`, `address`, `port`, `bind_scope`, `network_namespace`, `process`, `systemd_unit`, `crypto_families`, `library_pqc_capable`, `go_default_hybrid` (a Go binary whose default offers hybrid ML-KEM), `matching_listeners` (how many listeners fit; the first in the host namespace is used). |
+| `capable` | bool \| null | TLS, QUIC, DTLS: the listener's library version ships hybrid ML-KEM, or its Go default offers it. SSH: the host's OpenSSH lists an ML-KEM kex. IKEv2: the IPsec stack supports ML-KEM. |
+| `configured` | bool \| null | TLS, QUIC, DTLS: the system crypto policy, else OpenSSL's default groups, allow a PQC group; Go listeners use their own default. SSH: the policy's server key-exchange setting. IKEv2: a configured connection offers ML-KEM, else the policy. Host defaults, not per-service settings. |
+| `certificate_on_host` | bool \| null | When the record has `certificate_sha256` and a host matched: whether that certificate was found on the host. |
+| `stale` | bool \| null | The record is older or newer than the host's report by more than `max_age_days`; null when no host matched. |
+| `note` | string \| null | E.g. the listener is in another network namespace, reachable only through port mapping. |
 
 ## `--ndjson` events
 
@@ -788,6 +900,7 @@ Compliance Finding (2003) only:
 | `openssl_version`, `openssl_pqc_native` | 5001 | `openssl.version`, `openssl.pqc_native`. |
 | `tls_hybrid_groups`, `tls_pure_pqc_groups` | 5001 | `openssl.tls_groups.hybrid` / `.pure_pqc`. |
 | `findings_count` | 5001 | Number of 2003 events that follow. |
+| `scan_mode` | 5001 | Offline `--root` scans only: the report's [`scan_mode`](#scan_mode) object (the event describes a filesystem tree, not a live host). |
 | `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
 | `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
 

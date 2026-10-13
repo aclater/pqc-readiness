@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/aclater/pqc-readiness/blob/main/docs/schemas/endpoint-observation-1.0.schema.json",
+  "title": "pqc-readiness endpoint observation, schema 1.0",
+  "description": "One record of what a network-side tool saw an endpoint negotiate. Consumed by `pqc-readiness --aggregate DIR --observations FILE` (#149). A file is either an envelope object ({observation_schema_version, observations}) or JSON Lines with one self-describing record per line. Within major version 1, new minor versions only add optional keys; keys starting with `x-` are producer extensions and always allowed.",
+  "oneOf": [
+    { "$ref": "#/$defs/envelope" },
+    { "$ref": "#/$defs/record" }
+  ],
+  "$defs": {
+    "version": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+$"
+    },
+    "envelope": {
+      "type": "object",
+      "required": ["observation_schema_version", "observations"],
+      "properties": {
+        "observation_schema_version": { "$ref": "#/$defs/version" },
+        "observations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/envelopeRecord" }
+        }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    },
+    "envelopeRecord": {
+      "description": "A record inside an envelope: it inherits the envelope's version and may omit its own.",
+      "allOf": [{ "$ref": "#/$defs/recordBody" }]
+    },
+    "record": {
+      "description": "A self-describing record (JSON Lines form).",
+      "allOf": [
+        { "$ref": "#/$defs/recordBody" },
+        { "required": ["observation_schema_version"] }
+      ]
+    },
+    "recordBody": {
+      "type": "object",
+      "required": ["observed_at", "protocol", "port", "source"],
+      "anyOf": [{ "required": ["fqdn"] }, { "required": ["ip"] }],
+      "properties": {
+        "observation_schema_version": { "$ref": "#/$defs/version" },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Producer's own identifier, echoed in the join output."
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 date-time with an explicit offset (`Z` or `+hh:mm`)."
+        },
+        "protocol": {
+          "enum": ["tls", "ssh", "quic", "dtls", "ikev2"],
+          "description": "tls and ssh run over TCP; quic, dtls and ikev2 over UDP."
+        },
+        "transport": {
+          "enum": ["tcp", "udp"],
+          "description": "Optional; when present it must match the protocol's transport."
+        },
+        "fqdn": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}\\.?$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*\\.?$",
+          "description": "DNS name the tool connected to."
+        },
+        "ip": {
+          "type": "string",
+          "anyOf": [{ "format": "ipv4" }, { "format": "ipv6" }],
+          "description": "Address the tool connected to. IPv4-mapped IPv6 is treated as IPv4."
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "sni": {
+          "type": "string",
+          "pattern": "^(?=.{1,253}\\.?$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*\\.?$",
+          "description": "TLS server_name sent, when different from fqdn or when only ip is known."
+        },
+        "negotiated_group": {
+          "type": "string",
+          "minLength": 1,
+          "description": "TLS / QUIC / DTLS: the named group (IANA name such as `X25519MLKEM768`, or its codepoint as `0x11EC`). SSH: the key exchange method (e.g. `mlkem768x25519-sha256`). IKEv2: the initial key exchange (e.g. `ecp256`, `x25519`)."
+        },
+        "additional_key_exchanges": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "IKEv2 only: RFC 9370 additional key exchanges negotiated (e.g. `mlkem768`)."
+        },
+        "offered_groups": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Groups the endpoint accepted when probed, if the tool enumerated them. Informational."
+        },
+        "tls_version": { "type": "string", "minLength": 1 },
+        "certificate_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{64}$",
+          "description": "SHA-256 of the leaf certificate DER. Secondary join key against certificates the scanner found on the host."
+        },
+        "source": {
+          "type": "object",
+          "required": ["category"],
+          "properties": {
+            "category": {
+              "enum": [
+                "active-endpoint-scan",
+                "passive-network-sensor",
+                "edge-or-proxy-log",
+                "client-telemetry",
+                "manual"
+              ]
+            },
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          },
+          "patternProperties": { "^x-": {} },
+          "additionalProperties": false
+        }
+      },
+      "patternProperties": { "^x-": {} },
+      "additionalProperties": false
+    }
+  }
+}

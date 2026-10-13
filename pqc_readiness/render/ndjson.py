@@ -106,7 +106,7 @@ def host_summary_event(r: _report.Report, findings_count: int) -> dict[str, Any]
     """Device Inventory Info (5001): the host's verdict and headline facts."""
     host_uid = _sarif.finding_fingerprint(r.hostname, "host-summary")
     tls_groups = r.openssl.get("tls_groups") or {}
-    return {
+    event: dict[str, Any] = {
         "class_uid": _INVENTORY_INFO,
         "class_name": "Device Inventory Info",
         "category_uid": 5,
@@ -137,6 +137,10 @@ def host_summary_event(r: _report.Report, findings_count: int) -> dict[str, Any]
             }
         },
     }
+    if r.scan_mode:
+        # Offline --root scan (#152): the event describes a filesystem tree.
+        event["unmapped"]["pqc_readiness"]["scan_mode"] = dict(r.scan_mode)
+    return event
 
 
 def finding_event(r: _report.Report, finding: _sarif.Finding) -> dict[str, Any]:
