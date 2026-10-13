@@ -249,3 +249,36 @@ def test_cli_profile_selection_does_not_leak_between_runs(monkeypatch, capsys) -
     cli.main(["--cbom"])
     assert "properties" not in json.loads(capsys.readouterr().out)["metadata"]
     assert cbom._selected_profile == "none"
+
+
+def test_discovered_host_certificates_are_classified_too() -> None:
+    """#178: the federal profile classifies host certificates found by
+    --scan-crypto-material, not only trust-store anchors."""
+    r = replace(
+        _make_report(),
+        crypto_material={
+            "available": True,
+            "certificates": [
+                {
+                    "sha256": "d" * 64,
+                    "subject": "CN=web",
+                    "category": "classical",
+                    "role": "leaf",
+                },
+                {
+                    "sha256": "e" * 64,
+                    "subject": "CN=pqc",
+                    "category": "pure_pqc",
+                    "role": "leaf",
+                },
+            ],
+        },
+    )
+    comps = _by_ref(_bom(r=r))
+    classical = _props(comps["cert/sha256:" + "d" * 64])
+    assert classical["federal:function"] == ["digital-signature"]
+    assert classical["federal:quantum_vulnerable"] == ["true"]
+    assert classical["federal:migration_deadline"] == ["2031-12-31"]
+    assert _props(comps["cert/sha256:" + "e" * 64])["federal:quantum_vulnerable"] == [
+        "false"
+    ]

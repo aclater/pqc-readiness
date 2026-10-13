@@ -277,11 +277,15 @@ change.
 | `trust_store.cert_categories.hybrid_composite` | int | Hybrid composite cert count | — | no equivalent | Summary. |
 | `trust_store.cert_categories.pure_pqc` | int | Pure-PQC cert count | — | no equivalent | Summary. |
 
-When per-certificate detail is added in a future scan, the natural
-projection is one `assetType=certificate` component per certificate
-with `certificateProperties` (subjectName, issuerName, notValidBefore,
-notValidAfter, signatureAlgorithmRef). The summary form has no
-asset-level equivalent.
+Per-certificate detail (`trust_store.certificates`, and
+`crypto_material.certificates` from `--scan-crypto-material`) is
+projected into CycloneDX 1.7 as one `assetType=certificate` component
+per unique SHA-256 fingerprint, with `certificateProperties`
+(`fingerprint`, `serialNumber`, `subjectName`, `issuerName`,
+`notValidBefore`, `notValidAfter`, `certificateState`) and properties
+`certificate:role`, `certificate:source` and `crypto_material:path`
+(#138, #178). The summary counts have no asset-level equivalent, and
+the 1.6 projection emits no certificate components.
 
 ### `runtime_environment.*`
 

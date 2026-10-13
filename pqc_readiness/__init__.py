@@ -159,6 +159,10 @@ from .detect.protocols import (  # noqa: F401
     parse_ssh_kex,
     parse_ssh_version,
 )
+from .detect.protocols_libraries import (  # noqa: F401
+    LIBRARY_SPECS,
+    scan_crypto_libraries,
+)
 from .detect.protocols_signing import (  # noqa: F401
     parse_key_blob,
     parse_spki_pem,

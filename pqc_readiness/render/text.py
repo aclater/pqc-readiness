@@ -556,6 +556,33 @@ def _render_text_signing_keys(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_crypto_libraries(r: _report.Report) -> list[str]:
+    """Crypto libraries besides OpenSSL / NSS (--scan-crypto-libraries, #110)."""
+    cl = r.crypto_libraries
+    if not cl.get("available"):
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "12. Other crypto libraries")]
+    for name, lib in (cl.get("libraries") or {}).items():
+        if not lib.get("installed"):
+            continue
+        state = {True: "PQC", False: "classical only", None: "unknown"}[
+            lib.get("pqc_capable")
+        ]
+        algos = sorted(
+            {a for names in (lib.get("algorithms") or {}).values() for a in names}
+        )
+        if lib.get("installs"):
+            versions = ", ".join(str(i.get("version")) for i in lib["installs"])
+        else:
+            versions = str(lib.get("version") or "?")
+        line = f"   {name:<10} {versions:<16} [{state}, {lib.get('evidence')}]"
+        if algos:
+            line += " " + ", ".join(algos)
+        L.append(line)
+    L.append("")
+    return L
+
+
 def render_text(r: _report.Report) -> str:
     """Render the full report as plain text (color-aware via the module-
     level C). Composes per-section helpers in numbered order; each helper
@@ -574,6 +601,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_cnsa_2_0(r))
     L.extend(_render_text_signing_keys(r))
+    L.extend(_render_text_crypto_libraries(r))
     L.extend(_render_text_verdict(r))
     return "\n".join(L)
 
