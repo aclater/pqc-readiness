@@ -72,6 +72,7 @@ nothing was found.
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
+| `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -465,6 +466,45 @@ Each `keys[]` entry:
 | `uid` | string | First User ID packet, e.g. `Red Hat, Inc. (release key 4) <security@redhat.com>`. |
 | `subkeys` | list[object] | Subkeys, each with `fingerprint`, `key_id`, `version`, `algorithm`, `algorithm_id`, `capability`, `pqc_category`, `created` and `bits` / `curve` where they apply. |
 | `origins` | list[object] | Every `{origin, source}` that carries this key. |
+
+### `crypto_libraries`
+
+`{}` unless `--scan-crypto-libraries`. For each library the primary evidence is the installed shared library itself: the probe reads the file (at most 64 MiB) and looks for the algorithm and TLS / SSH group names that library embeds when it implements them, so a distribution backport or a build without a PQC backend is reported correctly. When no library file can be read, the package or embedded version is compared with the upstream thresholds, cited in the source code from each project's release notes. AWS-LC is found by the `AWS-LC x.y.z` string in a `libcrypto` file, because some distributions install it under OpenSSL's file names; its `libssl` is only the exact sibling of that file.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False off Linux; then only `reason` follows. |
+| `reason` | string | Why the probes did not run, or with `unavailable_in_container`. |
+| `libraries` | object | One entry per probe: `gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`, `java`, `go`. A library that is not installed is `{installed: false}`. |
+| `summary` | object | `{installed, pqc_capable, classical_only, unknown}`: lists of library names. `unknown` holds libraries whose capability could not be decided (no readable file and a build-dependent library above its version threshold, or no version). |
+
+Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `installed` | bool | A package or library file was found. |
+| `version` | string \| null | Package version, else the version the library embeds (AWS-LC). |
+| `version_source` | string \| null | `package` or `library`. |
+| `packages` | list[object] | Matching installed packages, `{name, version}`, from the rpm database (in-process or `rpm -q`), `/var/lib/dpkg/status`, `/lib/apk/db/installed` or `/var/lib/pacman/local`. |
+| `files` | list[string] | Host paths of the library files read. |
+| `evidence` | string | `binary` (capability read from the library file), `version` (threshold comparison only) or `none`. |
+| `pqc_capable` | bool \| null | Binary evidence: any PQC name found. Version evidence: any threshold met, except `null` for a build-dependent library (GnuTLS, wolfSSL), which may be built without PQC. |
+| `algorithms` | object | Names found in the binary, by kind: `tls_hybrid_groups` (e.g. `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024`), `kem` (e.g. `ML-KEM-768`, `sntrup761`), `signatures` (e.g. `ML-DSA-65`), `ssh_kex` (libssh: `mlkem768x25519-sha256`, `mlkem768nistp256-sha256`, `mlkem1024nistp384-sha384`, `sntrup761x25519-sha512`). Empty when no file was read. |
+| `version_thresholds` | object | Capability → `{minimum_version, met, note}`; `met` is `null` without a version. GnuTLS: `tls_hybrid_mlkem768` 3.8.8, `tls_hybrid_mlkem1024` and `ml_dsa` 3.8.9, `ml_dsa_tls` 3.8.10. libgcrypt: `ml_kem_draft` 1.11.0, `ml_kem` 1.11.1, `ml_dsa` 1.12.0. libssh: `ssh_pqc_kex` 0.12.0. wolfSSL: `ml_kem_final` 5.7.4, `ml_kem_default` 5.9.1. AWS-LC: `ml_kem` 1.35.0, `tls_hybrid_mlkem768` 1.35.1, `ml_dsa` 1.41.0, `tls_hybrid_mlkem1024` 1.50.0. |
+| `build_dependent` | bool | PQC support depends on build options (GnuTLS needs a PQC backend; wolfSSL before 5.9.1 needs `--enable-mlkem`). |
+| `caveats` | list[string] | Set when the version is known to be below a release that changed the algorithm to its final standard while the binary still carries PQC names: libgcrypt before 1.11.1 (FIPS 203 initial public draft Kyber), wolfSSL before 5.7.4 (pre-final Kyber / Dilithium). Distribution builds may carry the final-standard patch. |
+| `reference` | string | The release notes the thresholds come from. |
+
+`java` and `go` entries (toolchains, from files: each JDK's `release` file under `/usr/lib/jvm`, `/usr/lib64/jvm`, `/usr/java`, `/opt/java`; each Go root's `VERSION` file):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `installed` | bool | At least one install was found. |
+| `installs` | list[object] | `java`: `{path, version, implementor, jca_ml_kem_ml_dsa, tls_hybrid_default}`; `go`: `{path, version, tls_mlkem_default}`. `jca_ml_kem_ml_dsa` is JDK ≥ 24 (JEP 496 / 497, JCA APIs only); `tls_hybrid_default` is JDK ≥ 27 (JEP 527, X25519MLKEM768 on by default in TLS 1.3); `tls_mlkem_default` is Go ≥ 1.24 (X25519MLKEM768 on by default in `crypto/tls`; `GODEBUG=tlsmlkem=0` reverts it). |
+| `evidence` | string | Always `version`. |
+| `pqc_capable` | bool | Any install meets the first threshold. |
+| `version_thresholds` | object | As above, `{minimum_version, note}` per capability. |
+| `reference` | string | JEP / Go release-note URLs. |
 
 ### `os_release`
 
