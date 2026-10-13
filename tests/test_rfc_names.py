@@ -190,13 +190,15 @@ def test_recommendation_lists_matching_groups() -> None:
 
 
 def test_ir_8547_is_never_presented_as_final() -> None:
-    assert "(NIST IR 8547)" not in (pr.__doc__ or "")
+    # The --cbom help and README CBOM text are owned by the render-cbom
+    # lane (#138 / PR #163); this covers the data-policy lane's strings.
     nist = rec_mod.POLICY_PREFERENCES["nist-civilian"]["source"]
     assert "NIST IR 8547 (initial public draft)" in nist
-    for doc in ("README.md", "docs/recommendation-policies.md"):
-        path = REPO / doc
-        if path.exists():  # docs are absent in the slim container test images
-            assert "ir/8547/final" not in path.read_text(), doc
+    doc = REPO / "docs" / "recommendation-policies.md"
+    if doc.exists():  # docs are absent in the slim container test images
+        text = doc.read_text()
+        assert "ir/8547/final" not in text
+        assert "ir/8547/ipd" in text
 
 
 def test_sarif_openssl_rule_cites_standards() -> None:
