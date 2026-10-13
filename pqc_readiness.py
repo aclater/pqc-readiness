@@ -2591,10 +2591,20 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
     reports: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     for fp in sorted(dir_path.glob("**/*.json")):
+        # UnicodeDecodeError covers binary/non-UTF-8 files dropped into the
+        # fleet dir; one stray file must not abort the whole rollup.
         try:
             data = json.loads(fp.read_text())
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
+            continue
+        if not isinstance(data, dict):
+            skipped.append(
+                {
+                    "file": str(fp),
+                    "reason": f"not a report: top-level JSON is {type(data).__name__}, expected object",
+                }
+            )
             continue
         sv = data.get("schema_version")
         if sv != SCHEMA_VERSION:

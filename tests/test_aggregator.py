@@ -16,6 +16,8 @@ import math
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import pqc_readiness as pr
 
 
@@ -222,6 +224,45 @@ def test_run_aggregator_malformed_json_skipped_others_aggregate(
     entry = rollup["skipped"][0]
     assert entry["file"] == str(bad_path)
     assert entry["reason"].startswith("unreadable: ")
+
+
+@pytest.mark.parametrize(
+    ("payload", "type_name"),
+    [("[1, 2, 3]", "list"), ('"report"', "str"), ("42", "int"), ("null", "NoneType")],
+)
+def test_run_aggregator_skips_valid_json_that_is_not_an_object(
+    tmp_path: Path, payload: str, type_name: str
+) -> None:
+    """Regression: a syntactically valid JSON file whose top level isn't
+    an object (e.g. some other tool's array output) raised
+    AttributeError on `.get` and aborted the entire rollup."""
+    (tmp_path / "good.json").write_text(json.dumps(_valid_report()))
+    stray = tmp_path / "stray.json"
+    stray.write_text(payload)
+
+    rollup = json.loads(pr.run_aggregator(tmp_path, output="json")[0])
+    assert rollup["total_hosts"] == 1
+    assert rollup["skipped"] == [
+        {
+            "file": str(stray),
+            "reason": f"not a report: top-level JSON is {type_name}, expected object",
+        }
+    ]
+
+
+def test_run_aggregator_skips_non_utf8_file(tmp_path: Path) -> None:
+    """Regression: a binary / non-UTF-8 *.json file raised
+    UnicodeDecodeError (not caught as OSError/JSONDecodeError) and
+    aborted the entire rollup."""
+    (tmp_path / "good.json").write_text(json.dumps(_valid_report()))
+    binary = tmp_path / "binary.json"
+    binary.write_bytes(b"\xff\xfe\x00not utf-8")
+
+    rollup = json.loads(pr.run_aggregator(tmp_path, output="json")[0])
+    assert rollup["total_hosts"] == 1
+    assert len(rollup["skipped"]) == 1
+    assert rollup["skipped"][0]["file"] == str(binary)
+    assert rollup["skipped"][0]["reason"].startswith("unreadable: ")
 
 
 def test_run_aggregator_csv_on_empty_dir_emits_header_only(
