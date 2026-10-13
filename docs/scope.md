@@ -23,6 +23,15 @@ CPACF / Crypto Express on s390x), attached cryptographic accelerators
 (`/proc/crypto`, kernel TLS, FIPS mode), and library versions
 (OpenSSL ≥ 3.5 PQC algorithms, OpenSSH `ssh -Q kex`, IPsec stacks, NSS).
 
+It also answers a second question at host level: *is that capability
+actually configured?* For TLS, SSH and IPsec, and for every listening
+service it can attribute, it reports whether PQC is deployed, capable but
+not configured, configured but not capable, or not capable at all
+(`pqc_deployment_gap`, #107). That verdict comes from what the host
+already exposes (library capability, the system crypto policy, OpenSSL's
+default groups, sshd's effective configuration, configured IKE
+proposals), with no network traffic.
+
 It does not probe network endpoints, parse application source code, read
 dependency manifests, or measure TLS handshake cost end-to-end. Those
 are separate categories with separate tools, described below.
@@ -58,10 +67,15 @@ endpoint-observed algorithms.
 A host-level scan tells you which PQC algorithms a server *can*
 negotiate given its CPU, accelerators, and library versions; a
 network-level scan tells you which algorithms it *does* negotiate on a
-given listener. Joining the two — host CBOM keyed by host, endpoint
-report keyed by `(host, port)` — produces a capability-vs.-deployment
-gap analysis (capable but not configured, configured but not capable,
-both, neither).
+given listener. The capable and configured half of that comparison is
+now computed on the host itself (`pqc_deployment_gap`). The third state,
+what an endpoint was *observed* to negotiate, still needs the network
+view: the fleet aggregator joins endpoint-observation records produced by
+tools in this category, keyed by FQDN, port and SNI, to each host's
+listeners and verdict (`--aggregate DIR --observations FILE`; record
+format in [endpoint-observations.md](endpoint-observations.md)). A
+`deployed` endpoint observed negotiating classical key exchange, for
+example, points at a client or an intermediary rather than the host.
 
 ### 3. Source-code cryptographic scanners
 
