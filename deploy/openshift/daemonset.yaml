@@ -175,6 +175,12 @@ spec:
             - name: host-rpmdb
               mountPath: /host/var/lib/rpm
               readOnly: true
+            # System crypto-policy back-ends (#104): /etc/crypto-policies/
+            # back-ends/*.config are absolute symlinks into this directory,
+            # resolved under /host, so it must be mounted alongside /etc.
+            - name: host-crypto-policies
+              mountPath: /host/usr/share/crypto-policies
+              readOnly: true
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
               readOnly: false
@@ -204,6 +210,11 @@ spec:
         - name: host-rpmdb
           hostPath:
             path: /var/lib/rpm
+            type: Directory
+        # Present on every RHCOS / RHEL-family node.
+        - name: host-crypto-policies
+          hostPath:
+            path: /usr/share/crypto-policies
             type: Directory
         # Output: hostPath today.  Swap to a PVC bound to RWX storage
         # (e.g. NFS, CephFS) for centralized aggregation across the
