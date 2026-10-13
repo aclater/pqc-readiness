@@ -178,6 +178,7 @@ Flags below are grouped by purpose.
 
 | Flag | Purpose |
 | --- | --- |
+| `--debug` | Log detection diagnostics (failed file reads, subprocess exit codes) to stderr. Report output on stdout is unchanged. Use it to tell "tool absent" from "tool present but read/parse failed" on a customer host. |
 | `--version` | Print the script version and the JSON schema version, then exit. |
 | `-h`, `--help` | Print help and exit. |
 
