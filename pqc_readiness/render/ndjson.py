@@ -14,7 +14,8 @@ OCSF has no crypto-inventory class, so scanner-specific detail goes under
 ``cloud`` and ``osint`` attributes belong to optional OCSF profiles and
 mean nothing for an on-host scan.
 
-Identity: ``finding_info.uid`` is the same host + rule fingerprint
+Identity: ``finding_info.uid`` is the same host + rule (+ subject, for
+rules that fire per service / library / connection) fingerprint
 ``--sarif-anchor`` uses, so a finding keeps one ID across runs and
 across formats (ticketing correlation, #156).  ``metadata.uid`` adds the
 run time, identifying one emitted event.
@@ -146,7 +147,7 @@ def host_summary_event(r: _report.Report, findings_count: int) -> dict[str, Any]
 def finding_event(r: _report.Report, finding: _sarif.Finding) -> dict[str, Any]:
     """Compliance Finding (2003) for one matched rule."""
     spec = next(s for s in _sarif.RULE_SPECS if s.id == finding.rule_id)
-    uid = _sarif.finding_fingerprint(r.hostname, finding.rule_id)
+    uid = _sarif.finding_fingerprint(r.hostname, finding.rule_id, finding.subject)
     sev = _severity_id(_sarif.SECURITY_SEVERITY.get(finding.rule_id))
     return {
         "class_uid": _COMPLIANCE_FINDING,
@@ -190,6 +191,7 @@ def finding_event(r: _report.Report, finding: _sarif.Finding) -> dict[str, Any]:
                 "level": finding.level,
                 "security_severity": _sarif.SECURITY_SEVERITY.get(spec.id),
                 "properties": finding.properties,
+                **({"subject": finding.subject} if finding.subject else {}),
             }
         },
     }

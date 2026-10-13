@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,8 @@ from .. import report as _report
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import config_sshd as _config_sshd
+from ..detect import protocols_libraries as _libraries
+from ..detect import runtime_services as _services
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +69,11 @@ class Finding:
     level: str
     message: str
     properties: dict[str, Any]
+    # What the result is about when one rule fires several times per host
+    # (a service, a library, an IPsec connection; #193).  Part of the
+    # finding's identity; empty for host-level rules, which keeps their
+    # fingerprints identical to earlier releases.
+    subject: str = ""
 
 
 RULE_SPECS: tuple[RuleSpec, ...] = (
@@ -225,6 +233,126 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-010-sshd-pqc-kex-not-offered.md",
     ),
+    # Software that will fail at PQC (#193): one result per service,
+    # library, install, connection or package, never a host-wide summary.
+    RuleSpec(
+        id="pqc-011-service-crypto-library-without-pqc",
+        short_description=(
+            "A listening service uses a crypto library that cannot do PQC."
+        ),
+        full_description=(
+            "A process listening on this host maps a TLS / crypto library "
+            "whose version has no ML-KEM hybrid key exchange (e.g. OpenSSL "
+            "older than 3.5, NSS older than 3.108).  Whatever the system "
+            "policy says, connections to this service stay classical and "
+            "exposed to harvest-now-decrypt-later until the library or the "
+            "service is upgraded.  Needs --scan-services."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-011-service-crypto-library-without-pqc.md",
+    ),
+    RuleSpec(
+        id="pqc-012-go-service-without-hybrid-mlkem",
+        short_description=(
+            "A statically linked Go service does not offer hybrid ML-KEM."
+        ),
+        full_description=(
+            "A listening Go binary carries its own crypto/tls.  Go offers "
+            "X25519MLKEM768 by default only from Go 1.24; older binaries "
+            "offer none (Go 1.23 offers only the pre-standard Kyber draft), "
+            "and GODEBUG tlsmlkem=0 switches it off.  Rebuilding with a "
+            "current Go toolchain is the fix; the host's own libraries do "
+            "not help a static binary.  Needs --scan-services."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-012-go-service-without-hybrid-mlkem.md",
+    ),
+    RuleSpec(
+        id="pqc-013-crypto-library-without-pqc",
+        short_description="An installed crypto library or toolchain cannot do PQC.",
+        full_description=(
+            "An installed crypto library (GnuTLS, libgcrypt, libssh, "
+            "wolfSSL, AWS-LC) or toolchain (JDK, Go) has no ML-KEM / ML-DSA "
+            "support, judged from the algorithm names inside the library "
+            "file or, failing that, its version against the project's "
+            "release notes.  Software built on it will fail at PQC until it "
+            "is upgraded.  Needs --scan-crypto-libraries."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-013-crypto-library-without-pqc.md",
+    ),
+    RuleSpec(
+        id="pqc-014-crypto-library-pre-standard-mlkem",
+        short_description=(
+            "An installed crypto library only has pre-standard ML-KEM (Kyber)."
+        ),
+        full_description=(
+            "The library carries post-quantum algorithms, but its version "
+            "predates the release that moved them to the final FIPS 203 / "
+            "FIPS 204 standards (libgcrypt before 1.11.1, wolfSSL before "
+            "5.7.4).  Draft Kyber does not interoperate with standard "
+            "ML-KEM peers.  Distribution builds sometimes backport the "
+            "final standard, so treat this as a check, not a verdict."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-014-crypto-library-pre-standard-mlkem.md",
+    ),
+    RuleSpec(
+        id="pqc-015-ipsec-mlkem-unsupported-by-stack",
+        short_description=(
+            "IPsec connections configure ML-KEM that the installed stack can't do."
+        ),
+        full_description=(
+            "IKEv2 proposals ask for ML-KEM (RFC 9370 additional key "
+            "exchanges or ML-KEM as the main exchange), but the installed "
+            "IPsec stack reports no ML-KEM support.  Such connections fail "
+            "to load rather than falling back (measured with Libreswan "
+            "5.3.2), so the tunnel breaks outright."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-015-ipsec-mlkem-unsupported-by-stack.md",
+    ),
+    RuleSpec(
+        id="pqc-016-ipsec-classical-only-ike",
+        short_description="An IPsec connection's IKE proposals are classical only.",
+        full_description=(
+            "Every IKE proposal configured for this connection names only "
+            "classical key exchanges, so its IKE SA and the keys derived "
+            "from it are quantum-vulnerable.  Adding an RFC 9370 additional "
+            "key exchange with ML-KEM (strongSwan ke1_mlkem768, Libreswan "
+            "addke1=ml_kem_768) makes it hybrid; ML-KEM in IKEv2 is still an "
+            "IETF draft in the RFC Editor queue."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-016-ipsec-classical-only-ike.md",
+    ),
+    RuleSpec(
+        id="pqc-017-bundled-crypto-without-pqc",
+        short_description="A package bundling its own crypto stack cannot do PQC.",
+        full_description=(
+            "A package that embeds its own crypto (Go runtime, OpenJDK) is "
+            "installed at a version below the release that added PQC: Go "
+            "before 1.24 has no hybrid ML-KEM in crypto/tls, OpenJDK before "
+            "24 has no ML-KEM / ML-DSA at all.  Only packages whose version "
+            "gives a definite answer are reported.  Needs --scan-packages."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-017-bundled-crypto-without-pqc.md",
+    ),
+    RuleSpec(
+        id="pqc-018-pqc-capability-undetermined",
+        short_description="PQC capability could not be determined.",
+        full_description=(
+            "The scanner found software whose PQC capability it cannot "
+            "decide from the evidence it has: a crypto library version with "
+            "no verified threshold, a build-dependent library without a "
+            "readable file, an IKE proposal relying on the implementation "
+            "default, or an offline tree with no OpenSSL package.  Reported "
+            "so nothing is silently assumed safe; verify it by hand."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-018-pqc-capability-undetermined.md",
+    ),
     # pqc-020: the capability-vs-configuration summary (#107).  Numbered
     # apart from pqc-011.. so failure rules added in parallel (#193) can't
     # collide with it.
@@ -299,6 +427,21 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-009-classical-package-signing-keys": "3.1",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
+    # Software that will fail at PQC (#193).  A running service that can't
+    # negotiate PQC is the same exposure as pqc-001, scoped to one service.
+    "pqc-011-service-crypto-library-without-pqc": "5.3",
+    "pqc-012-go-service-without-hybrid-mlkem": "5.3",
+    # Tunnels that fail to load: an outage, not just exposure.
+    "pqc-015-ipsec-mlkem-unsupported-by-stack": "6.5",
+    # Config change fixes it, like pqc-008 / pqc-010.
+    "pqc-016-ipsec-classical-only-ike": "5.0",
+    # Installed but not necessarily in use: medium at the bottom of the band.
+    "pqc-013-crypto-library-without-pqc": "4.0",
+    "pqc-017-bundled-crypto-without-pqc": "4.0",
+    # Draft-only PQC; distribution backports may already fix it: low.
+    "pqc-014-crypto-library-pre-standard-mlkem": "3.1",
+    # Nothing known to be wrong; a prompt to check by hand: lowest.
+    "pqc-018-pqc-capability-undetermined": "1.0",
     # Capability-vs-configuration summary (#107): a config change fixes it;
     # below pqc-008 / pqc-010, which it partly restates.
     "pqc-020-pqc-capable-not-configured": "4.5",
@@ -315,11 +458,14 @@ FINGERPRINT_KEY = "pqcReadinessHostRule/v1"
 _anchor: str | None = None
 
 
-def finding_fingerprint(hostname: str, rule_id: str) -> str:
-    """Stable identity for one host + rule: the same condition on the
-    same host keeps one alert across runs; it closes when the condition
-    clears."""
-    return hashlib.sha256(f"{hostname}\0{rule_id}".encode()).hexdigest()[:32]
+def finding_fingerprint(hostname: str, rule_id: str, subject: str = "") -> str:
+    """Stable identity for one host + rule (+ subject, for rules that fire
+    once per service / library / connection, #193): the same condition on
+    the same host keeps one alert across runs; it closes when the
+    condition clears.  An empty subject gives the same value as earlier
+    releases."""
+    key = f"{hostname}\0{rule_id}" + (f"\0{subject}" if subject else "")
+    return hashlib.sha256(key.encode()).hexdigest()[:32]
 
 
 def anchor_path(template: str, hostname: str) -> str:
@@ -591,6 +737,7 @@ def build_findings(r: _report.Report) -> list[Finding]:
             )
         )
 
+    findings.extend(pqc_failure_findings(r))
     gap_finding = _capable_not_configured_finding(r)
     if gap_finding is not None:
         findings.append(gap_finding)
@@ -643,6 +790,470 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
     )
 
 
+# ---------------------------------------------------------------------------
+# Software that will fail at PQC (#193)
+# ---------------------------------------------------------------------------
+# Maintainer principle: if software will fail at PQC, say so.  Each
+# predicate reads facts the detections already recorded and turns them
+# into one finding per subject.  "Fails" is only claimed on definite
+# evidence; anything the evidence can't decide becomes pqc-018
+# (informational) instead of being silently treated as fine.  Version
+# thresholds are the detections' own constants (cited where defined), not
+# copies.
+
+_UNDETERMINED = "pqc-018-pqc-capability-undetermined"
+
+
+def _undetermined(subject: str, what: str, props: dict[str, Any]) -> Finding:
+    return Finding(
+        rule_id=_UNDETERMINED,
+        level="note",
+        message=f"Cannot tell whether {what} can do post-quantum cryptography.",
+        properties=props,
+        subject=subject,
+    )
+
+
+def _listener_subject(lst: dict[str, Any]) -> str:
+    """Stable per-service identity: protocol, family, port and executable
+    (PIDs and specific addresses change across restarts / DHCP)."""
+    exe = lst.get("exe") or lst.get("process") or "unattributed"
+    return f"service:{lst.get('protocol')}/{lst.get('family')}/{lst.get('port')}:{exe}"
+
+
+def _listener_label(lst: dict[str, Any]) -> str:
+    who = lst.get("systemd_unit") or lst.get("process") or "unattributed process"
+    addr = str(lst.get("address") or "?")
+    if ":" in addr:
+        addr = f"[{addr}]"
+    return f"{who} on {lst.get('protocol')} {addr}:{lst.get('port')}"
+
+
+# OpenSSL sonames before 3.0: libssl.so.1.1 / .so.1.0.0 upstream,
+# libssl.so.10 on RHEL 7 (1.0.2).  OpenSSL 3.x uses .so.3, so a 1.x / 10
+# soname is definite evidence of a pre-3.5 library even when no version
+# string could be read (measured: AlmaLinux 8.10 sshd, OpenSSL 1.1.1k).
+_OPENSSL_PRE3_SONAME = re.compile(
+    r"/lib(?:ssl|crypto)\.so\.(?:1(?:\.[0-9][0-9a-z.]*)?|10)$"
+)
+
+# Service-linkage families that --scan-crypto-libraries also probes from the
+# library file itself (#110); its binary evidence settles libraries whose
+# version has no threshold in the service probe.
+_LIBRARY_PROBE_NAME = {"gnutls": "gnutls", "wolfssl": "wolfssl", "aws-lc": "aws-lc"}
+
+
+def _service_lib_capable(
+    lib: dict[str, Any], probes: dict[str, Any]
+) -> tuple[bool | None, str]:
+    """PQC capability of one library a service maps, with the evidence
+    used: the service probe's own verdict, then the library probe's
+    reading of the same file (or same version), then the OpenSSL soname."""
+    capable = lib.get("library_pqc_capable")
+    if capable is not None:
+        return bool(capable), "version"
+    name = _LIBRARY_PROBE_NAME.get(str(lib.get("family")))
+    probe = probes.get(name) if name else None
+    if probe and probe.get("installed") and probe.get("pqc_capable") is not None:
+        same_file = lib.get("path") in (probe.get("files") or [])
+        same_version = lib.get("version") and lib.get("version") == probe.get("version")
+        if same_file or same_version:
+            return bool(probe["pqc_capable"]), "crypto_libraries"
+    if lib.get("family") == "openssl" and _OPENSSL_PRE3_SONAME.search(
+        str(lib.get("path") or "")
+    ):
+        return False, "soname"
+    return None, ""
+
+
+def _listener_props(lst: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "service:protocol": lst.get("protocol"),
+        "service:address": lst.get("address"),
+        "service:port": lst.get("port"),
+        "service:process": lst.get("process"),
+        "service:exe": lst.get("exe"),
+        "service:systemd_unit": lst.get("systemd_unit"),
+        "service:network_namespace": lst.get("network_namespace"),
+    }
+
+
+def _service_findings(r: _report.Report) -> list[Finding]:
+    scl = r.service_crypto_linkage
+    if not scl.get("available"):
+        return []
+    probes = (r.crypto_libraries or {}).get("libraries") or {}
+    out: list[Finding] = []
+    for lst in scl.get("listeners") or []:
+        subject = _listener_subject(lst)
+        libs = lst.get("crypto_libraries") or []
+        verdicts = [(lib, *_service_lib_capable(lib, probes)) for lib in libs]
+        failing = [(lib, ev) for lib, cap, ev in verdicts if cap is False]
+        unknown = [lib for lib, cap, _ev in verdicts if cap is None]
+        if failing:
+            names = ", ".join(
+                f"{lib.get('family')} "
+                + (
+                    lib.get("version")
+                    or ("1.x (from soname)" if ev == "soname" else "(unknown version)")
+                )
+                for lib, ev in failing
+            )
+            out.append(
+                Finding(
+                    rule_id="pqc-011-service-crypto-library-without-pqc",
+                    level="warning",
+                    message=(
+                        f"{_listener_label(lst)} uses {names}, which has no "
+                        "ML-KEM hybrid key exchange; its connections stay classical."
+                    ),
+                    properties={
+                        **_listener_props(lst),
+                        "service:crypto_libraries": [
+                            {
+                                "family": lib.get("family"),
+                                "version": lib.get("version"),
+                                "path": lib.get("path"),
+                                "evidence": ev,
+                            }
+                            for lib, ev in failing
+                        ],
+                    },
+                    subject=subject,
+                )
+            )
+        elif unknown:
+            out.append(
+                _undetermined(
+                    subject,
+                    f"{_listener_label(lst)} (crypto library "
+                    + ", ".join(
+                        f"{lib.get('family')} {lib.get('version') or '?'}"
+                        for lib in unknown
+                    )
+                    + ": no verified PQC threshold for this library/version)",
+                    _listener_props(lst),
+                )
+            )
+        go = lst.get("go")
+        if go:
+            reverts = list(go.get("godebug_reverts") or [])
+            default = go.get("default_hybrid_kex")
+            if default != "X25519MLKEM768":
+                major, minor = _services.GO_MLKEM_DEFAULT_VERSION
+                if "tlsmlkem" in reverts:
+                    # The detection drops the default when tlsmlkem=0 is set;
+                    # that comes from GODEBUG in the environment or from the
+                    # binary's DefaultGODEBUG, which Go derives from the
+                    # module's `go` line (a go.mod declaring go 1.22 keeps
+                    # 1.22 behaviour even when built with Go 1.26).
+                    why = (
+                        "tlsmlkem=0 turns hybrid ML-KEM off (GODEBUG in the "
+                        "environment, or DefaultGODEBUG from an old `go` line in "
+                        f"go.mod); built with {go.get('go_version')}"
+                    )
+                elif default:
+                    why = (
+                        f"{go.get('go_version')} offers only the pre-standard "
+                        f"{default}; standard X25519MLKEM768 needs Go {major}.{minor}+"
+                    )
+                else:
+                    why = (
+                        f"{go.get('go_version') or 'a pre-1.18 Go'} offers no "
+                        f"hybrid key exchange by default (Go {major}.{minor}+ does)"
+                    )
+                out.append(
+                    Finding(
+                        rule_id="pqc-012-go-service-without-hybrid-mlkem",
+                        level="warning",
+                        message=f"Go service {_listener_label(lst)}: {why}.",
+                        properties={
+                            **_listener_props(lst),
+                            "go:version": go.get("go_version"),
+                            "go:main_module": go.get("main_module"),
+                            "go:default_hybrid_kex": default,
+                            "go:godebug_reverts": reverts,
+                        },
+                        subject=subject,
+                    )
+                )
+    return out
+
+
+def _library_findings(r: _report.Report) -> list[Finding]:
+    cl = r.crypto_libraries
+    if not cl.get("available"):
+        return []
+    out: list[Finding] = []
+    for name, lib in (cl.get("libraries") or {}).items():
+        if not lib.get("installed"):
+            continue
+        installs = lib.get("installs")
+        if installs is not None:
+            # Toolchains (java, go): judge every install, since an old JDK
+            # beside a new one still fails for whatever runs on it.
+            key = "jca_ml_kem_ml_dsa" if name == "java" else "tls_mlkem_default"
+            for inst in installs:
+                subject = f"library:{name}:{inst.get('path')}"
+                label = f"{name} {inst.get('version')} at {inst.get('path')}"
+                props = {
+                    "library:name": name,
+                    "library:version": inst.get("version"),
+                    "library:path": inst.get("path"),
+                }
+                if inst.get(key) is False:
+                    if name == "java":
+                        why = (
+                            "has no ML-KEM / ML-DSA (JEP 496 / 497 arrived in "
+                            f"JDK {_libraries.JDK_JCA_PQC_MAJOR})"
+                        )
+                    else:
+                        major, minor = _services.GO_MLKEM_DEFAULT_VERSION
+                        why = (
+                            "builds programs without default hybrid ML-KEM in "
+                            f"crypto/tls (Go {major}.{minor}+)"
+                        )
+                    out.append(
+                        Finding(
+                            rule_id="pqc-013-crypto-library-without-pqc",
+                            level="warning",
+                            message=f"{label} {why}.",
+                            properties=props,
+                            subject=subject,
+                        )
+                    )
+                elif inst.get(key) is None:
+                    out.append(_undetermined(subject, label, props))
+            continue
+        subject = f"library:{name}"
+        label = f"{name} {lib.get('version') or '(unknown version)'}"
+        props = {
+            "library:name": name,
+            "library:version": lib.get("version"),
+            "library:evidence": lib.get("evidence"),
+            "library:files": list(lib.get("files") or []),
+        }
+        capable = lib.get("pqc_capable")
+        if capable is False:
+            out.append(
+                Finding(
+                    rule_id="pqc-013-crypto-library-without-pqc",
+                    level="warning",
+                    message=(
+                        f"{label} has no ML-KEM / ML-DSA (evidence: "
+                        f"{lib.get('evidence')}); software using it fails at PQC."
+                    ),
+                    properties=props,
+                    subject=subject,
+                )
+            )
+        elif capable is None:
+            out.append(_undetermined(subject, label, props))
+        elif lib.get("caveats"):
+            out.append(
+                Finding(
+                    rule_id="pqc-014-crypto-library-pre-standard-mlkem",
+                    level="note",
+                    message=f"{label}: " + " ".join(lib["caveats"]),
+                    properties={**props, "library:caveats": list(lib["caveats"])},
+                    subject=subject,
+                )
+            )
+    return out
+
+
+def _ipsec_findings(r: _report.Report) -> list[Finding]:
+    ipsec = r.ipsec_pqc
+    cfg = ipsec.get("configured") or {}
+    out: list[Finding] = []
+    mismatch = cfg.get("capability_mismatch")
+    if mismatch:
+        conns = list(mismatch.get("connections") or [])
+        out.append(
+            Finding(
+                rule_id="pqc-015-ipsec-mlkem-unsupported-by-stack",
+                level="warning",
+                message=(
+                    f"{len(conns)} IPsec connection(s) configure ML-KEM "
+                    f"({', '.join(conns)}) but the installed "
+                    f"{ipsec.get('implementation') or 'IPsec stack'} has no "
+                    "ML-KEM support; they fail to load. "
+                    + str(mismatch.get("reason") or "")
+                ).strip(),
+                properties={
+                    "ipsec:implementation": ipsec.get("implementation"),
+                    "ipsec:version": ipsec.get("version"),
+                    "ipsec:connections": conns,
+                },
+            )
+        )
+    by_conn: dict[str, list[dict[str, Any]]] = {}
+    for prop in cfg.get("proposals") or []:
+        if prop.get("kind") != "ike" or not prop.get("connection"):
+            continue
+        by_conn.setdefault(str(prop["connection"]), []).append(prop)
+    for conn, props in sorted(by_conn.items()):
+        if conn == "%default":
+            continue
+        cats = {p.get("category") for p in props}
+        subject = f"ipsec:{conn}"
+        base = {
+            "ipsec:connection": conn,
+            "ipsec:proposals": [p.get("proposal") for p in props],
+            "ipsec:sources": sorted({str(p.get("source")) for p in props}),
+        }
+        if cats & {"hybrid", "pure_pqc"}:
+            continue
+        if None in cats:
+            out.append(
+                _undetermined(
+                    subject,
+                    f"IPsec connection {conn} (an IKE proposal relies on the "
+                    "implementation's default key exchanges)",
+                    base,
+                )
+            )
+        else:
+            out.append(
+                Finding(
+                    rule_id="pqc-016-ipsec-classical-only-ike",
+                    level="warning",
+                    message=(
+                        f"IPsec connection {conn} offers only classical IKE key "
+                        "exchanges ("
+                        + "; ".join(str(p.get("proposal")) for p in props)
+                        + ")."
+                    ),
+                    properties=base,
+                    subject=subject,
+                )
+            )
+    return out
+
+
+_JAVA_MAJOR_RE = re.compile(r"^(?:java-(\d+)(?:\.(\d+))?|openjdk-(\d+)|jdk(\d+))")
+_GO_PACKAGE_RE = re.compile(r"^(?:golang|go)(?:-\d|\d|-bin$|$|-go$)")
+
+
+def _java_major(package: str) -> int | None:
+    m = _JAVA_MAJOR_RE.match(package)
+    if not m:
+        return None
+    first = next(g for g in m.groups() if g is not None)
+    major = int(first)
+    if major == 1 and m.group(2):  # java-1.8.0-openjdk -> 8
+        major = int(m.group(2))
+    return major
+
+
+def _bundled_findings(r: _report.Report) -> list[Finding]:
+    pk = r.packages
+    if not pk.get("available"):
+        return []
+    libs = (r.crypto_libraries.get("libraries") or {}) if r.crypto_libraries else {}
+    out: list[Finding] = []
+    for entry in pk.get("bundled_crypto") or []:
+        name = str(entry.get("package"))
+        version = entry.get("version")
+        props = {
+            "package:name": name,
+            "package:version": version,
+            "package:note": entry.get("note"),
+        }
+        subject = f"package:{name}"
+        major = _java_major(name)
+        if major is not None and "openjdk" in name:
+            # --scan-crypto-libraries already judged each JDK install.
+            if (libs.get("java") or {}).get("installed"):
+                continue
+            if major < _libraries.JDK_JCA_PQC_MAJOR:
+                out.append(
+                    Finding(
+                        rule_id="pqc-017-bundled-crypto-without-pqc",
+                        level="warning",
+                        message=(
+                            f"{name} {version} is OpenJDK {major}: no ML-KEM / "
+                            "ML-DSA (JEP 496 / 497 arrived in JDK "
+                            f"{_libraries.JDK_JCA_PQC_MAJOR})."
+                        ),
+                        properties={**props, "package:jdk_major": major},
+                        subject=subject,
+                    )
+                )
+            continue
+        if _GO_PACKAGE_RE.match(name):
+            if (libs.get("go") or {}).get("installed"):
+                continue
+            vt = _libraries._version_tuple(str(version) if version else None)
+            if vt is None or len(vt) < 2:
+                continue
+            gmaj, gmin = _services.GO_MLKEM_DEFAULT_VERSION
+            if vt[:2] < (gmaj, gmin):
+                out.append(
+                    Finding(
+                        rule_id="pqc-017-bundled-crypto-without-pqc",
+                        level="warning",
+                        message=(
+                            f"{name} {version}: programs built with it get no "
+                            f"default hybrid ML-KEM in crypto/tls (Go {gmaj}.{gmin}+)."
+                        ),
+                        properties=props,
+                        subject=subject,
+                    )
+                )
+    return out
+
+
+def _offline_openssl_findings(r: _report.Report) -> list[Finding]:
+    """--root (#152): the live OpenSSL probe can't run, but the packaged
+    version still answers pqc-001 for the tree."""
+    if not r.scan_mode:
+        return []
+    o = r.openssl
+    pkg = o.get("package") or {}
+    expected = o.get("pqc_native_expected")
+    if expected is False:
+        return [
+            Finding(
+                rule_id="pqc-001-openssl-pre-3.5",
+                level="warning",
+                message=(
+                    f"The tree's OpenSSL package {pkg.get('name')} "
+                    f"{pkg.get('version')} is older than 3.5.0 — native "
+                    "ML-KEM / ML-DSA are not available."
+                ),
+                properties={
+                    "openssl:package": pkg.get("name"),
+                    "openssl:package_version": pkg.get("version"),
+                },
+            )
+        ]
+    if expected is None and "pqc_native_expected" in o:
+        return [
+            _undetermined(
+                "openssl:tree",
+                "the tree's OpenSSL (no OpenSSL library package found)",
+                {"openssl:package": pkg.get("name")},
+            )
+        ]
+    return []
+
+
+def pqc_failure_findings(r: _report.Report) -> list[Finding]:
+    """Every finding for software that will fail at PQC (#193), in
+    RULE_SPECS order (stable: subjects keep detection order within a
+    rule), so SARIF ruleIndex and NDJSON event order are deterministic."""
+    order = {spec.id: i for i, spec in enumerate(RULE_SPECS)}
+    found = (
+        _offline_openssl_findings(r)
+        + _service_findings(r)
+        + _library_findings(r)
+        + _ipsec_findings(r)
+        + _bundled_findings(r)
+    )
+    return sorted(found, key=lambda f: order[f.rule_id])
+
+
 def _sarif_rule_descriptor(
     spec: RuleSpec, code_scanning: bool = False
 ) -> dict[str, Any]:
@@ -685,7 +1296,9 @@ def _sarif_result(
             }
         ]
         result["partialFingerprints"] = {
-            FINGERPRINT_KEY: finding_fingerprint(hostname, finding.rule_id)
+            FINGERPRINT_KEY: finding_fingerprint(
+                hostname, finding.rule_id, finding.subject
+            )
         }
     return result
 

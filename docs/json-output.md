@@ -1020,6 +1020,7 @@ Compliance Finding (2003) only:
 | `scan_mode` | 5001 | Offline `--root` scans only: the report's [`scan_mode`](#scan_mode) object (the event describes a filesystem tree, not a live host). |
 | `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
 | `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
+| `subject` | 2003 | Rules that fire once per service, library, install, IPsec connection or package (`pqc-011` to `pqc-018`, #193): what this finding is about, e.g. `service:tcp/ipv4/443:/usr/sbin/httpd`, `library:gnutls`, `ipsec:site-a`. Part of `finding_info.uid`, so each subject keeps its own stable ID. Absent for host-level rules. |
 
 ## Schema alignment with CycloneDX 1.6
 

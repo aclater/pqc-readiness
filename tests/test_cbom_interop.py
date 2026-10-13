@@ -190,7 +190,8 @@ def test_unknown_interop_mode_is_rejected() -> None:
 
 def test_mirrored_facts_survive_dependency_track_round_trip() -> None:
     """Fixture: the dependency-track-mode CBOM of this exact stub report,
-    uploaded to Dependency-Track 5.2.0 and exported back (2026-10-13, #175).
+    uploaded to Dependency-Track 5.2.0 and exported back (2026-10-13, #175;
+    regenerated for the #194 `providedBy` mirror).
     DT exports CycloneDX 1.5 and drops cryptoProperties; every mirrored
     property set must still be there.  If the mirroring changes on purpose,
     regenerate the fixture against a real 5.x server."""

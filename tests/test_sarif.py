@@ -129,6 +129,123 @@ def _full_trigger_report() -> pr.Report:
                 "all_classical": True,
             },
         },
+        # Software that will fail at PQC (#193): exactly one finding per rule.
+        service_crypto_linkage={
+            "available": True,
+            "listeners": [
+                {  # pqc-011: service on OpenSSL 3.0
+                    "protocol": "tcp",
+                    "family": "ipv4",
+                    "address": "0.0.0.0",
+                    "port": 443,
+                    "bind_scope": "any",
+                    "network_namespace": "host",
+                    "process": "httpd",
+                    "exe": "/usr/sbin/httpd",
+                    "systemd_unit": "httpd.service",
+                    "crypto_libraries": [
+                        {
+                            "family": "openssl",
+                            "version": "3.0.7",
+                            "path": "/usr/lib64/libssl.so.3",
+                            "library_pqc_capable": False,
+                        }
+                    ],
+                    "go": None,
+                },
+                {  # pqc-012: static Go 1.22 service
+                    "protocol": "tcp",
+                    "family": "ipv6",
+                    "address": "::",
+                    "port": 8443,
+                    "bind_scope": "any",
+                    "network_namespace": "host",
+                    "process": "api",
+                    "exe": "/opt/api/api",
+                    "systemd_unit": "api.service",
+                    "crypto_libraries": [],
+                    "static_binary": True,
+                    "go": {
+                        "go_version": "go1.22.5",
+                        "main_module": "example.com/api",
+                        "default_hybrid_kex": None,
+                        "godebug_reverts": [],
+                    },
+                },
+            ],
+        },
+        crypto_libraries={
+            "available": True,
+            "libraries": {
+                # pqc-013
+                "libssh": {
+                    "installed": True,
+                    "version": "0.10.6",
+                    "evidence": "binary",
+                    "pqc_capable": False,
+                    "files": [],
+                },
+                # pqc-014
+                "libgcrypt": {
+                    "installed": True,
+                    "version": "1.11.0",
+                    "evidence": "binary",
+                    "pqc_capable": True,
+                    "files": [],
+                    "caveats": [
+                        "libgcrypt before 1.11.1 implements the FIPS 203 draft (Kyber)."
+                    ],
+                },
+                # pqc-018
+                "gnutls": {
+                    "installed": True,
+                    "version": "3.8.9",
+                    "evidence": "version",
+                    "pqc_capable": None,
+                    "files": [],
+                },
+                "wolfssl": {"installed": False},
+            },
+        },
+        ipsec_pqc={
+            "available": True,
+            "implementation": "libreswan",
+            "pqc": False,
+            "version": "5.3.2",
+            "configured": {
+                "proposals": [
+                    {  # pqc-016
+                        "proposal": "aes256-sha2;dh20",
+                        "connection": "site-a",
+                        "kind": "ike",
+                        "source": "/etc/ipsec.d/site-a.conf",
+                        "category": "classical",
+                    },
+                    {
+                        "proposal": "aes256-sha2;dh20;addke1=ml_kem_768",
+                        "connection": "site-b",
+                        "kind": "ike",
+                        "source": "/etc/ipsec.d/site-b.conf",
+                        "category": "hybrid",
+                    },
+                ],
+                # pqc-015
+                "capability_mismatch": {
+                    "connections": ["site-b"],
+                    "reason": "Libreswan 5.3.2 rejects ML-KEM proposals.",
+                },
+            },
+        },
+        packages={  # pqc-017
+            "available": True,
+            "bundled_crypto": [
+                {
+                    "package": "java-17-openjdk-headless",
+                    "version": "17.0.15",
+                    "note": "Java JCE provider",
+                }
+            ],
+        },
     )
     # The deployment-gap verdict (#107) is computed from the fields above,
     # as collect_report does; TLS and SSH are capable-not-configured here.
@@ -160,7 +277,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 11
+    assert len(rules) == 19
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -172,6 +289,14 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-008-crypto-policy-blocks-pqc",
         "pqc-009-classical-package-signing-keys",
         "pqc-010-sshd-pqc-kex-not-offered",
+        "pqc-011-service-crypto-library-without-pqc",
+        "pqc-012-go-service-without-hybrid-mlkem",
+        "pqc-013-crypto-library-without-pqc",
+        "pqc-014-crypto-library-pre-standard-mlkem",
+        "pqc-015-ipsec-mlkem-unsupported-by-stack",
+        "pqc-016-ipsec-classical-only-ike",
+        "pqc-017-bundled-crypto-without-pqc",
+        "pqc-018-pqc-capability-undetermined",
         "pqc-020-pqc-capable-not-configured",
     }
     assert {r["id"] for r in rules} == expected_ids

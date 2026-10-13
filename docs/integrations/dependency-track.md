@@ -130,6 +130,29 @@ Library components:
   these purls as identification, not as input for exact-build
   vulnerability matching.
 
+## Crypto libraries and services (#194)
+
+With `--scan-crypto-libraries` and `--scan-services`, the 1.7 CBOM also
+carries `library` components for the crypto libraries the host ships and
+`application` components for its listening processes, linked by
+`dependencies` (service → library) and `provides` (library → algorithm).
+
+Measured on 2026-10-13 against `ghcr.io/dependencytrack/apiserver:5.2.0`
+(PostgreSQL 17), uploading a Fedora 44 host's CBOM
+(`--scan-crypto-libraries --scan-services --scan-packages`):
+
+- All 73 cryptographic assets, 7 libraries (11 with
+  `--cbom-interop dependency-track`) and 3 applications were stored, and
+  every service → library edge survived the re-export.
+- Dependency-Track merges components that share a name. Library-provided
+  algorithms therefore carry the library as `group`: without it, GnuTLS's
+  and libssh's `ML-KEM-768` and `mlkem768x25519-sha256` collapsed into
+  OpenSSL's and OpenSSH's (55 of 73 stored).
+- The 1.5 re-export has no `dependencies[].provides`, so
+  `--cbom-interop dependency-track` also writes each link as a
+  `pqc-readiness:crypto:providedBy` property on the asset (48 on that
+  host).
+
 ## Recommendations
 
 - Use **5.x** with `--cbom-interop dependency-track`.

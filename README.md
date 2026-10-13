@@ -472,6 +472,15 @@ adds:
   (`trust-store` / `host-filesystem`) and the discovered
   `crypto_material:path` values. Certificates are a 1.7-only projection;
   `--cbom-version 1.6` output is unchanged.
+- Crypto `library` components from `--scan-crypto-libraries` (GnuTLS,
+  libgcrypt, libssh, wolfSSL, AWS-LC, JDKs, Go), with a distro purl when
+  the package is known. Each library `provides` the PQC algorithms found
+  in its binary; those algorithm assets carry the library as `group`.
+  Listening processes from `--scan-services` become `application`
+  components that depend on the crypto library they actually map
+  (OpenSSL, NSS, GnuTLS, a static Go runtime, …), with one
+  `service:endpoint` property per listener. 1.7-only; nothing is added
+  unless those scans run.
 
 Both versions validate against the official schemas bundled under
 `tests/fixtures/cyclonedx/`. NIST IR 8547, the US transition guidance,
