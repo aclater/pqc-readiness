@@ -16,6 +16,7 @@ privileged DaemonSet on OpenShift.
 
 ## Table of contents
 
+- [What's new](#whats-new)
 - [What it detects](#what-it-detects)
 - [Quick start](#quick-start)
 - [Output formats](#output-formats)
@@ -28,6 +29,137 @@ privileged DaemonSet on OpenShift.
 - [Findings](#findings)
 - [Documentation](#documentation)
 - [License](#license)
+
+## What's new
+
+### 2026-10-13: accuracy fixes, faster scans, schema 1.4
+
+This release fixes results that were wrong on current platforms, so
+**re-scan your fleet**. Older reports can't be aggregated with new ones,
+because the fleet aggregator only merges reports with the same
+`schema_version`. It moves through schema versions 1.1 → 1.4; see
+[Upgrade notes](#upgrade-notes-for-json-consumers).
+
+#### Results that were wrong, now fixed
+
+- **PQC certificates were reported as classical on OpenSSL ≥ 3.5**
+  (#116). OpenSSL 3.5 prints ML-DSA / SLH-DSA *names* rather than OIDs, so
+  `--scan-trust-store` never recognised them. Certificates are now
+  classified from the OIDs in their DER encoding, independent of the
+  installed OpenSSL.
+- **Only the first certificate in each trust-store file was read**
+  (#116). Bundle files hold hundreds of certificates. Every certificate
+  is now inspected and de-duplicated by SHA-256. On a Fedora 44 host
+  that is 396 unique certificates instead of 125 files, including the
+  whole code-signing CA bundle that was previously invisible.
+- **Container deployments described the scanner image, not the host**
+  (#125). Under `--host-mount` (DaemonSet, quadlet), `--scan-packages`
+  and the NSS version came from the *container image's* rpm database.
+  They now read the host's rpm database, and the deployment manifests
+  mount it read-only.
+- **A missing algorithm benchmarked every algorithm** (#117). Asking
+  `openssl speed` for an algorithm the local OpenSSL lacks makes it run
+  the whole class instead. Such algorithms are now skipped with a reason.
+- **Ubuntu upgrade advice pointed at an end-of-life release** (#121).
+  Hosts on 24.04 or older are now pointed at 26.04 LTS, which ships
+  OpenSSL 3.5. The old advice also wrongly said 24.04 offers OpenSSL 3.5.
+- **Fleet rollups no longer abort on one bad file** (#76, #88). A
+  non-UTF-8 file or a JSON value that isn't an object is listed under
+  `skipped` instead of crashing the aggregation.
+
+#### New
+
+- **Three more recommendation roles** for `--recommend --role`:
+  `tls-client`, `signing-service` and `firmware-signing`, under all four
+  policies (#90–#92). Firmware signing recommends SLH-DSA (hash-based)
+  except under CNSA 2.0, which mandates ML-DSA-87 and names LMS/XMSS
+  (SP 800-208) for firmware. See
+  [docs/recommendation-policies.md](docs/recommendation-policies.md).
+- **`--output FILE`** writes any format to a path, including
+  `--aggregate`, `--recommend` and `--ansible` (#89). Exit code 5 means
+  the file could not be written.
+- **`--debug`** logs every probe's diagnostics and subprocess exit codes
+  to stderr; stdout is unchanged (#81).
+- **`--trust-store-max-certs N`** bounds `--scan-trust-store` (default
+  500 certificates); `trust_store.truncated` reports when the cap is hit
+  (#87).
+- **`--ansible` with `--check` / `--fips-strict` warns on stderr** that
+  the gate is ignored, instead of silently exiting 0 (#95).
+- Kernel crypto and kTLS detections now report when they can't see the
+  host from inside a container (#70). The classical benchmark baseline
+  now keeps OpenSSL's RSA KEM and signature rows, including key
+  generation rates (#117).
+
+#### Faster
+
+Measured on Fedora 44 (24 cores); median of 11 runs, alternating between
+versions.
+
+| Run | Before | Now | Change |
+|---|---|---|---|
+| Default scan | 0.38 s | 0.38 s | unchanged |
+| `--scan-packages` | 0.79 s | 0.36 s | 2.2× faster |
+| `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
+| Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
+
+The rpm database is read in-process on SQLite-backed systems (EL9,
+EL10, Fedora, CentOS Stream, Oracle Linux 9, Amazon Linux 2023). Single
+lookups such as the NSS version use rpm's own `Name` index.
+Berkeley DB (EL8, openSUSE Leap 15.6) and ndb (SLES 15, Leap 16,
+Tumbleweed) databases still go through `rpm`, pointed at the host with
+`--root` under `--host-mount`. The database format is detected from the
+file contents, never assumed from the distro version, because hosts
+upgraded in place can keep an older format.
+
+#### Validated on real hosts
+
+Official cloud images were booted under KVM. Each one checked the
+in-process rpm reader against `rpm -qa` and ran the scanner end to end
+with `--scan-packages`:
+
+- **SQLite, reader output identical to `rpm -qa`, scanner OK:** AlmaLinux
+  9.8 and 10.2, Rocky Linux 9.8 and 10.2, CentOS Stream 10, Fedora 43 and
+  44.
+- **ndb, served by the `rpm` fallback, scanner OK:** openSUSE Leap 16.0
+  and Tumbleweed.
+- **Database format detected correctly, but the scanner can't run on the
+  stock image (Python 3.6 only):** AlmaLinux 8.10 (Berkeley DB) and
+  openSUSE Leap 15.6 (Berkeley DB). See *Known limitations*.
+
+Container images of RHEL 8/9/10 (UBI), Rocky, Alma, Stream, Oracle Linux
+9, Amazon Linux 2023 and SLES 15 SP6/SP7 were also checked.
+
+#### Upgrade notes for JSON consumers
+
+| Schema | Change |
+|---|---|
+| `1.2` | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_method` are `null` when not run (previously `{}` / `""`). `trust_store` gained `total_found`, `scanned_count`, `max_certs`, `truncated`. |
+| `1.3` | Benchmark entries can carry `skipped`; RSA KEM/signature baseline rows added. **`trust_store` counts are now unique certificates, not files**, so they aren't comparable with older reports. |
+| `1.4` | `packages.source` (`rpmdb-sqlite` or `rpm-cli`) and `packages.db_root` show which database was read. |
+
+Nothing was renamed or removed. The full field reference is in
+[docs/json-output.md](docs/json-output.md).
+
+#### Known limitations
+
+- **Stock SLES 15 / openSUSE Leap 15** ship only Python 3.6, so the
+  scanner exits 127 until a newer interpreter is installed (#127).
+  [RHEL 8 / Rocky 8 / AlmaLinux 8](#distribution-support) need the same
+  kind of prerequisite.
+- RHEL cloud images need a Red Hat login to download, so they were checked as UBI containers.
+  Rocky and AlmaLinux stood in for booted RHEL 8 hosts.
+
+#### Under the hood
+
+- CI pins `ruff` / `mypy` so tool upgrades can't break unchanged code
+  (#97). `detect-secrets` runs in CI (#94).
+- The full test suite runs inside the UBI 8, UBI 10 and Debian images
+  on every PR (#84). A weekly workflow covers Fedora, Rocky/AlmaLinux 9
+  and 10, Debian 13, Ubuntu 26.04 LTS and SLES (#83, #115).
+- `main()` was split into parser, collection, rendering and exit-code
+  steps, guarded by a golden-output test (#80, first step towards the
+  package split).
+- Tests went from 351 to 688.
 
 ## What it detects
 
@@ -154,7 +286,7 @@ Flags below are grouped by purpose.
 | `--scan-trust-store` | Walk system trust-store directories and classify every certificate (bundles included) as PQC, hybrid composite, or classical by reading its algorithm OIDs directly; no `openssl` binary needed. |
 | `--trust-store-max-certs N` | Cap on unique certificates classified by `--scan-trust-store` (default 500). When the cap is hit, `trust_store.truncated` is `true` and the text, CBOM, and SARIF outputs say how many certificates were not inspected. |
 | `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; `rpmdb.sqlite` is read in-process, with `rpm -qa` as the fallback for Berkeley DB / ndb databases), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
-| `--host-mount PATH` | Prefix for `/proc /sys /dev /etc` reads. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
+| `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 
 ### Recommendation engine
 
@@ -268,12 +400,13 @@ the audit finding.
 
 **RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** EL8 needs one manual
 prerequisite: a Python 3.9+ interpreter from AppStream. Stock EL8 cloud
-images (RHEL / Rocky / AlmaLinux 8.10 KVM qcow2s) ship **no** `python3`
-on `PATH` at all — only `/usr/libexec/platform-python` (3.6), which
-cannot parse the script — so out of the box `./pqc_readiness.py` fails
-with `/usr/bin/env: 'python3': No such file or directory` (exit 127)
-and the `pqc-readiness` wrapper exits 127 with the same guidance as
-below. Install an interpreter once per host (or in your configuration-
+images (RHEL / Rocky / AlmaLinux 8.10 KVM qcow2s) ship no Python 3.9+.
+Depending on the image build there is either no `python3` on `PATH` at
+all (only `/usr/libexec/platform-python`, 3.6) or a `python3` that is
+3.6. The AlmaLinux 8.10 image of 2026-10 ships `/usr/bin/python3` 3.6.8.
+Neither can parse the script: `./pqc_readiness.py` fails with
+`/usr/bin/env: 'python3': No such file or directory` or a syntax error,
+and the `pqc-readiness` wrapper exits 127 with the guidance below. Install an interpreter once per host (or in your configuration-
 management baseline), then invoke through the wrapper, which finds it
 automatically:
 
@@ -327,7 +460,11 @@ runs the probe daily against the host.
 
 `deploy/openshift/daemonset.yaml` is the fleet DaemonSet — non-root,
 hostPID, custom SCC dropping all capabilities, read-only host bind
-mounts of `/proc /sys /dev /etc /usr/lib/os-release`. Inside the pod
+mounts of `/proc /sys /dev /etc /usr/lib/os-release` and the rpm
+database directory `/var/lib/rpm`. That one mount covers every layout,
+because on EL10, Fedora and SUSE `/var/lib/rpm` is a symlink to
+`/usr/lib/sysimage/rpm` and the bind mount follows it. The quadlet
+mounts the same paths. Inside the pod
 the host root is mounted at `/host` and the probe is invoked with
 `--host-mount /host` so its reads target the node, not the container
 image.

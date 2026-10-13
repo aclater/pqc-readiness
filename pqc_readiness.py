@@ -7295,13 +7295,20 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--scan-packages",
         action="store_true",
-        help="enumerate installed packages with bundled crypto (RHEL/Fedora)",
+        help=(
+            "enumerate installed packages with bundled crypto "
+            "(rpm, dpkg, pacman and apk families)"
+        ),
     )
     ap.add_argument(
         "--host-mount",
         metavar="PATH",
         default="",
-        help="prefix for /proc /sys /dev /etc reads (DaemonSet pattern)",
+        help=(
+            "path where the host root is mounted (DaemonSet / quadlet "
+            "pattern); host reads of /proc /sys /dev /etc, os-release and "
+            "the rpm / dpkg databases go through it"
+        ),
     )
     ap.add_argument(
         "--ansible",
