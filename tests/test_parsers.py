@@ -1178,13 +1178,6 @@ def test_openssl_upgrade_path_already_pqc_capable_returns_none() -> None:
     assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
 
 
-def test_openssl_upgrade_path_rhel9() -> None:
-    osr = {"family": "rhel", "id": "rhel", "version_id": "9.6"}
-    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
-    assert msg is not None
-    assert "RHEL 10" in msg
-
-
 @pytest.mark.parametrize(
     "id_, version_id, expected_distro_token",
     [
@@ -1210,23 +1203,62 @@ def test_openssl_upgrade_path_rhel8_family(
     assert "python3" in msg.lower(), "should name the python3.9+ AppStream module"
 
 
-def test_openssl_upgrade_path_rhel9_unchanged_after_rhel8_branch() -> None:
-    """Regression guard: adding the RHEL 8 branch must not change the
-    existing RHEL 9 string."""
-    osr = {"family": "rhel", "id": "rhel", "version_id": "9.6"}
-    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
+# Measured 2026-10-13 with `rpm -q openssl-libs` in the official images
+# (#184): EL9.4 = 3.0.7, 9.5/9.6 = 3.2.2, 9.7 = 3.5.1, 9.8 = 3.5.5-3.5.8;
+# EL10.0 = 3.2.2, 10.1 = 3.5.1, 10.2 = 3.5.8.
+@pytest.mark.parametrize(
+    ("id_", "version_id", "detected", "target"),
+    [
+        ("rhel", "9.4", [3, 0, 7], "9.7"),
+        ("rhel", "9.6", [3, 2, 2], "9.7"),
+        ("rocky", "9.5", [3, 2, 2], "9.7"),
+        ("almalinux", "9.6", [3, 2, 2], "9.7"),
+        ("ol", "9.4", [3, 0, 7], "9.7"),
+        ("rhel", "10.0", [3, 2, 2], "10.1"),
+        ("almalinux", "10.0", [3, 2, 2], "10.1"),
+        ("centos", "9", [3, 2, 2], "9.7"),
+    ],
+)
+def test_openssl_upgrade_path_el9_el10_points_at_first_35_minor(
+    id_: str, version_id: str, detected: list[int], target: str
+) -> None:
+    osr = {"family": "rhel", "id": id_, "version_id": version_id}
+    msg = pr.openssl_upgrade_path(detected, osr)
     assert msg is not None
-    assert "RHEL 10" in msg
-    assert "AppStream" not in msg, "RHEL 9 hint should not mention AppStream Python"
-
-
-def test_openssl_upgrade_path_rocky9_unchanged_after_rhel8_branch() -> None:
-    """Regression guard: Rocky/Alma 9 keeps the EL9-class hint."""
-    osr = {"family": "rhel", "id": "rocky", "version_id": "9.6"}
-    msg = pr.openssl_upgrade_path([3, 2, 0], osr)
-    assert msg is not None
-    assert "EL10" in msg or "backport" in msg
+    assert f"update to {target} or later" in msg, msg
     assert "AppStream" not in msg
+    # Stale advice from before #184: RHEL 9 never needed a major upgrade.
+    assert "RHEL 10 or" not in msg and "EL10 release" not in msg
+
+
+@pytest.mark.parametrize(
+    ("id_", "version_id"),
+    [("rhel", "9.8"), ("rocky", "9.8"), ("ol", "9.7"), ("rhel", "10.2")],
+)
+def test_openssl_upgrade_path_el_minor_that_ships_35_but_host_is_older(
+    id_: str, version_id: str
+) -> None:
+    """These minors ship 3.5 in the base channel; an older OpenSSL means
+    a lock, exclude or third-party package, not a missing upgrade."""
+    osr = {"family": "rhel", "id": id_, "version_id": version_id}
+    msg = pr.openssl_upgrade_path([3, 2, 2], osr)
+    assert msg is not None
+    assert "ships OpenSSL 3.5" in msg
+    assert "version-locked" in msg
+
+
+def test_openssl_upgrade_path_el9_measured_35_returns_none() -> None:
+    # EL 9.8 images report 3.5.5-3.5.8: nothing to upgrade.
+    osr = {"family": "rhel", "id": "rocky", "version_id": "9.8"}
+    assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
+
+
+@pytest.mark.parametrize("id_", ["rhel", "centos", "ol"])
+def test_openssl_upgrade_path_el7(id_: str) -> None:
+    osr = {"family": "rhel", "id": id_, "version_id": "7.9"}
+    msg = pr.openssl_upgrade_path([1, 0, 2], osr)
+    assert msg is not None
+    assert "1.0.2" in msg and "9.7" in msg and "10.1" in msg
 
 
 def test_openssl_upgrade_path_debian12() -> None:
