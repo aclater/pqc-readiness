@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Explicit rule selection so a ruff upgrade cannot silently change lint
+# policy (#97).  These are the pre-0.17 ruff defaults.
+[lint]
+select = ["E4", "E7", "E9", "F"]
