@@ -737,11 +737,17 @@ runs the probe daily against the host.
 
 `deploy/openshift/daemonset.yaml` is the fleet DaemonSet — non-root,
 hostPID, custom SCC dropping all capabilities, read-only host bind
-mounts of `/proc /sys /dev /etc /usr/lib/os-release` and the rpm
-database directory `/var/lib/rpm`. That one mount covers every layout,
-because on EL10, Fedora and SUSE `/var/lib/rpm` is a symlink to
-`/usr/lib/sysimage/rpm` and the bind mount follows it. The quadlet
-mounts the same paths. Inside the pod
+mounts of `/proc /sys /dev /etc /usr` and the rpm database directory
+`/var/lib/rpm`. That rpm mount covers every layout, because on EL10,
+Fedora and SUSE `/var/lib/rpm` is a symlink to `/usr/lib/sysimage/rpm`
+and the bind mount follows it. `/usr` is mounted whole (#187) because the
+paths the probe reads there (`/usr/lib/os-release`, the crypto-policies
+back-ends in `/usr/share/crypto-policies`, SUSE's vendor sshd config in
+`/usr/etc/ssh`) exist only on some distros, and a missing narrower source
+either stops the pod (`type: Directory`), gets created on the node by
+CRI-O (untyped hostPath), or makes podman refuse to start. The quadlet
+mounts the same paths, so it no longer needs editing on Debian/Ubuntu.
+Inside the pod
 the host root is mounted at `/host` and the probe is invoked with
 `--host-mount /host` so its reads target the node, not the container
 image.
