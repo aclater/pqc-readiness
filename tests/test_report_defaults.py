@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 
@@ -51,3 +52,29 @@ def test_main_json_without_bench_emits_null(
     for name in NORMALIZED_FIELDS:
         assert data[name] is None, name
     assert data["per_algo"] == {}
+
+
+def test_schema_version_is_1_2() -> None:
+    """#70/#82/#87 are additive or null-normalising changes: minor bump
+    per docs/schema-alignment.md, not a major bump."""
+    assert pr.SCHEMA_VERSION == "1.2"
+
+
+DOCS_DIR = Path(pr.__file__).resolve().parent / "docs"
+
+
+# Repo-level integrity check: docs/ is not shipped into the UBI 8 test
+# image (ci-ubi8.yml COPYs only tests/ and the script), so skip there —
+# same pattern as test_readme_distribution_support.py.
+@pytest.mark.skipif(
+    not DOCS_DIR.is_dir(),
+    reason="docs/ not present (e.g. inside the UBI 8 test image)",
+)
+def test_docs_reference_current_schema_version() -> None:
+    """Docs that quote schema_version must track SCHEMA_VERSION so the
+    reference never claims a stale value as current (#96 drift)."""
+    root = DOCS_DIR
+    current = f'"{pr.SCHEMA_VERSION}"'
+    assert current in (root / "json-output.md").read_text()
+    assert f"schema_version: {current}" in (root / "ansible.md").read_text()
+    assert current in (root / "schema-alignment.md").read_text()

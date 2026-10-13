@@ -1,9 +1,18 @@
 # JSON output reference
 
 `./pqc_readiness.py --json` emits a stable, schema-versioned document.
-The `schema_version` key changes only when fields are renamed or
-removed; additive changes keep the same version. The fleet aggregator
-refuses to merge files whose `schema_version` does not match.
+The current `schema_version` is `"1.2"`. It follows the bump rules in
+[docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
+a rename, removal, or re-type is a major bump; an additive change
+(including normalising an "absent" value to `null`) is a minor bump.
+The fleet aggregator refuses to merge files whose `schema_version`
+does not match, so mixed-version fleets show up under `skipped`.
+
+| Version | Change |
+| --- | --- |
+| `1.0` | Initial stable schema. |
+| `1.1` | Added the role-aware `memory` object. |
+| `1.2` | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_method` are `null` (was `{}` / `""`) when not run; `trust_store` gained `total_found` / `scanned_count` / `max_certs` / `truncated`; `host_fs_detections_unavailable` documented for `kernel_crypto_hw` / `ktls`. |
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -21,7 +30,7 @@ nothing was found.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Stable schema version string. Bumped on rename/remove, not on additive changes. |
+| `schema_version` | Schema version string, currently `"1.2"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. |
 | `os` | OS family token (`linux`, `darwin`). |
@@ -103,5 +112,6 @@ mapping of the `--json` schema against the field-name conventions in
 CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 `--json` is a host-level inventory schema and CycloneDX is an
 asset-level schema — the asset-level projection is already provided by
-`--cbom`. No `--json` field renames are recommended at this time and
-`SCHEMA_VERSION` stays at `"1.0"`.
+`--cbom`. No `--json` field renames are recommended at this time, so
+no major (`2.0`) bump is planned; the current `SCHEMA_VERSION` is
+`"1.2"` from additive changes only.

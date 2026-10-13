@@ -202,10 +202,11 @@ pqc_readiness:
     status: "partial"                    # or "compliant" / "non-compliant"
     kem_compliant: true
     signature_compliant: true
-  schema_version: "1.0"
+  schema_version: "1.2"
 ```
 
-The full key list is stable across `schema_version: "1.0"`. Top-level
+The full key list is stable within a major `schema_version` (`1.x`);
+minor bumps only add fields or normalise absent values to `null`. Top-level
 keys that consumers most often branch on:
 
 - `verdict` — coarse one-liner.

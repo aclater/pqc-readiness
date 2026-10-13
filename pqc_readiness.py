@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
 # the tool runs inside a container with the host's /proc /sys /dev /etc

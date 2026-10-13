@@ -18,7 +18,7 @@ The deliverable here is the mapping only. Applying any rename, bumping
 | Recommended `rename to <new>`            | 0     |
 | Recommended `keep`                       | 26    |
 | Recommended `no equivalent`              | 84    |
-| Proposed `SCHEMA_VERSION`                | `1.0` (no bump required) |
+| Rename-driven `SCHEMA_VERSION` bump      | none required (stayed `1.x`; current `1.2` from additive changes) |
 
 **No field renames are recommended.** The reason is structural:
 
@@ -47,8 +47,8 @@ The deliverable here is the mapping only. Applying any rename, bumping
   algorithms). The only naming authority for cryptographic asset
   schemas remains CycloneDX 1.6.
 
-The conclusion: keep the current `--json` shape and `SCHEMA_VERSION =
-"1.0"`, treat `--cbom` as the asset-level alignment surface, and skip
+The conclusion: keep the current `--json` shape with no renames (so
+no major `SCHEMA_VERSION` bump), treat `--cbom` as the asset-level alignment surface, and skip
 the planned follow-up rename PR. The follow-up is no-op given this
 analysis; if a future cross-tool need surfaces a specific rename the
 follow-up issue can be filed at that point with concrete justification.
@@ -348,7 +348,11 @@ refactor, or introduce abstractions beyond what the task requires".
 
 ## Versioning recommendation
 
-`SCHEMA_VERSION` stays at `"1.0"`. No follow-up rename PR is required.
+No rename-driven bump: `SCHEMA_VERSION` stays on the `1.x` line and no
+follow-up rename PR is required. It is currently `"1.2"` through
+additive minor bumps (`1.1`: role-aware `memory`; `1.2`: null
+normalisation of not-run benchmark fields and trust-store cap fields).
+See the version table in [json-output.md](json-output.md).
 
 If a future patch *does* introduce a rename, the bump rule is:
 
