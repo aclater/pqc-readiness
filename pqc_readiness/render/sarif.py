@@ -71,9 +71,10 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         short_description="OpenSSL is older than 3.5 (no native PQC).",
         full_description=(
             "The host's OpenSSL is older than 3.5.0, which is the first "
-            "release with native ML-KEM and ML-DSA support.  Pre-3.5 "
-            "OpenSSL cannot expose PQC algorithms or hybrid TLS groups "
-            "to applications without a third-party provider."
+            "release with native ML-KEM (FIPS 203) and ML-DSA (FIPS 204) "
+            "support.  Pre-3.5 OpenSSL cannot expose PQC algorithms or "
+            "the hybrid TLS groups standardized in RFC 10024 (e.g. "
+            "X25519MLKEM768) to applications without a third-party provider."
         ),
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-001-openssl-pre-3.5.md",

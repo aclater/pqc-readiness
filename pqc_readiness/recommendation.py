@@ -77,7 +77,7 @@ POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
             "permitted under SP 800-56C Rev. 2; it is not required."
         ),
         "source": (
-            "NIST FIPS 203 / 204 / 205, NIST IR 8547, "
+            "NIST FIPS 203 / 204 / 205, NIST IR 8547 (initial public draft), "
             "NIST SP 800-56C Rev. 2, NIST SP 800-227"
         ),
     },
@@ -200,14 +200,36 @@ def _recommend_kem(
     return kem_chosen, kem_mode, kem_reason
 
 
+def _tls_groups_for(
+    openssl: dict[str, Any], kem_chosen: str, kem_mode: str
+) -> list[str]:
+    """Advertised TLS groups that carry `kem_chosen` in `kem_mode`, using
+    the registered group table (RFC 10024 / draft-ietf-tls-mlkem names)."""
+    groups = openssl.get("tls_groups") or {}
+    bucket = groups.get("hybrid" if kem_mode == "hybrid" else "pure_pqc") or []
+    return sorted(
+        n
+        for n in bucket
+        if (_algorithms.TLS_PQC_GROUPS.get(n) or {}).get("kem") == kem_chosen
+    )
+
+
 def _tls_group_caveats(
-    openssl: dict[str, Any], kem_mode: str, endpoint: str, caveats: list[str]
-) -> None:
-    """Check the advertised TLS 1.3 groups can carry the chosen KEM mode.
+    openssl: dict[str, Any],
+    kem_chosen: str,
+    kem_mode: str,
+    endpoint: str,
+    caveats: list[str],
+) -> list[str]:
+    """Check the advertised TLS 1.3 groups can carry the chosen KEM in the
+    chosen mode; return the groups that can.  A group of the right mode
+    with the wrong ML-KEM parameter set does not count: X25519MLKEM768
+    cannot carry the ML-KEM-1024 that CNSA 2.0 mandates (#139).
     `endpoint` is 'server' or 'client' and only affects wording."""
     tls_groups = openssl.get("tls_groups") or {}
     hybrid_groups = list(tls_groups.get("hybrid") or [])
     pure_groups = list(tls_groups.get("pure_pqc") or [])
+    usable = _tls_groups_for(openssl, kem_chosen, kem_mode)
     if openssl.get("available"):
         if kem_mode == "hybrid" and not hybrid_groups:
             caveats.append(
@@ -221,12 +243,20 @@ def _tls_group_caveats(
                 "OpenSSL build.  Upgrade OpenSSL or load the relevant "
                 "provider before deploying pure-PQC TLS."
             )
+        elif not usable:
+            offered = hybrid_groups if kem_mode == "hybrid" else pure_groups
+            caveats.append(
+                f"The advertised {kem_mode} TLS groups ({', '.join(sorted(offered))}) "
+                f"do not carry {kem_chosen}.  Enable a group that does before "
+                f"deploying this TLS {endpoint}."
+            )
     else:
         caveats.append(
             "OpenSSL was not detected on this host; the recommended "
             "algorithms cannot be served via TLS until an OpenSSL build "
             "with TLS 1.3 PQC group support is installed."
         )
+    return usable
 
 
 def _fips_caveat(policy: str, fips_kernel: bool, caveats: list[str]) -> None:
@@ -283,7 +313,9 @@ def _recommend_tls_server(r: _report.Report, policy: str) -> dict[str, Any]:
     caveats: list[str] = []
 
     kem_chosen, kem_mode, kem_reason = _recommend_kem(policy, isa, accel_pqc, caveats)
-    _tls_group_caveats(r.openssl or {}, kem_mode, "server", caveats)
+    tls_groups = _tls_group_caveats(
+        r.openssl or {}, kem_chosen, kem_mode, "server", caveats
+    )
 
     # Signature: a TLS server signs every handshake, so sign latency is
     # the constraint.
@@ -332,7 +364,12 @@ def _recommend_tls_server(r: _report.Report, policy: str) -> dict[str, Any]:
         r,
         policy,
         "tls-server",
-        {"algorithm": kem_chosen, "mode": kem_mode, "reason": kem_reason},
+        {
+            "algorithm": kem_chosen,
+            "mode": kem_mode,
+            "reason": kem_reason,
+            "tls_groups": tls_groups,
+        },
         {"algorithm": sig_chosen, "reason": sig_reason},
         caveats,
     )
@@ -363,7 +400,9 @@ def _recommend_tls_client(r: _report.Report, policy: str) -> dict[str, Any]:
     caveats: list[str] = []
 
     kem_chosen, kem_mode, kem_reason = _recommend_kem(policy, isa, accel_pqc, caveats)
-    _tls_group_caveats(r.openssl or {}, kem_mode, "client", caveats)
+    tls_groups = _tls_group_caveats(
+        r.openssl or {}, kem_chosen, kem_mode, "client", caveats
+    )
 
     share_bytes = ML_KEM_ENCAPS_KEY_BYTES[kem_chosen]
     if kem_mode == "hybrid":
@@ -419,7 +458,12 @@ def _recommend_tls_client(r: _report.Report, policy: str) -> dict[str, Any]:
         r,
         policy,
         "tls-client",
-        {"algorithm": kem_chosen, "mode": kem_mode, "reason": kem_reason},
+        {
+            "algorithm": kem_chosen,
+            "mode": kem_mode,
+            "reason": kem_reason,
+            "tls_groups": tls_groups,
+        },
         {"algorithm": sig_chosen, "reason": sig_reason},
         caveats,
     )

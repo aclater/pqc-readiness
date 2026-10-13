@@ -16,6 +16,7 @@ from typing import Any
 
 from . import _platform as _platform
 from . import aggregate as _aggregate
+from . import algorithms as _algorithms
 from . import bench as _bench
 from .detect import certs as _certs
 from .detect import config as _config
@@ -162,6 +163,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     family = os_release.get("family", "unknown")
     osinfo = _config.openssl_capability(os_release)
     ssh_info = _protocols.detect_ssh_pqc(family)
+    _algorithms.annotate_key_exchange(osinfo, ssh_info)
     ipsec_info = _protocols.detect_ipsec_pqc(family)
     nss_info = _protocols.detect_nss()
     kernel_info = _osinfo.detect_kernel_info(os_release)
