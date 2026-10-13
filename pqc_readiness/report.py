@@ -63,6 +63,7 @@ class Report:
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
+    crypto_material: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
     # Per-detection `unavailable_in_container` flags for host-fs-dependent
     # probes (PCI accel, kernel crypto, ktls, FIPS, TPM, kernel info, OS

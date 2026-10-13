@@ -35,6 +35,7 @@
     "cores_physical": 8,
     "cpu_freq_mhz": 3000.0,
     "cpu_model": "Stub CPU @ 3.0GHz",
+    "crypto_material": {},
     "exit_code": 1,
     "fips": {
       "enabled": false,

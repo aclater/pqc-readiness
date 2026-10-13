@@ -168,8 +168,10 @@ from .detect.certs import (  # noqa: F401
     TRUST_STORE_MAX_FILE_BYTES,
     categorise_cert_oids,
     cert_algorithm_oids,
+    parse_certificate,
     scan_trust_store,
 )
+from .detect.certs_discovery import scan_crypto_material  # noqa: F401
 from .verdict import (  # noqa: F401
     CNSA_2_0_REQUIREMENTS,
     evaluate_cnsa_2_0,
@@ -405,6 +407,8 @@ __all__ = [
     "run_classical_baseline",
     "run_pqc_bench",
     "run_tls_handshake_bench",
+    "parse_certificate",
+    "scan_crypto_material",
     "scan_packages",
     "scan_trust_store",
     "set_host_prefix",
