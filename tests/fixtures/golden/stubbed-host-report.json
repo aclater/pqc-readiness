@@ -440,7 +440,7 @@
       "environment": "bare_metal",
       "evidence": []
     },
-    "schema_version": "1.4",
+    "schema_version": "1.5",
     "service_crypto_linkage": {},
     "signing_keys": {},
     "ssh_pqc": {

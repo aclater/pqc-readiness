@@ -208,7 +208,7 @@ pqc_readiness:
     status: "partial"                    # or "compliant" / "non-compliant"
     kem_compliant: true
     signature_compliant: true
-  schema_version: "1.4"
+  schema_version: "1.5"
 ```
 
 The full key list is stable within a major `schema_version` (`1.x`);
