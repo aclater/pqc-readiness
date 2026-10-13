@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: Apache-2.0
+# CI for the OpenShift manifests and the opt-in --scan-services image (#181).
+#
+# Kept as its own workflow so it can't collide with other lanes' edits to
+# ci.yml / ci-containers.yml (#137 lane rules).
+#
+#   manifests:  schema-validate the base and services manifests with
+#               kubeconform (OpenShift 4.15 strict schemas for the SCC from
+#               the datreeio CRDs catalog) and run the posture tests, which
+#               pin the base to "no capabilities" and the overlay to exactly
+#               SYS_PTRACE + DAC_READ_SEARCH.
+#   services-image: build base + services images and prove, at runtime,
+#               that the capability-bearing interpreter gets exactly those
+#               two capabilities with an empty ambient set (CRI-O's
+#               behaviour) while the system python3 gets none.
+#
+# Versions verified at the time of writing (CLAUDE.md):
+#   actions/checkout@v6.0.2, actions/setup-python@v6.2.0
+#   ghcr.io/yannh/kubeconform:v0.8.0 (gh api repos/yannh/kubeconform/releases/latest)
+
+name: ci-openshift-manifests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  manifests:
+    name: OpenShift manifests (kubeconform + posture tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Posture tests
+        run: |
+          pip install pytest pyyaml
+          pytest -q tests/test_openshift_manifests.py
+
+      - name: kubeconform (services overlay, strict incl. SCC)
+        run: |
+          podman run --rm -v "$PWD/deploy:/d:ro" ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/openshift/v4.15-strict/{{.ResourceKind}}_{{.Group}}_{{.ResourceAPIVersion}}.json' \
+            /d/openshift/services/services.yaml
+
+      - name: kubeconform (base DaemonSet; SCC skipped)
+        # The base SCC omits `priority` and `readOnlyRootFilesystem`, which
+        # the strict 4.15 schema marks required (the API server defaults
+        # them).  The base stays byte-unchanged per #181; see the PR.
+        run: |
+          podman run --rm -v "$PWD/deploy:/d:ro" ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -skip SecurityContextConstraints \
+            /d/openshift/daemonset.yaml
+
+  services-image:
+    name: services image (file capabilities)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Build the zipapp
+        run: python3 scripts/build_zipapp.py
+
+      - name: Build base and services images
+        run: |
+          podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
+          podman build --format=docker -t pqc-readiness:ubi10-services \
+            --build-arg BASE=localhost/pqc-readiness:ubi10 \
+            -f deploy/openshift/services/Containerfile .
+
+      - name: Verify file capabilities at runtime
+        run: |
+          podman run --rm --user 0 --cap-drop ALL \
+            --cap-add SETUID,SETGID,KILL,SYS_PTRACE,DAC_READ_SEARCH \
+            -v "$PWD/deploy/openshift/services:/t:ro" \
+            --entrypoint /usr/bin/python3 \
+            localhost/pqc-readiness:ubi10-services /t/verify-file-caps.py
+
+      - name: Fails closed without the capabilities in the bounding set
+        # With the SCC not granting them, exec of the file-capability
+        # interpreter must fail rather than silently scanning less.
+        run: |
+          if podman run --rm --cap-drop ALL localhost/pqc-readiness:ubi10-services --help; then
+            echo "expected EPERM without SYS_PTRACE/DAC_READ_SEARCH in the bounding set"; exit 1
+          fi

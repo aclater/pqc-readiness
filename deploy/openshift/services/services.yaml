@@ -1,0 +1,242 @@
+# SPDX-License-Identifier: Apache-2.0
+# OPT-IN OpenShift variant of deploy/openshift/daemonset.yaml that adds
+# `--scan-services` (#111, #181).  Deploy this INSTEAD of the base
+# DaemonSet on clusters where service -> crypto-library attribution is
+# wanted; the base DaemonSet/SCC stay least-privilege and are unchanged.
+#
+#   oc create namespace pqc-readiness            # if not present
+#   oc apply -f deploy/openshift/services/services.yaml
+#
+# What this grants beyond the base, and why (see
+# docs/openshift-services-overlay.md for sources and verification):
+#   * CAP_SYS_PTRACE + CAP_DAC_READ_SEARCH, and nothing else.
+#     /proc/<pid>/{maps,fd/*,exe,root,environ} of other users' processes
+#     are gated by a ptrace PTRACE_MODE_READ_FSCREDS check (proc(5),
+#     ptrace(2)); CAP_SYS_PTRACE passes it, CAP_DAC_READ_SEARCH lets the
+#     probe traverse 0500 /proc/<pid>/fd directories and read root-only
+#     library files through /proc/<pid>/root (capabilities(7)).
+#   * allowPrivilegeEscalation: true.  CRI-O never sets ambient
+#     capabilities, so `capabilities.add` alone never reaches a non-root
+#     process's effective set.  The services image instead carries a
+#     dedicated interpreter with file capabilities, and the kernel
+#     ignores file capabilities when no_new_privs is set — which is what
+#     allowPrivilegeEscalation: false does.  The escalation is bounded:
+#     only the two capabilities are in the bounding set (drop ALL, add
+#     two), so no binary in the image can gain anything else.
+# Everything else matches the base: non-root UID 1001, read-only root
+# filesystem, read-only host mounts, RuntimeDefault seccomp, no host
+# network, no privileged container.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pqc-readiness-services
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    app.kubernetes.io/component: probe-services
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+metadata:
+  name: pqc-readiness-services-scc
+  annotations:
+    kubernetes.io/description: >-
+      pqc-readiness --scan-services: read-only host inspection plus
+      CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH (file capabilities on a
+      dedicated interpreter).  Non-root, no other capabilities, no host
+      network, not privileged.
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+# Required for file capabilities: false sets no_new_privs, under which
+# execve() grants no file capabilities (verified; see the docs page).
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: false
+# Same pattern as OpenShift's restricted-v2 SCC: drop ALL by default and
+# allow only named capabilities to be added explicitly.
+# No priority: rank like any other non-prioritised SCC (API default).
+priority: null
+allowedCapabilities:
+  - SYS_PTRACE
+  - DAC_READ_SEARCH
+defaultAddCapabilities: []
+requiredDropCapabilities:
+  - ALL
+fsGroup:
+  type: MustRunAs
+  ranges:
+    - min: 0
+      max: 0
+readOnlyRootFilesystem: true
+runAsUser:
+  type: MustRunAs
+  uid: 1001
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+seccompProfiles:
+  - runtime/default
+volumes:
+  - configMap
+  - downwardAPI
+  - emptyDir
+  - hostPath
+  - projected
+  - secret
+users:
+  - system:serviceaccount:pqc-readiness:pqc-readiness-services
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pqc-readiness-services
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    app.kubernetes.io/component: probe-services
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pqc-readiness
+      app.kubernetes.io/component: probe-services
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pqc-readiness
+        app.kubernetes.io/component: probe-services
+    spec:
+      serviceAccountName: pqc-readiness-services
+      # Required so /proc shows the node's processes, not the pod's.
+      hostPID: true
+      automountServiceAccountToken: false
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 0
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: probe
+          # Built from deploy/openshift/services/Containerfile on top of the
+          # base image.  Not published by this repo: build, push to your
+          # registry, and pin by digest in production.
+          image: ghcr.io/aclater/pqc-readiness-services:v2
+          imagePullPolicy: IfNotPresent
+          # Same loop as the base DaemonSet plus --scan-services.  The
+          # capability-bearing interpreter is invoked explicitly, in
+          # isolated mode (-I), so the system python3 never gains anything.
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
+              interval="${PQC_PROBE_INTERVAL:-3600}"
+              while true; do
+                /usr/local/libexec/pqc-readiness/python3 -I \
+                  /usr/local/bin/pqc-readiness.pyz \
+                  --host-mount /host \
+                  --scan-services \
+                  --bench --seconds 1 \
+                  --save --quiet \
+                  || true
+                sleep "$interval"
+              done
+          env:
+            - name: PQC_PROBE_INTERVAL
+              value: "3600"
+            - name: HOME
+              value: /var/lib/pqc-readiness
+          securityContext:
+            # See the header: file capabilities need no_new_privs unset.
+            allowPrivilegeEscalation: true
+            readOnlyRootFilesystem: true
+            runAsUser: 1001
+            capabilities:
+              drop:
+                - ALL
+              add:
+                # PTRACE_MODE_READ_FSCREDS for other UIDs' /proc entries.
+                - SYS_PTRACE
+                # Traverse 0500 /proc/<pid>/fd; read root-only libraries
+                # via /proc/<pid>/root.
+                - DAC_READ_SEARCH
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 768Mi
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-sys
+              mountPath: /host/sys
+              readOnly: true
+            - name: host-dev
+              mountPath: /host/dev
+              readOnly: true
+            - name: host-etc
+              mountPath: /host/etc
+              readOnly: true
+            - name: host-os-release
+              mountPath: /host/usr/lib/os-release
+              readOnly: true
+            - name: host-rpmdb
+              mountPath: /host/var/lib/rpm
+              readOnly: true
+            - name: host-crypto-policies
+              mountPath: /host/usr/share/crypto-policies
+              readOnly: true
+            - name: readiness-output
+              mountPath: /var/lib/pqc-readiness
+              readOnly: false
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+            type: Directory
+        - name: host-dev
+          hostPath:
+            path: /dev
+            type: Directory
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory
+        - name: host-os-release
+          hostPath:
+            path: /usr/lib/os-release
+            type: File
+        - name: host-rpmdb
+          hostPath:
+            path: /var/lib/rpm
+            type: Directory
+        - name: host-crypto-policies
+          hostPath:
+            path: /usr/share/crypto-policies
+            type: Directory
+        - name: readiness-output
+          hostPath:
+            path: /var/lib/pqc-readiness
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
