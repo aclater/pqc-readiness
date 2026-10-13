@@ -98,6 +98,15 @@ _HOST_NAMESPACES = (
 )
 
 
+def set_host_prefix(prefix: str) -> None:
+    """Apply --host-mount.  The single writer of HOST_PREFIX, so the value
+    has one owner once the code is split across modules (#80); readers
+    such as host_path() keep reading the module-level value.  An empty
+    string restores bare-metal behaviour."""
+    global HOST_PREFIX
+    HOST_PREFIX = prefix.rstrip("/")
+
+
 def host_path(p: str) -> Path:
     """Return Path(p) under HOST_PREFIX when --host-mount is in effect
     and p targets a kernel/state namespace.  Bare-metal callers and
@@ -6734,7 +6743,10 @@ def _emit(text: str, path: Path | None) -> bool:
     return True
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Construct the CLI parser.  Kept separate from main() so tests and
+    the README flag check can inspect the full flag set without running
+    a scan."""
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -6892,43 +6904,15 @@ def main() -> int:
         action="version",
         version=f"pqc-readiness {SCRIPT_VERSION} (schema {SCHEMA_VERSION})",
     )
-    args = ap.parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format="%(name)s: %(levelname)s: %(message)s",
-        stream=sys.stderr,
-    )
-    out_path = _validate_output_path(ap, args.output)
+    return ap
 
-    def emit(text: str) -> bool:
-        return _emit(text, out_path)
-    for warning in ansible_ignored_flag_warnings(args):
-        print(f"warning: {warning}", file=sys.stderr)
 
-    # --aggregate is a top-level alternate mode; bail before per-host probing.
-    if args.aggregate:
-        d = Path(args.aggregate)
-        if not d.is_dir():
-            print(f"--aggregate: {d} is not a directory", file=sys.stderr)
-            return 2
-        body, code = run_aggregator(d, output=args.aggregate_format)
-        return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
+def collect_report(args: argparse.Namespace) -> Report:
+    """Run every host probe the CLI flags ask for and assemble the Report.
 
-    global HOST_PREFIX
-    if args.host_mount:
-        HOST_PREFIX = args.host_mount.rstrip("/")
-
-    C.configure(
-        sys.stdout.isatty()
-        and out_path is None
-        and not args.no_color
-        and not args.json
-        and not args.markdown
-        and not args.cbom
-        and not args.spdx
-        and not args.sarif
-    )
-
+    Side-effect free apart from the probes themselves: --host-mount must
+    already be applied (set_host_prefix) and output/colour handling is
+    the caller's job."""
     arch = platform.machine().lower()
     flags = cpu_flags(arch)
     total_gb, avail_gb = memory_info()
@@ -7068,47 +7052,58 @@ def main() -> int:
         verdict_caveat=caveat,
         exit_code=code,
     )
+    return r
 
-    if args.save:
-        d = Path.home() / ".cache" / "pqc-readiness"
-        d.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        fp = d / f"{r.hostname}-{ts}.json"
-        fp.write_text(json.dumps(asdict(r), indent=2))
 
+# Report renderers in CLI precedence order: the first flag that is set
+# wins (json > cbom > spdx > sarif > markdown > quiet), plain text
+# otherwise.  Entries are lambdas, not direct function references, so the
+# renderer is looked up at call time and stays patchable in tests.
+_REPORT_RENDERERS: tuple[tuple[str, Callable[[Report], str]], ...] = (
+    ("json", lambda r: json.dumps(asdict(r), indent=2)),
+    ("cbom", lambda r: render_cbom(r)),
+    ("spdx", lambda r: render_spdx(r)),
+    ("sarif", lambda r: render_sarif(r)),
+    ("markdown", lambda r: render_markdown(r)),
+    ("quiet", lambda r: r.verdict),
+)
+
+
+def render_output(r: Report, args: argparse.Namespace) -> str:
+    """Render the per-host result in the format the flags select.
+
+    --ansible and --recommend are alternate documents and take precedence
+    over every report format flag."""
     if args.ansible:
         # Ansible's set_fact / register patterns expect a top-level
-        # ansible_facts wrapper.  The task must always exit 0 or Ansible
-        # will mark the play as failed regardless of the report content.
-        if not emit(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2)):
-            return EXIT_OUTPUT_WRITE_FAILED
-        return 0
+        # ansible_facts wrapper.
+        return json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2)
     if args.recommend:
         rec = recommend(r, policy=args.policy, role=args.role or "tls-server")
         if args.json:
-            rec_text = json.dumps(rec, indent=2)
-        elif args.markdown:
-            rec_text = render_recommendation_markdown(r, rec)
-        else:
-            rec_text = render_recommendation_text(r, rec)
-        return 0 if emit(rec_text) else EXIT_OUTPUT_WRITE_FAILED
-    if args.json:
-        report_text = json.dumps(asdict(r), indent=2)
-    elif args.cbom:
-        report_text = render_cbom(r)
-    elif args.spdx:
-        report_text = render_spdx(r)
-    elif args.sarif:
-        report_text = render_sarif(r)
-    elif args.markdown:
-        report_text = render_markdown(r)
-    elif args.quiet:
-        report_text = r.verdict
-    else:
-        report_text = render_text(r)
-    if not emit(report_text):
-        return EXIT_OUTPUT_WRITE_FAILED
+            return json.dumps(rec, indent=2)
+        if args.markdown:
+            return render_recommendation_markdown(r, rec)
+        return render_recommendation_text(r, rec)
+    for flag, renderer in _REPORT_RENDERERS:
+        if getattr(args, flag):
+            return renderer(r)
+    return render_text(r)
 
+
+_TIER_RANK = {"poor": 0, "marginal": 1, "good": 2, "excellent": 3}
+# Report.exit_code -> verdict tier; any other code (3) is "poor".
+_EXIT_CODE_TIER = {0: "excellent", 1: "good", 2: "marginal"}
+
+
+def exit_code_for(r: Report, args: argparse.Namespace) -> int:
+    """Process exit code for a successfully emitted per-host result.
+
+    --ansible must always exit 0 or Ansible marks the play failed
+    regardless of the report content; --recommend is advisory output.
+    Otherwise --fips-strict and --check can turn the verdict code into 4."""
+    if args.ansible or args.recommend:
+        return 0
     if args.fips_strict and r.fips.get("fence_check_active") and not r.fips.get(
         "algorithm_fence_engaged"
     ):
@@ -7117,19 +7112,71 @@ def main() -> int:
         if r.cnsa_2_0.get("status") != "compliant":
             return 4
     elif args.check:
-        rank = {"poor": 0, "marginal": 1, "good": 2, "excellent": 3}
-        cur = (
-            "excellent"
-            if r.exit_code == 0
-            else "good"
-            if r.exit_code == 1
-            else "marginal"
-            if r.exit_code == 2
-            else "poor"
-        )
-        if rank[cur] < rank[args.check]:
+        current = _EXIT_CODE_TIER.get(r.exit_code, "poor")
+        if _TIER_RANK[current] < _TIER_RANK[args.check]:
             return 4
     return r.exit_code
+
+
+def _save_report(r: Report) -> None:
+    """--save: write the JSON report under ~/.cache/pqc-readiness/."""
+    d = Path.home() / ".cache" / "pqc-readiness"
+    d.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    fp = d / f"{r.hostname}-{ts}.json"
+    fp.write_text(json.dumps(asdict(r), indent=2))
+
+
+def _use_color(args: argparse.Namespace, out_path: Path | None) -> bool:
+    """ANSI colour only for human-readable text on an interactive stdout."""
+    return (
+        sys.stdout.isatty()
+        and out_path is None
+        and not args.no_color
+        and not args.json
+        and not args.markdown
+        and not args.cbom
+        and not args.spdx
+        and not args.sarif
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format="%(name)s: %(levelname)s: %(message)s",
+        stream=sys.stderr,
+    )
+    out_path = _validate_output_path(ap, args.output)
+
+    def emit(text: str) -> bool:
+        return _emit(text, out_path)
+
+    for warning in ansible_ignored_flag_warnings(args):
+        print(f"warning: {warning}", file=sys.stderr)
+
+    # --aggregate is a top-level alternate mode; bail before per-host probing.
+    if args.aggregate:
+        d = Path(args.aggregate)
+        if not d.is_dir():
+            print(f"--aggregate: {d} is not a directory", file=sys.stderr)
+            return 2
+        body, code = run_aggregator(d, output=args.aggregate_format)
+        return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
+
+    if args.host_mount:
+        set_host_prefix(args.host_mount)
+    C.configure(_use_color(args, out_path))
+
+    r = collect_report(args)
+    if args.save:
+        _save_report(r)
+    if not emit(render_output(r, args)):
+        return EXIT_OUTPUT_WRITE_FAILED
+    return exit_code_for(r, args)
+
 
 
 if __name__ == "__main__":

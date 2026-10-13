@@ -651,7 +651,7 @@ def test_host_path_no_prefix_leaves_path_unchanged() -> None:
 def test_host_path_prefix_redirects_kernel_namespaces() -> None:
     saved = pr.HOST_PREFIX
     try:
-        pr.HOST_PREFIX = "/host"
+        pr.set_host_prefix("/host")
         assert str(pr.host_path("/proc/cpuinfo")) == "/host/proc/cpuinfo"
         assert str(pr.host_path("/sys/module/tls")) == "/host/sys/module/tls"
         assert str(pr.host_path("/etc/redhat-release")) == "/host/etc/redhat-release"
@@ -660,7 +660,7 @@ def test_host_path_prefix_redirects_kernel_namespaces() -> None:
         assert str(pr.host_path("/opt/Chrystoki")) == "/opt/Chrystoki"
         assert str(pr.host_path("/tmp/foo")) == "/tmp/foo"
     finally:
-        pr.HOST_PREFIX = saved
+        pr.set_host_prefix(saved)
 
 
 # ---------------------------------------------------------------------------
