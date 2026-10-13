@@ -285,6 +285,15 @@ def _render_text_openssl(r: _report.Report) -> list[str]:
         L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
         L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
         L.extend(_render_text_openssl_tls_groups(r.openssl.get("tls_groups") or {}))
+        cfg = r.openssl.get("config") or {}
+        if cfg.get("available"):
+            src = cfg.get("default_groups_source")
+            pqc = "yes" if cfg.get("pqc_key_exchange_by_default") else "no"
+            L.append(f"   Config:        {cfg.get('path')} (default groups from {src})")
+            L.append(f"   PQC kex by default: {pqc}")
+        tp = [p.get("name") for p in r.openssl.get("third_party_providers") or []]
+        if tp:
+            L.append(f"   3rd-party providers: {', '.join(str(n) for n in tp)}")
     L.append("")
     return L
 
