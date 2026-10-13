@@ -258,6 +258,7 @@ example Ansible playbooks already use the zipapp.
 | `--cbom` | CycloneDX 1.7 CBOM (`--cbom-version 1.6` for 1.6) | Cryptographic inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
+| `--ndjson` | OCSF 1.9.0 events, one JSON object per line ([field reference](docs/json-output.md#--ndjson-events), [SIEM recipes](docs/siem-ndjson.md)) | SIEM / log pipelines |
 | `--prometheus` | Prometheus text format | node_exporter textfile collector, fleet dashboards ([docs/prometheus.md](docs/prometheus.md)) |
 | `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
 | `--recommend` | Policy-aware recommendation | Algorithm selection per host |
@@ -365,7 +366,7 @@ Flags below are grouped by purpose.
 
 | Flag | Purpose |
 | --- | --- |
-| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ansible` | See [Output formats](#output-formats). |
+| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ndjson` / `--ansible` | See [Output formats](#output-formats). |
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
