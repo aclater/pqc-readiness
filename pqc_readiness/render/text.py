@@ -10,6 +10,7 @@ from .. import report as _report
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import protocols_boot as _boot
+from ..detect import protocols_kerberos as _kerberos
 
 
 # ---------------------------------------------------------------------------
@@ -695,6 +696,48 @@ def _render_text_boot_chain(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_kerberos(r: _report.Report) -> list[str]:
+    """Kerberos enctypes and PKINIT (--scan-kerberos, #109)."""
+    kb = r.kerberos
+    if not kb:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "15. Kerberos")]
+    if not kb.get("available"):
+        L += [f"   Unavailable: {kb.get('reason')}", ""]
+        return L
+    cfg = kb.get("config") or {}
+    permitted = (cfg.get("enctype_lists") or {}).get("permitted_enctypes") or {}
+    L.append(
+        f"   permitted_enctypes ({permitted.get('source')}): "
+        + ", ".join(permitted.get("enctypes") or [])
+    )
+    for kt in kb.get("keytabs") or []:
+        if kt.get("parsed"):
+            counts = ", ".join(
+                f"{n} x{c}" for n, c in sorted((kt.get("enctypes") or {}).items())
+            )
+            L.append(
+                f"   Keytab {kt['path']}: {len(kt.get('entries') or [])} keys ({counts})"
+            )
+        else:
+            L.append(f"   Keytab {kt['path']}: {kt.get('reason')}")
+    pk = cfg.get("pkinit") or {}
+    if pk.get("identity_configured"):
+        ident = pk.get("identity") or {}
+        L.append(
+            "   PKINIT identity: "
+            + (
+                ", ".join(ident.get("key_algorithms") or [])
+                or str(ident.get("store") or "?")
+            )
+        )
+    level, parts = _kerberos.describe_findings(kb)
+    for part in parts:
+        L.append(C.wrap(C.YELLOW, f"   {part[0].upper() + part[1:]}."))
+    L.append("")
+    return L
+
+
 def _offline_na_sections(r: _report.Report) -> str:
     """Human-readable list of what an offline --root scan cannot answer."""
     return (
@@ -973,6 +1016,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_crypto_libraries(r))
     L.extend(_render_text_processes(r))
     L.extend(_render_text_boot_chain(r))
+    L.extend(_render_text_kerberos(r))
     L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_deployment_gap(r))
     L.extend(_render_text_verdict(r))

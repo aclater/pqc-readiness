@@ -17,6 +17,7 @@ from ..detect import config_sshd as _config_sshd
 from ..detect import protocols_libraries as _libraries
 from ..detect import runtime_services as _services
 from ..detect import protocols_boot as _boot
+from ..detect import protocols_kerberos as _kerberos
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +396,25 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="note",
         help_uri=f"{SARIF_HELP_BASE}/pqc-030-classical-boot-chain.md",
     ),
+    RuleSpec(
+        id="pqc-031-kerberos-weak-enctypes",
+        short_description=(
+            "Kerberos allows deprecated or 128-bit encryption types, or uses "
+            "classical PKINIT."
+        ),
+        full_description=(
+            "Kerberos keys are symmetric: the quantum risk is Grover's "
+            "algorithm, which leaves a 128-bit key about 64-bit security, and "
+            "CNSA 2.0 requires AES-256.  A warning when deprecated enctypes "
+            "(DES, 3DES, RC4; RFC 6649 / RFC 8429) are permitted by "
+            "krb5.conf / kdc.conf, by MIT's default list, or present as keytab "
+            "keys; a note when only 128-bit AES / Camellia enctypes are the "
+            "concern, or when PKINIT (RSA / (EC)DH) is configured, for which "
+            "no post-quantum standard exists yet."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-031-kerberos-weak-enctypes.md",
+    ),
 )
 
 
@@ -448,6 +468,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     # Boot-chain trust anchors: long rotation lead time, fix is the
     # vendor's / distribution's: low, like pqc-009 (#112).
     "pqc-030-classical-boot-chain": "3.1",
+    # Deprecated enctypes are a classical weakness today, not only a
+    # quantum one: medium (#109).
+    "pqc-031-kerberos-weak-enctypes": "4.3",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
     # Software that will fail at PQC (#193).  A running service that can't
@@ -779,6 +802,24 @@ def build_findings(r: _report.Report) -> list[Finding]:
                         "secure_boot_algorithms"
                     ),
                     "boot_chain:module_signing_pqc": summary.get("module_signing_pqc"),
+                },
+            )
+        )
+
+    kb = r.kerberos
+    kb_level, kb_parts = _kerberos.describe_findings(kb)
+    if kb_level:
+        ks = kb.get("summary") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-031-kerberos-weak-enctypes",
+                level=kb_level,
+                message="Kerberos: " + "; ".join(kb_parts) + ".",
+                properties={
+                    "kerberos:deprecated_enctypes": ks.get("deprecated_enctypes"),
+                    "kerberos:aes128_enctypes": ks.get("aes128_enctypes"),
+                    "kerberos:enctypes_in_keytabs": ks.get("enctypes_in_keytabs"),
+                    "kerberos:pkinit_classical": ks.get("pkinit_classical"),
                 },
             )
         )

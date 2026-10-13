@@ -264,6 +264,19 @@ def _full_trigger_report() -> pr.Report:
                 },
             },
         },
+        kerberos={
+            "available": True,
+            "config": {
+                "enctype_lists": {"permitted_enctypes": {"source": "mit_default"}}
+            },
+            "summary": {
+                "deprecated_enctypes": ["arcfour-hmac", "des3-cbc-sha1"],
+                "aes128_enctypes": ["aes128-cts-hmac-sha1-96"],
+                "enctypes_in_keytabs": ["arcfour-hmac"],
+                "keytab_keys_128_bit_only": False,
+                "pkinit_classical": False,
+            },
+        },
     )
     # The deployment-gap verdict (#107) is computed from the fields above,
     # as collect_report does; TLS and SSH are capable-not-configured here.
@@ -319,6 +332,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-018-pqc-capability-undetermined",
         "pqc-020-pqc-capable-not-configured",
         "pqc-030-classical-boot-chain",
+        "pqc-031-kerberos-weak-enctypes",
     }
     assert expected_ids <= {r["id"] for r in rules}
     for r in rules:
