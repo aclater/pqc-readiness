@@ -436,7 +436,10 @@ class Report:
     openssl: dict[str, Any] = field(default_factory=dict)
     tpm_pqc: dict[str, Any] = field(default_factory=dict)
     memory_bandwidth_gb_s: float | None = None
-    memory_bandwidth_method: str = ""
+    # None when --bench was not run (no probe attempted).  When the probe
+    # runs but cannot measure, this carries the reason string and
+    # memory_bandwidth_gb_s stays None.
+    memory_bandwidth_method: str | None = None
     ssh_pqc: dict[str, Any] = field(default_factory=dict)
     ipsec_pqc: dict[str, Any] = field(default_factory=dict)
     nss: dict[str, Any] = field(default_factory=dict)
@@ -457,8 +460,10 @@ class Report:
     packages: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
-    benchmark: dict[str, Any] = field(default_factory=dict)
-    benchmark_tls_handshake: dict[str, Any] = field(default_factory=dict)
+    # None when --bench / --bench-tls was not requested, so "not run" is
+    # a single JSON value (null) rather than {} vs null vs "" (#82).
+    benchmark: dict[str, Any] | None = None
+    benchmark_tls_handshake: dict[str, Any] | None = None
     pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: PQC_SIZES)
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
     production_estimate: dict[str, Any] = field(default_factory=dict)
@@ -6022,7 +6027,7 @@ def render_markdown(r: Report) -> str:
         for k, v in e.items():
             L.append(f"- {k}: {v}")
         L.append("")
-    if r.benchmark_tls_handshake.get("available"):
+    if r.benchmark_tls_handshake and r.benchmark_tls_handshake.get("available"):
         b = r.benchmark_tls_handshake
         L.append("## TLS handshake benchmark (loopback)")
         L.append(
@@ -6269,10 +6274,10 @@ def main() -> int:
     )
     hsm_present_but_not_pqc = hsm_present and not hsm_pqc_capable
 
-    bench: dict[str, Any] = {}
-    bench_tls: dict[str, Any] = {}
+    bench: dict[str, Any] | None = None
+    bench_tls: dict[str, Any] | None = None
     membw: float | None = None
-    membw_method = ""
+    membw_method: str | None = None
     if args.bench:
         bench = run_benchmarks(seconds=args.seconds, threads=max(args.threads, 1))
         membw, membw_method = memory_bandwidth_probe()

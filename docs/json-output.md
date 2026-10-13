@@ -12,6 +12,13 @@ of the README.
 
 ## Top-level keys
 
+Convention: the benchmark-derived fields (`benchmark`,
+`benchmark_tls_handshake`, `memory_bandwidth_gb_s`,
+`memory_bandwidth_method`) are `null` when the corresponding `--bench*`
+flag was not set. Opt-in scan fields (`trust_store`, `packages`) are
+`{}` when their flag was not set. List-valued fields are `[]` when
+nothing was found.
+
 | Top-level key | Description |
 | --- | --- |
 | `schema_version` | Stable schema version string. Bumped on rename/remove, not on additive changes. |
@@ -37,8 +44,8 @@ of the README.
 | `fips` | Kernel FIPS mode and provider state. |
 | `openssl` | Detected OpenSSL version, PQC algorithm exposure, hybrid TLS group list, and `upgrade_path` suggestion. |
 | `tpm_pqc` | TPM presence and any PQC capability advertised. |
-| `memory_bandwidth_gb_s` | Memory bandwidth measurement (null if not measured). |
-| `memory_bandwidth_method` | How the bandwidth value was obtained, or `not-measured`. |
+| `memory_bandwidth_gb_s` | Memory bandwidth measurement in GB/s. `null` when `--bench` was not set or the probe could not measure. |
+| `memory_bandwidth_method` | How the bandwidth value was obtained (e.g. `STREAM-triad (numpy)`), or the reason it could not be measured (e.g. `unavailable: numpy not installed`). `null` when `--bench` was not set. |
 | `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan PQC and hybrid IKE state. |
 | `nss` | NSS PQC algorithm exposure. |
@@ -51,8 +58,8 @@ of the README.
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` (id, version, like-chain). |
-| `benchmark` | Microbenchmark results from `--bench`. Empty when `--bench` is not set. |
-| `benchmark_tls_handshake` | TLS 1.3 handshake bench results from `--bench-tls`. Empty when `--bench-tls` is not set. |
+| `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. |
+| `benchmark_tls_handshake` | TLS 1.3 handshake bench results object from `--bench-tls`. `null` when `--bench-tls` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. |
 | `pqc_sizes` | Wire-size and key-size constants for the PQC primitives, used by the recommendation engine and by sizing notes in the human report. |
 | `per_algo` | Per-algorithm tier and reasoning (ML-KEM-512/768/1024, ML-DSA-44/65/87, SLH-DSA variants). |
 | `production_estimate` | Estimated handshakes-per-second / sign-per-second per algorithm given the measured benchmark numbers. |
