@@ -44,6 +44,7 @@
     "host_fs_detections_unavailable": {},
     "hostname": "golden-host",
     "hsm_present_but_not_pqc": false,
+    "inventory_metadata": null,
     "ipsec_pqc": {
       "available": false
     },
