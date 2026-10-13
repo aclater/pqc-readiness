@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import report as _report
+from .. import gap as _gap
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import config_sshd as _config_sshd
@@ -762,10 +763,18 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
         if s.get("state") == "capable_not_configured"
         and not s.get("follows_host_default")
     ]
-    if not protocols and not services:
+    clients = [
+        str(c.get("exe") or c.get("process"))
+        for c in (g.get("clients") or {}).get("items") or []
+        # Outbound client process groups (#202); as for services, only the
+        # ones whose verdict differs from the host's TLS verdict.
+        if c.get("state") == "capable_not_configured"
+        and not c.get("follows_host_default")
+    ]
+    if not protocols and not services and not clients:
         return None
     # Only TLS / SSH protocol gaps: pqc-008 / pqc-010 already report them.
-    restates_only = not services and set(protocols) <= {"tls", "ssh"}
+    restates_only = not services and not clients and set(protocols) <= {"tls", "ssh"}
     parts = []
     if protocols:
         parts.append("protocols: " + ", ".join(protocols))
@@ -774,6 +783,10 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
             "services: "
             + ", ".join(services[:6])
             + (", ..." if len(services) > 6 else "")
+        )
+    if clients:
+        parts.append(
+            "clients: " + ", ".join(clients[:6]) + (", ..." if len(clients) > 6 else "")
         )
     return Finding(
         rule_id="pqc-020-pqc-capable-not-configured",
@@ -786,6 +799,7 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
         properties={
             "gap:protocols": protocols,
             "gap:services": services,
+            "gap:clients": clients,
         },
     )
 
@@ -829,43 +843,6 @@ def _listener_label(lst: dict[str, Any]) -> str:
     return f"{who} on {lst.get('protocol')} {addr}:{lst.get('port')}"
 
 
-# OpenSSL sonames before 3.0: libssl.so.1.1 / .so.1.0.0 upstream,
-# libssl.so.10 on RHEL 7 (1.0.2).  OpenSSL 3.x uses .so.3, so a 1.x / 10
-# soname is definite evidence of a pre-3.5 library even when no version
-# string could be read (measured: AlmaLinux 8.10 sshd, OpenSSL 1.1.1k).
-_OPENSSL_PRE3_SONAME = re.compile(
-    r"/lib(?:ssl|crypto)\.so\.(?:1(?:\.[0-9][0-9a-z.]*)?|10)$"
-)
-
-# Service-linkage families that --scan-crypto-libraries also probes from the
-# library file itself (#110); its binary evidence settles libraries whose
-# version has no threshold in the service probe.
-_LIBRARY_PROBE_NAME = {"gnutls": "gnutls", "wolfssl": "wolfssl", "aws-lc": "aws-lc"}
-
-
-def _service_lib_capable(
-    lib: dict[str, Any], probes: dict[str, Any]
-) -> tuple[bool | None, str]:
-    """PQC capability of one library a service maps, with the evidence
-    used: the service probe's own verdict, then the library probe's
-    reading of the same file (or same version), then the OpenSSL soname."""
-    capable = lib.get("library_pqc_capable")
-    if capable is not None:
-        return bool(capable), "version"
-    name = _LIBRARY_PROBE_NAME.get(str(lib.get("family")))
-    probe = probes.get(name) if name else None
-    if probe and probe.get("installed") and probe.get("pqc_capable") is not None:
-        same_file = lib.get("path") in (probe.get("files") or [])
-        same_version = lib.get("version") and lib.get("version") == probe.get("version")
-        if same_file or same_version:
-            return bool(probe["pqc_capable"]), "crypto_libraries"
-    if lib.get("family") == "openssl" and _OPENSSL_PRE3_SONAME.search(
-        str(lib.get("path") or "")
-    ):
-        return False, "soname"
-    return None, ""
-
-
 def _listener_props(lst: dict[str, Any]) -> dict[str, Any]:
     return {
         "service:protocol": lst.get("protocol"),
@@ -887,7 +864,7 @@ def _service_findings(r: _report.Report) -> list[Finding]:
     for lst in scl.get("listeners") or []:
         subject = _listener_subject(lst)
         libs = lst.get("crypto_libraries") or []
-        verdicts = [(lib, *_service_lib_capable(lib, probes)) for lib in libs]
+        verdicts = [(lib, *_gap.library_capable(lib, probes)) for lib in libs]
         failing = [(lib, ev) for lib, cap, ev in verdicts if cap is False]
         unknown = [lib for lib, cap, _ev in verdicts if cap is None]
         if failing:
