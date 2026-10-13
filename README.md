@@ -573,6 +573,8 @@ the host root is mounted at `/host` and the probe is invoked with
 `--host-mount /host` so its reads target the node, not the container
 image.
 
+For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in [`deploy/openshift/services/`](docs/openshift-services-overlay.md) instead (adds only `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`).
+
 For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).
 
