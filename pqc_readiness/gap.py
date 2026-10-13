@@ -4,7 +4,8 @@ The scanner already knows, separately, what a host *can* do (library and
 binary capability) and what it is *set up* to do (crypto policy, OpenSSL
 config, sshd's effective KexAlgorithms, IKE proposals).  This module joins
 the two into one state per protocol, and per listening service when
-`--scan-services` ran:
+`--scan-services` ran, and per outbound-client process group when
+`--scan-processes` ran (#202):
 
   deployed                 capable and configured to use PQC
   capable_not_configured   capable, but configuration keeps it classical
@@ -29,7 +30,10 @@ reasoning without re-deriving it.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Mapping
+
+from .detect import runtime_services as _svc
 
 STATES: tuple[str, ...] = (
     "deployed",
@@ -198,6 +202,62 @@ def listener_capability(listener: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# OpenSSL sonames before 3.0: libssl.so.1.1 / .so.1.0.0 upstream,
+# libssl.so.10 on RHEL 7 (1.0.2).  OpenSSL 3.x uses .so.3, so a 1.x / 10
+# soname is definite evidence of a pre-3.5 library even when no version
+# string could be read (measured: AlmaLinux 8.10 sshd, OpenSSL 1.1.1k).
+OPENSSL_PRE3_SONAME = re.compile(
+    r"/lib(?:ssl|crypto)\.so\.(?:1(?:\.[0-9][0-9a-z.]*)?|10)$"
+)
+
+# Service-linkage families that --scan-crypto-libraries also probes from the
+# library file itself (#110); its binary evidence settles libraries whose
+# version has no threshold in the service probe.
+LIBRARY_PROBE_NAME = {"gnutls": "gnutls", "wolfssl": "wolfssl", "aws-lc": "aws-lc"}
+
+
+def library_capable(
+    lib: dict[str, Any], probes: dict[str, Any]
+) -> tuple[bool | None, str]:
+    """PQC capability of one crypto library a process maps (#193), with
+    the evidence used: the service probe's own verdict, then the library probe's
+    reading of the same file (or same version), then the OpenSSL soname."""
+    capable = lib.get("library_pqc_capable")
+    if capable is not None:
+        return bool(capable), "version"
+    name = LIBRARY_PROBE_NAME.get(str(lib.get("family")))
+    probe = probes.get(name) if name else None
+    if probe and probe.get("installed") and probe.get("pqc_capable") is not None:
+        same_file = lib.get("path") in (probe.get("files") or [])
+        same_version = lib.get("version") and lib.get("version") == probe.get("version")
+        if same_file or same_version:
+            return bool(probe["pqc_capable"]), "crypto_libraries"
+    if lib.get("family") == "openssl" and OPENSSL_PRE3_SONAME.search(
+        str(lib.get("path") or "")
+    ):
+        return False, "soname"
+    return None, ""
+
+
+def go_tls_capability(go: Mapping[str, Any]) -> tuple[bool | None, bool | None]:
+    """(capable, configured) for a Go binary's own crypto/tls default.
+
+    Go's TLS stack ignores the system crypto policy, so its default *is*
+    its configuration.  Go >= 1.24 can negotiate X25519MLKEM768 and offers
+    it by default; GODEBUG tlsmlkem=0 (from the environment, or the
+    binary's DefaultGODEBUG via an old ``go`` line in go.mod) turns it off:
+    capable, configured classical.  Older Go offers no standard hybrid
+    (1.23 only the pre-standard Kyber draft): not capable, matching the
+    #193 failure finding (pqc-012)."""
+    vt = _svc._version_tuple(str(go.get("go_version") or "").removeprefix("go"))
+    if vt is None:
+        return None, None
+    if vt[:2] < _svc.GO_MLKEM_DEFAULT_VERSION:
+        return False, None
+    reverted = "tlsmlkem" in (go.get("godebug_reverts") or [])
+    return True, not reverted
+
+
 # ---------------------------------------------------------------------------
 # Report-level verdict
 # ---------------------------------------------------------------------------
@@ -337,10 +397,95 @@ def _services(
     }
 
 
+def _clients(
+    report: Mapping[str, Any], protocols: Mapping[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Per outbound-client process group (#202): process groups from
+    --scan-processes (#155) with at least one process in the ``client``
+    role.  Listening servers are covered by `services`; idle processes
+    negotiate nothing.
+
+    A Go binary is judged on its own crypto/tls default (it ignores the
+    system policy).  Otherwise a client negotiates with the libraries it
+    maps under the host's TLS configuration, and is not capable when any
+    of them is known not to be (it may be the one in use) -- the same
+    judgement the #193 failure findings make for services."""
+    pcl = report.get("process_crypto_linkage") or {}
+    if not pcl.get("available"):
+        return {"available": False}
+    probes = (report.get("crypto_libraries") or {}).get("libraries") or {}
+    items: list[dict[str, Any]] = []
+    for i, grp in enumerate(pcl.get("groups") or []):
+        clients = int((grp.get("roles") or {}).get("client") or 0)
+        if not clients:
+            continue
+        path = f"process_crypto_linkage.groups[{i}]"
+        libs = grp.get("crypto_libraries") or []
+        go = grp.get("go") or None
+        families = sorted({str(x.get("family")) for x in libs if x.get("family")})
+        own_default = False
+        capable: bool | None
+        configured: bool | None
+        if go:
+            families.append("go")
+            capable, configured = go_tls_capability(go)
+            cap_from = conf_from = [f"{path}.go"]
+            own_default = True
+        else:
+            verdicts = [library_capable(dict(lib), probes)[0] for lib in libs]
+            if any(v is False for v in verdicts):
+                capable = False
+            elif verdicts and all(v is True for v in verdicts):
+                capable = True
+            else:
+                capable = None
+            cap_from = [f"{path}.crypto_libraries"]
+            configured, conf_from = tls_configured(report)
+        v = _verdict(capable, configured, cap_from, conf_from)
+        items.append(
+            {
+                "exe": grp.get("exe"),
+                "process": grp.get("process"),
+                "systemd_units": list(grp.get("systemd_units") or []),
+                "client_processes": clients,
+                "crypto_families": families,
+                **v,
+                # Same state as the host's TLS verdict, reached through the
+                # host default: the group restates that verdict.  Groups that
+                # differ (an old bundled library, a Go binary's own default)
+                # are gaps in their own right.
+                "follows_host_default": (
+                    not own_default and v["state"] == protocols["tls"]["state"]
+                ),
+                "group": path,
+            }
+        )
+    items.sort(key=lambda c: (STATES.index(c["state"]), -c["client_processes"]))
+    by_state: dict[str, int] = {}
+    processes_by_state: dict[str, int] = {}
+    for c in items:
+        by_state[c["state"]] = by_state.get(c["state"], 0) + 1
+        processes_by_state[c["state"]] = (
+            processes_by_state.get(c["state"], 0) + c["client_processes"]
+        )
+    out: dict[str, Any] = {
+        "available": True,
+        "items": items,
+        "by_state": dict(sorted(by_state.items())),
+        "client_processes_by_state": dict(sorted(processes_by_state.items())),
+        "differing_from_host": sum(1 for c in items if not c["follows_host_default"]),
+    }
+    omitted = pcl.get("omitted_groups")
+    if omitted:
+        out["groups_omitted_by_scan"] = omitted
+    return out
+
+
 def compute_gap(report: Mapping[str, Any]) -> dict[str, Any]:
     """The `pqc_deployment_gap` object for one report (dict form)."""
     protocols = {"tls": _tls(report), "ssh": _ssh(report), "ipsec": _ipsec(report)}
     services = _services(report, protocols)
+    clients = _clients(report, protocols)
     gaps: list[str] = []
     for name, v in protocols.items():
         if v["state"] in ("capable_not_configured", "configured_not_capable"):
@@ -352,7 +497,17 @@ def compute_gap(report: Mapping[str, Any]) -> dict[str, Any]:
             gaps.append(
                 f"service:{s['process']}/{s['protocol']}/{s['port']}:{s['state']}"
             )
-    return {"protocols": protocols, "services": services, "gaps": gaps}
+    for c in clients.get("items") or []:
+        if c["follows_host_default"]:
+            continue
+        if c["state"] in ("capable_not_configured", "configured_not_capable"):
+            gaps.append(f"client:{c['exe'] or c['process']}:{c['state']}")
+    return {
+        "protocols": protocols,
+        "services": services,
+        "clients": clients,
+        "gaps": gaps,
+    }
 
 
 def gap_for(report: Mapping[str, Any]) -> dict[str, Any]:

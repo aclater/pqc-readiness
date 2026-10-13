@@ -25,13 +25,20 @@ configuration keeps it classical.
   `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS
   on those ports. Go binaries are judged by their own crypto/tls default,
   which ignores the system policy.
+- **Outbound clients** (with `--scan-processes`, #202): a client process
+  group whose verdict differs from its host's. Measured on a Fedora 44
+  VM (2026-10-13): a Go 1.26 client started with `GODEBUG=tlsmlkem=0` is
+  listed; the same binary without it, and `openssl s_client`, follow the
+  host and are not.
 
 One result per host lists everything in that state
-(`properties.gap:protocols`, `properties.gap:services`). It is a **note**
+(`properties.gap:protocols`, `properties.gap:services`,
+`properties.gap:clients`). It is a **note**
 when the only gaps are the host-level TLS and SSH ones, which
 [pqc-008](pqc-008-crypto-policy-blocks-pqc.md) and
 [pqc-010](pqc-010-sshd-pqc-kex-not-offered.md) already report in detail,
-and a **warning** when it adds IPsec or individual services.
+and a **warning** when it adds IPsec, individual services or client
+process groups.
 
 ## Why it matters
 
