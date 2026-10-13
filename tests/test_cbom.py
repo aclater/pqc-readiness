@@ -519,3 +519,92 @@ def test_cli_cbom_version_selection_does_not_leak_between_runs(
     assert json.loads(capsys.readouterr().out)["specVersion"] == "1.6"
     cli.main(["--cbom"])
     assert json.loads(capsys.readouterr().out)["specVersion"] == "1.7"
+
+
+def _cert(sha: str, subject: str, **extra: Any) -> dict[str, Any]:
+    return {
+        "sha256": sha,
+        "subject": subject,
+        "issuer": subject,
+        "not_before": "2020-01-01T00:00:00+00:00",
+        "not_after": "2099-01-01T00:00:00+00:00",
+        "category": "classical",
+        **extra,
+    }
+
+
+def _cert_components(bom: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        c["bom-ref"]: c
+        for c in bom["components"]
+        if c["cryptoProperties"]["assetType"] == "certificate"
+    }
+
+
+def _prop_values(comp: dict[str, Any], name: str) -> list[str]:
+    return [p["value"] for p in comp.get("properties", []) if p["name"] == name]
+
+
+def test_cbom_1_7_includes_discovered_host_certificates_deduplicated() -> None:
+    """#178: certificates found by --scan-crypto-material become 1.7
+    certificate assets too, merged with the trust store by SHA-256."""
+    r = _make_report()
+    shared, host_only = "aa" * 32, "bb" * 32
+    r.trust_store["certificates"] = [_cert(shared, "CN=Shared Root", role="ca")]
+    r.crypto_material = {
+        "available": True,
+        "certificates": [
+            _cert(
+                shared.upper(),
+                "CN=Shared Root",
+                role="ca",
+                paths=["/etc/pki/tls/certs/ca-bundle.crt"],
+            ),
+            _cert(
+                host_only,
+                "CN=www.example.test",
+                role="leaf",
+                category="pure_pqc",
+                paths=["/etc/httpd/tls/www.crt", "/etc/httpd/tls/www.crt"],
+            ),
+        ],
+    }
+    bom = _bom("1.7", r)
+    _validate_with_jsonschema(bom, "1.7")
+    certs = _cert_components(bom)
+    assert set(certs) == {f"cert/sha256:{shared}", f"cert/sha256:{host_only}"}
+
+    both = certs[f"cert/sha256:{shared}"]
+    assert _prop_values(both, "certificate:source") == [
+        "trust-store",
+        "host-filesystem",
+    ]
+    assert _prop_values(both, "certificate:role") == ["ca"]
+    assert _prop_values(both, "trust_store:category") == ["classical"]
+    assert _prop_values(both, "crypto_material:path") == [
+        "/etc/pki/tls/certs/ca-bundle.crt"
+    ]
+
+    host = certs[f"cert/sha256:{host_only}"]
+    assert _prop_values(host, "certificate:source") == ["host-filesystem"]
+    assert _prop_values(host, "certificate:role") == ["leaf"]
+    assert _prop_values(host, "crypto_material:category") == ["pure_pqc"]
+    assert _prop_values(host, "trust_store:category") == []
+    assert _prop_values(host, "crypto_material:path") == ["/etc/httpd/tls/www.crt"]
+    assert (
+        host["cryptoProperties"]["certificateProperties"]["fingerprint"]["content"]
+        == host_only
+    )
+
+    # Certificates stay a 1.7-only projection; 1.6 output is unchanged.
+    assert _cert_components(_bom("1.6", r)) == {}
+
+
+def test_cbom_1_7_without_crypto_material_scan_has_no_host_certificates() -> None:
+    r = _make_report()
+    r.trust_store["certificates"] = [_cert("cc" * 32, "CN=Only Anchor", role="ca")]
+    certs = _cert_components(_bom("1.7", r))
+    assert list(certs) == [f"cert/sha256:{'cc' * 32}"]
+    assert _prop_values(certs[f"cert/sha256:{'cc' * 32}"], "certificate:source") == [
+        "trust-store"
+    ]

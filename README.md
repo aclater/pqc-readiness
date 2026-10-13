@@ -24,6 +24,7 @@ privileged DaemonSet on OpenShift.
 - [Exit codes](#exit-codes)
 - [Distribution support](#distribution-support)
 - [Containers and OpenShift](#containers-and-openshift)
+- [Scanning images offline](#scanning-images-offline)
 - [Fleet aggregation](#fleet-aggregation)
 - [Scope and adjacent tooling](docs/scope.md)
 - [Findings](#findings)
@@ -261,6 +262,7 @@ versions.
 | Default scan | 0.38 s | 0.38 s | unchanged |
 | `--scan-packages` | 0.79 s | 0.36 s | 2.2× faster |
 | `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-009` when every key is classical). Public keys only. |
+| `--scan-crypto-libraries` | Report PQC support in GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains (`crypto_libraries` in JSON). Reads the algorithm and group names each installed library embeds, then falls back to upstream version thresholds; no subprocess. |
 | `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
 | Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
 
@@ -463,8 +465,13 @@ adds:
   X25519MLKEM768 have no single family.
 - TLS and SSH `protocol` components that link the key-exchange groups
   they can negotiate through `relatedCryptographicAssets`.
-- `certificate` assets keyed by SHA-256 fingerprint once the
-  per-certificate inventory (#108) is available.
+- `certificate` assets keyed by SHA-256 fingerprint, one per unique
+  certificate from `--scan-trust-store` and `--scan-crypto-material`
+  (merged when a certificate is in both). Properties record
+  `certificate:role` (`ca` / `leaf`), `certificate:source`
+  (`trust-store` / `host-filesystem`) and the discovered
+  `crypto_material:path` values. Certificates are a 1.7-only projection;
+  `--cbom-version 1.6` output is unchanged.
 
 Both versions validate against the official schemas bundled under
 `tests/fixtures/cyclonedx/`. NIST IR 8547, the US transition guidance,
@@ -528,6 +535,7 @@ Flags below are grouped by purpose.
 | `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process for the inventory, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
 | `--scan-services` | Map each listening TCP socket and bound UDP socket to the process that owns it and the crypto library that process actually maps (OpenSSL and its forks, GnuTLS, NSS, wolfSSL), or for Go binaries the toolchain version and its default hybrid key exchange. Reads `/proc` only, with no network connections; bounded by a process cap and a time budget. Needs root, or CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, to see other users' processes, and hostPID plus `--host-mount` in a container. Output: `service_crypto_linkage` ([docs/json-output.md](docs/json-output.md#service_crypto_linkage)). |
 | `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
+| `--root PATH` | Scan a filesystem tree offline: a mounted disk image or an extracted container rootfs. Package, certificate, key, crypto-policy, `openssl.cnf` and signing-key checks read `PATH`; CPU, kernel, device, process and benchmark sections are marked not applicable and no readiness tier is computed. Cannot be combined with `--host-mount`, `--bench`, `--bench-tls`, `--scan-services`, `--check`, `--fips-strict` or `--recommend`. See [Scanning images offline](#scanning-images-offline). |
 
 ### Recommendation engine
 
@@ -545,6 +553,7 @@ Flags below are grouped by purpose.
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
 | `--cbom-profile {none,federal-draft}` | Regime annotations for `--cbom` (default `none`, unchanged output). `federal-draft` adds OMB M-23-02 / M-26-15 / EO 14412 fields: key-establishment vs signature, quantum-vulnerable flag and deadline per asset, the classical groups a host offers, a TLS 1.3 status, and M-23-02 item coverage. Draft until CISA/NIST publish the minimum CBOM elements (~March 2027). |
+| `--cbom-interop {none,dependency-track,sbom-only}` | Shape `--cbom` for SBOM-oriented tools (default `none`, unchanged output). `dependency-track` mirrors the crypto details into `pqc-readiness:crypto:*` component properties (they survive tools that drop `cryptoProperties`) and adds library components with purls linked to the assets they provide; `sbom-only` emits only those library components, for tools that reject cryptographic assets. See [docs/integrations/dependency-track.md](docs/integrations/dependency-track.md). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
 | `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). The file is replaced atomically (temp file in the same directory, then rename), so a reader such as node_exporter or the fleet aggregator never sees a partial report. Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
@@ -558,6 +567,8 @@ Flags below are grouped by purpose.
 | --- | --- |
 | `--aggregate DIR` | Roll every `*.json` in `DIR` into a fleet rollup. The program exits when done and ignores all other flags. |
 | `--aggregate-format {json,csv}` | Output format for `--aggregate` (default `json`). |
+| `--observations FILE` | With `--aggregate`: join endpoint-observation records (what a network-side tool saw an endpoint negotiate) to the hosts and listening services in the reports. Format and matching rules: [docs/endpoint-observations.md](docs/endpoint-observations.md). |
+| `--observations-max-age-days DAYS` | Flag an observation as stale when it was made more than `DAYS` before or after its host's report (default 7). |
 
 ### Misc
 
@@ -740,6 +751,35 @@ For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in
 For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).
 
+## Scanning images offline
+
+`--root PATH` inventories a filesystem tree without running anything from it
+(#152). Use it for container images, golden images and disk images before they
+are deployed:
+
+```bash
+# Container image: export its rootfs, then scan the tree.
+mkdir rootfs && podman export "$(podman create registry.access.redhat.com/ubi10/ubi)" | tar -x -C rootfs
+pqc-readiness --root rootfs --scan-packages --scan-trust-store \
+  --scan-crypto-material --scan-signing-keys --json
+```
+
+| | `--host-mount PATH` | `--root PATH` |
+|---|---|---|
+| Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
+| CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
+| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
+| Packages, certificates, keys, crypto policy, signing keys | Read from the host | Read from the tree |
+| Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
+
+Package databases are read in-process for every format the matrix covers (rpm
+SQLite / Berkeley DB / ndb, dpkg `status`, apk, pacman), so the scanner never
+runs the tree's binaries or its own package tools against the tree. Checked
+against the in-image `rpm -qa` / `dpkg-query -W` on UBI 8, UBI 9, UBI 10,
+Fedora 44, Debian 13 and openSUSE Leap 16 container images: identical package
+lists, and no subprocess runs during the scan. Scanning a disk image needs it
+mounted read-only first (e.g. `guestmount --ro`), which usually requires root.
+
 ## Fleet aggregation
 
 `--aggregate DIR` reads every `*.json` produced by `--save` (or by the
@@ -754,6 +794,12 @@ pqc-readiness --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
 
 Files with mismatched `schema_version` land under `skipped` with a
 reason rather than being silently merged.
+
+To see what endpoints actually negotiate, add `--observations FILE`:
+records from any network-side source, in a small neutral format, are
+matched to the hosts and to the listening services found by
+`--scan-services`, and each endpoint is labelled capable / configured /
+observed. See [docs/endpoint-observations.md](docs/endpoint-observations.md).
 
 ## Findings
 
@@ -770,6 +816,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/siem-ndjson.md`](docs/siem-ndjson.md) — `--ndjson` (OCSF 1.9.0) ingestion recipes.
 - [`docs/sarif-code-scanning.md`](docs/sarif-code-scanning.md) — `--sarif-anchor` code-scanning upload recipe.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
+- [`docs/endpoint-observations.md`](docs/endpoint-observations.md) — endpoint-observation record format, matching rules and adapter guidance for `--aggregate --observations`.
 - [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF).
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.

@@ -860,15 +860,123 @@ PACKAGE_QUERY_BY_FAMILY: dict[
 }
 
 
+# In-process readers for the non-rpm package databases (#152).  The CLI
+# tools in PACKAGE_QUERY_BY_FAMILY read the database of the machine they
+# run on, so under --host-mount or --root they would inventory the
+# scanner instead of the target.  Each reader reproduces its CLI's
+# `name version` output exactly (checked against real images).
+_PREFIXED_PACKAGE_DBS: dict[str, tuple[str, str, str]] = {
+    # family: (package manager, source label, database path)
+    "debian": ("dpkg", "dpkg-status", "/var/lib/dpkg/status"),
+    "alpine": ("apk", "apk-installed-db", "/lib/apk/db/installed"),
+    "arch": ("pacman", "pacman-local-db", "/var/lib/pacman/local"),
+}
+
+
+def parse_dpkg_status(text: str) -> list[dict[str, str]]:
+    """Packages from a dpkg `status` file.  Matches `dpkg-query -W`, which
+    lists every stanza that carries a Version, including packages removed
+    with their config files left behind (status `deinstall ok
+    config-files`); stanzas without a Version print no version there and
+    are skipped here too."""
+    out: list[dict[str, str]] = []
+    for stanza in re.split(r"\n\s*\n", text):
+        fields: dict[str, str] = {}
+        for line in stanza.splitlines():
+            if not line or line[0] in " \t":
+                continue  # continuation of a multi-line field
+            key, sep, value = line.partition(":")
+            if sep:
+                fields.setdefault(key, value.strip())
+        if fields.get("Package") and fields.get("Version"):
+            out.append({"name": fields["Package"], "version": fields["Version"]})
+    return out
+
+
+def parse_apk_installed(text: str) -> list[dict[str, str]]:
+    """Packages from apk's `installed` database (`P:` name, `V:` version
+    per blank-line-separated record), as `apk info -v` reports them."""
+    out: list[dict[str, str]] = []
+    for record in re.split(r"\n\s*\n", text):
+        name = version = ""
+        for line in record.splitlines():
+            if line.startswith("P:"):
+                name = line[2:].strip()
+            elif line.startswith("V:"):
+                version = line[2:].strip()
+        if name and version:
+            out.append({"name": name, "version": version})
+    return out
+
+
+def parse_pacman_desc(text: str) -> dict[str, str] | None:
+    """Name and version from one pacman `local/<pkg>/desc` file."""
+    fields: dict[str, str] = {}
+    lines = text.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        if line in ("%NAME%", "%VERSION%"):
+            fields[line.strip("%")] = lines[i + 1].strip()
+    if fields.get("NAME") and fields.get("VERSION"):
+        return {"name": fields["NAME"], "version": fields["VERSION"]}
+    return None
+
+
+def read_prefixed_package_db(family: str) -> tuple[list[dict[str, str]], str]:
+    """Read the family's package database under HOST_PREFIX in-process.
+    Returns (packages, host-relative database path); raises OSError when
+    the database is missing or unreadable."""
+    _, _, db = _PREFIXED_PACKAGE_DBS[family]
+    try:
+        host_rel = resolve_under_prefix(db, _platform.HOST_PREFIX)
+    except RpmdbError as e:
+        raise OSError(str(e)) from e
+    local = Path(_platform.HOST_PREFIX + host_rel)
+    if family == "arch":
+        if not local.is_dir():
+            raise FileNotFoundError(str(local))
+        pkgs = []
+        for desc in sorted(local.glob("*/desc")):
+            parsed = parse_pacman_desc(desc.read_text(errors="replace"))
+            if parsed:
+                pkgs.append(parsed)
+        return pkgs, host_rel
+    text = local.read_text(errors="replace")
+    parser = parse_dpkg_status if family == "debian" else parse_apk_installed
+    return parser(text), host_rel
+
+
+def _scan_prefixed_packages(family: str) -> dict[str, Any]:
+    manager, source, db = _PREFIXED_PACKAGE_DBS[family]
+    try:
+        pkgs, host_rel = read_prefixed_package_db(family)
+    except OSError as e:
+        log.debug("packages: cannot read %s under %s: %s", db, _platform.HOST_PREFIX, e)
+        return {
+            "available": False,
+            "reason": f"no {manager} database at {db} under {_platform.HOST_PREFIX}",
+        }
+    return {
+        "available": True,
+        "package_manager": manager,
+        "source": source,
+        "db_root": host_rel,
+        "total_packages": len(pkgs),
+        "bundled_crypto": classify_bundled_crypto(pkgs, family),
+    }
+
+
 def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     """Family-aware package inventory.  Returns the same shape regardless
     of which tool produced it: {available, total_packages, bundled_crypto},
     so consumers don't have to special-case rpm/dpkg/pacman/apk output.
     RPM families read the rpm database through query_rpm_packages() and
-    additionally report `source` and `db_root` (#125)."""
+    additionally report `source` and `db_root` (#125); so do dpkg, apk
+    and pacman when a prefix (--host-mount / --root) is in effect (#152)."""
     family = (os_release or {}).get("family", "unknown")
     if family in ("rhel", "suse"):
         return _scan_rpm_packages(family)
+    if _platform.HOST_PREFIX and family in _PREFIXED_PACKAGE_DBS:
+        return _scan_prefixed_packages(family)
     plan = PACKAGE_QUERY_BY_FAMILY.get(family)
     if plan is None:
         return {

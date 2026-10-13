@@ -43,6 +43,7 @@
     "cores_physical": 8,
     "cpu_freq_mhz": 3000.0,
     "cpu_model": "Stub CPU @ 3.0GHz",
+    "crypto_libraries": {},
     "crypto_material": {},
     "crypto_policy": {
       "active": "DEFAULT",
@@ -263,6 +264,7 @@
       },
       "base_policy": "DEFAULT",
       "configured": "DEFAULT",
+      "framework": "crypto-policies",
       "pq_disabled_by_subpolicy": [],
       "pq_subpolicies_active": [],
       "pqc_enabled": {
@@ -440,11 +442,99 @@
       "environment": "bare_metal",
       "evidence": []
     },
+    "scan_mode": null,
     "schema_version": "1.5",
     "service_crypto_linkage": {},
     "signing_keys": {},
     "ssh_pqc": {
       "available": false
+    },
+    "sshd": {
+      "available": true,
+      "config_files": [
+        "/etc/ssh/sshd_config",
+        "/etc/ssh/sshd_config.d/50-cloud-init.conf",
+        "/etc/ssh/sshd_config.d/50-redhat.conf",
+        "/etc/crypto-policies/back-ends/opensshserver.config"
+      ],
+      "first_kex": "curve25519-sha256",
+      "host_key_algorithms": [
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+        "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+        "ecdsa-sha2-nistp521",
+        "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+        "ssh-ed25519",
+        "ssh-ed25519-cert-v01@openssh.com",
+        "sk-ssh-ed25519@openssh.com",
+        "sk-ssh-ed25519-cert-v01@openssh.com",
+        "rsa-sha2-256",
+        "rsa-sha2-256-cert-v01@openssh.com",
+        "rsa-sha2-512",
+        "rsa-sha2-512-cert-v01@openssh.com"
+      ],
+      "host_keys": [
+        {
+          "bits": 3072,
+          "fingerprint_sha256": "SHA256:bQrCkI7l/xQhkn83ecgIEGX600PnzWeXodLGlZFsUUI",
+          "path": "/etc/ssh/ssh_host_rsa_key",
+          "pqc": false,
+          "readable": true,
+          "type": "ssh-rsa"
+        },
+        {
+          "bits": 256,
+          "fingerprint_sha256": "SHA256:UA5lnA6BGOerjmSuMIVCDIQUDrAJTyX6fiiGtlrovLA",
+          "path": "/etc/ssh/ssh_host_ecdsa_key",
+          "pqc": false,
+          "readable": true,
+          "type": "ecdsa-sha2-nistp256"
+        },
+        {
+          "bits": 256,
+          "fingerprint_sha256": "SHA256:0DbThYgAxkZVm/Te5E3GPcrDCQAzSjHtf+m2FkaiGUk",
+          "path": "/etc/ssh/ssh_host_ed25519_key",
+          "pqc": false,
+          "readable": true,
+          "type": "ssh-ed25519"
+        }
+      ],
+      "host_keys_pqc": false,
+      "kex_groups": {
+        "classical": [
+          "curve25519-sha256",
+          "curve25519-sha256@libssh.org",
+          "diffie-hellman-group-exchange-sha256",
+          "diffie-hellman-group14-sha256",
+          "diffie-hellman-group16-sha512",
+          "diffie-hellman-group18-sha512",
+          "ecdh-sha2-nistp256",
+          "ecdh-sha2-nistp384",
+          "ecdh-sha2-nistp521"
+        ],
+        "hybrid": [],
+        "pure_pqc": []
+      },
+      "kex_offered": [
+        "curve25519-sha256",
+        "curve25519-sha256@libssh.org",
+        "ecdh-sha2-nistp256",
+        "ecdh-sha2-nistp384",
+        "ecdh-sha2-nistp521",
+        "diffie-hellman-group-exchange-sha256",
+        "diffie-hellman-group14-sha256",
+        "diffie-hellman-group16-sha512",
+        "diffie-hellman-group18-sha512"
+      ],
+      "kex_references": {},
+      "kex_source": "configured",
+      "openssh_supports_pqc_kex": null,
+      "pqc_first": false,
+      "pqc_offered": false,
+      "source": "config files"
     },
     "tpm_pqc": {
       "present": false

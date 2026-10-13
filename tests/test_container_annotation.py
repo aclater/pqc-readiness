@@ -331,6 +331,7 @@ def test_build_host_fs_detections_unavailable_populated_in_container(
         "packages",
         "openssl_config",
         "crypto_policy",
+        "sshd",
         "nss",
     }
     assert set(out) == expected
