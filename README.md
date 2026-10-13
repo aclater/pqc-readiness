@@ -463,8 +463,13 @@ adds:
   X25519MLKEM768 have no single family.
 - TLS and SSH `protocol` components that link the key-exchange groups
   they can negotiate through `relatedCryptographicAssets`.
-- `certificate` assets keyed by SHA-256 fingerprint once the
-  per-certificate inventory (#108) is available.
+- `certificate` assets keyed by SHA-256 fingerprint, one per unique
+  certificate from `--scan-trust-store` and `--scan-crypto-material`
+  (merged when a certificate is in both). Properties record
+  `certificate:role` (`ca` / `leaf`), `certificate:source`
+  (`trust-store` / `host-filesystem`) and the discovered
+  `crypto_material:path` values. Certificates are a 1.7-only projection;
+  `--cbom-version 1.6` output is unchanged.
 
 Both versions validate against the official schemas bundled under
 `tests/fixtures/cyclonedx/`. NIST IR 8547, the US transition guidance,
@@ -545,6 +550,7 @@ Flags below are grouped by purpose.
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
 | `--cbom-profile {none,federal-draft}` | Regime annotations for `--cbom` (default `none`, unchanged output). `federal-draft` adds OMB M-23-02 / M-26-15 / EO 14412 fields: key-establishment vs signature, quantum-vulnerable flag and deadline per asset, the classical groups a host offers, a TLS 1.3 status, and M-23-02 item coverage. Draft until CISA/NIST publish the minimum CBOM elements (~March 2027). |
+| `--cbom-interop {none,dependency-track,sbom-only}` | Shape `--cbom` for SBOM-oriented tools (default `none`, unchanged output). `dependency-track` mirrors the crypto details into `pqc-readiness:crypto:*` component properties (they survive tools that drop `cryptoProperties`) and adds library components with purls linked to the assets they provide; `sbom-only` emits only those library components, for tools that reject cryptographic assets. See [docs/integrations/dependency-track.md](docs/integrations/dependency-track.md). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
 | `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). The file is replaced atomically (temp file in the same directory, then rename), so a reader such as node_exporter or the fleet aggregator never sees a partial report. Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
