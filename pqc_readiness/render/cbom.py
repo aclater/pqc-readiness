@@ -652,20 +652,54 @@ def _cdx17_certificate_state(not_before: str, not_after: str) -> str | None:
     return "active"
 
 
+_CERT_SOURCE_TRUST_STORE = "trust-store"
+_CERT_SOURCE_HOST = "host-filesystem"
+
+
+def _certificate_entries(
+    r: _report.Report,
+) -> list[tuple[str, dict[str, Any], list[str], list[str]]]:
+    """Merge trust-store certificates and certificates discovered on the
+    host filesystem (`--scan-crypto-material`, #108) into one list keyed by
+    SHA-256 fingerprint, so a CA that is both a trust anchor and present in
+    a service directory becomes one asset (#178).
+
+    Returns (sha256, record, sources, paths) in a deterministic order:
+    trust-store certificates first, in their report order, then host-only
+    certificates.  The trust-store record wins when both have the
+    certificate; host paths are attached either way."""
+    merged: dict[str, tuple[dict[str, Any], list[str], list[str]]] = {}
+    for source, section in (
+        (_CERT_SOURCE_TRUST_STORE, r.trust_store),
+        (_CERT_SOURCE_HOST, r.crypto_material),
+    ):
+        for cert in (section or {}).get("certificates") or []:
+            sha = str(cert.get("sha256") or "").lower()
+            if len(sha) != 64:
+                continue
+            if sha not in merged:
+                merged[sha] = (cert, [], [])
+            _rec, sources, paths = merged[sha]
+            if source not in sources:
+                sources.append(source)
+            for path in cert.get("paths") or []:
+                if path not in paths:
+                    paths.append(str(path))
+    return [(sha, rec, srcs, paths) for sha, (rec, srcs, paths) in merged.items()]
+
+
 def _cbom17_certificate_components(r: _report.Report) -> list[dict[str, Any]]:
-    """One `certificate` asset per entry in `trust_store.certificates`.
+    """One `certificate` asset per unique certificate in
+    `trust_store.certificates` and `crypto_material.certificates`.
 
     Contract for the per-certificate inventory (#108): each entry is a
     dict with `sha256` (hex, required — the join key) and optionally
-    `serial`, `subject`, `issuer`, `not_before`, `not_after` (ISO 8601)
-    and `category`.  Today's trust-store scan is summary-only, so this
-    emits nothing until #108 populates the list."""
-    ts = r.trust_store or {}
+    `serial`, `subject`, `issuer`, `not_before`, `not_after` (ISO 8601),
+    `category`, `role` (`ca` / `leaf`) and, for discovered certificates,
+    `paths`.  Certificates are a 1.7 projection only: the 1.6 output is
+    kept byte-identical to earlier releases (#138)."""
     out: list[dict[str, Any]] = []
-    for cert in ts.get("certificates") or []:
-        sha = str(cert.get("sha256") or "").lower()
-        if len(sha) != 64:
-            continue
+    for sha, cert, sources, paths in _certificate_entries(r):
         props: dict[str, Any] = {
             "certificateFormat": "X.509",
             "fingerprint": {"alg": "SHA-256", "content": sha},
@@ -686,9 +720,18 @@ def _cbom17_certificate_components(r: _report.Report) -> list[dict[str, Any]]:
             props["certificateState"] = [{"state": state}]
         extra = _cbom_provenance()
         if cert.get("category"):
-            extra.append(
-                {"name": "trust_store:category", "value": str(cert["category"])}
+            # Trust-store certificates keep their established property name;
+            # host-only ones use the section they came from.
+            prefix = (
+                "trust_store"
+                if _CERT_SOURCE_TRUST_STORE in sources
+                else "crypto_material"
             )
+            extra.append({"name": f"{prefix}:category", "value": str(cert["category"])})
+        if cert.get("role"):
+            extra.append({"name": "certificate:role", "value": str(cert["role"])})
+        extra.extend({"name": "certificate:source", "value": s} for s in sources)
+        extra.extend({"name": "crypto_material:path", "value": p} for p in paths)
         out.append(
             {
                 "type": "cryptographic-asset",
@@ -801,7 +844,7 @@ def _apply_profile_to_components(
 ) -> None:
     """Append profile properties in place.  Algorithm components line up
     with `assets` by bom-ref; certificate components get the signature
-    classification from their trust-store category."""
+    classification from their trust-store or discovered-certificate category."""
     by_ref = {a.key: a for a in assets}
     vuln_by_cat = profile["quantum_vulnerable_by_cert_category"]
     for comp in components:
@@ -816,7 +859,7 @@ def _apply_profile_to_components(
                 (
                     p["value"]
                     for p in comp.get("properties", [])
-                    if p["name"] == "trust_store:category"
+                    if p["name"] in ("trust_store:category", "crypto_material:category")
                 ),
                 None,
             )
