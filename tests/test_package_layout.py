@@ -27,6 +27,7 @@ LANE_MODULES = (
     "pqc_readiness.render.sarif",
     "pqc_readiness.render.spdx",
     "pqc_readiness.render.text",
+    "pqc_readiness.render.ndjson",
     "pqc_readiness.recommendation",
     "pqc_readiness.aggregate",
     "pqc_readiness._platform",
@@ -104,9 +105,26 @@ def test_every_registered_output_has_its_flag() -> None:
 
 def test_output_precedence_matches_the_cli_contract() -> None:
     order = [f.dest for f in registry.outputs()]
-    assert order == ["json", "cbom", "spdx", "sarif", "prometheus", "markdown", "quiet"]
+    assert order == [
+        "json",
+        "cbom",
+        "spdx",
+        "sarif",
+        "prometheus",
+        "ndjson",
+        "markdown",
+        "quiet",
+    ]
     machine = {f.dest for f in registry.outputs() if f.machine_readable}
-    assert machine == {"json", "cbom", "spdx", "sarif", "prometheus", "markdown"}
+    assert machine == {
+        "json",
+        "cbom",
+        "spdx",
+        "sarif",
+        "prometheus",
+        "ndjson",
+        "markdown",
+    }
 
 
 def test_registry_rejects_duplicate_registrations() -> None:

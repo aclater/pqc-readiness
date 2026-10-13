@@ -65,6 +65,9 @@ class Report:
     trust_store: dict[str, Any] = field(default_factory=dict)
     crypto_material: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
+    # --scan-services (#111): listening sockets -> owning process -> the
+    # crypto library it maps (or Go toolchain).  {} when not requested.
+    service_crypto_linkage: dict[str, Any] = field(default_factory=dict)
     # Per-detection `unavailable_in_container` flags for host-fs-dependent
     # probes (PCI accel, kernel crypto, ktls, FIPS, TPM, kernel info, OS
     # release, PKCS#11 modules).  Populated only when the report was
@@ -90,3 +93,6 @@ class Report:
     verdict_reason: str = ""
     verdict_caveat: str = ""
     exit_code: int = 0
+    # Operator-supplied facts from --inventory-metadata FILE (OMB M-23-02
+    # items the host can't know); None when the flag isn't given (#144).
+    inventory_metadata: dict[str, Any] | None = None

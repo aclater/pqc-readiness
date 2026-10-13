@@ -118,15 +118,15 @@ The other six are organisational facts that no host scanner can see.
 
 | # | M-23-02 item | Collected? | Where | Notes |
 |---|---|---|---|---|
-| 1 | FISMA system ID | **No** | — | Organisational; not visible on the host. An operator metadata file is planned (#144). |
-| 2 | FIPS 199 categorisation | **No** | — | Organisational. Planned in #144. |
-| 3 | High Value Asset ID | **No** | — | Organisational. Planned in #144. |
-| 4 | Each CRQC-vulnerable cryptographic system actively used: algorithm, service provided, key or module length | **Partly** | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `trust_store`, `cnsa_2_0`; CBOM algorithm assets | Algorithms and key sizes the host's libraries **provide**, and the algorithms of trusted certificates. Not yet which service **uses** which algorithm, or any legacy fallback in use; see [Capability versus in-use](#capability-versus-in-use). Classifying each asset as key establishment or signature is planned (#144). |
+| 1 | FISMA system ID | **Operator-supplied** | `inventory_metadata.fisma_system_id` (`--inventory-metadata FILE`) | Organisational; not visible on the host. |
+| 2 | FIPS 199 categorisation | **Operator-supplied** | `inventory_metadata.fips199_categorization` | Organisational. |
+| 3 | High Value Asset ID | **Operator-supplied** | `inventory_metadata.hva_id` | Organisational. |
+| 4 | Each CRQC-vulnerable cryptographic system actively used: algorithm, service provided, key or module length | **Partly** | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `trust_store`, `cnsa_2_0`; CBOM algorithm assets | Algorithms and key sizes the host's libraries **provide**, and the algorithms of trusted certificates. Not yet which service **uses** which algorithm, or any legacy fallback in use; see [Capability versus in-use](#capability-versus-in-use). With `--cbom-profile federal-draft` each CBOM algorithm asset is classified as key establishment or signature, flagged quantum-vulnerable or not, given its EO 14412 deadline, and the host's classical key-exchange groups are added. |
 | 5 | COTS / GOTS / other, with vendor | **Partly** | `packages.bundled_crypto` (with `--scan-packages`) | Crypto-bearing distribution packages, with name and version. No COTS/GOTS/custom classification, and no software installed outside the package manager. |
 | 6 | Operating system with major/minor version | **Yes** | `os_release` (`id`, `version_id`, `pretty_name`), `kernel_info` | |
-| 7 | Hosting: on-premises, commercial CSP, government CSP, hybrid | **No** | — | `runtime_environment` says bare metal, VM or container, but not who hosts it. Planned in #144. |
-| 8 | Data lifecycle: records category and time to live | **No** | — | Organisational. Planned in #144. |
-| 9 | Notes | — | `verdict_reason`, `verdict_caveat` | Free-text context for the verdict. |
+| 7 | Hosting: on-premises, commercial CSP, government CSP, hybrid | **Operator-supplied** | `inventory_metadata.hosting` | `runtime_environment` says bare metal, VM or container, but not who hosts it. |
+| 8 | Data lifecycle: records category and time to live | **Operator-supplied** | `inventory_metadata.data_lifecycle` | Organisational. |
+| 9 | Notes | — | `inventory_metadata.notes`, `verdict_reason`, `verdict_caveat` | Operator notes plus free-text context for the verdict. |
 
 ## Mapping to OMB M-26-15 and EO 14412
 
@@ -151,7 +151,7 @@ Cryptography* (24 Jun 2026), **in force**
 | §6: a continuously updated, automated inventory feeding a central CBOM | Scheduled runs (quadlet, DaemonSet, Ansible), schema-versioned JSON, `--cbom` output, fleet aggregation |
 | PQC key establishment for high-value and high-impact systems by 31 Dec 2030 | Reports whether each host **can** do PQC key establishment (OpenSSL KEMs and hybrid TLS groups, SSH key exchange) and at what speed |
 | PQC signatures by 31 Dec 2031 | Reports PQC signature availability and benchmark rates, and PQC or composite certificates in the trust store |
-| TLS 1.3 by 2 Jan 2030 | Not yet reported as a dedicated finding; planned in #144 |
+| TLS 1.3 by 2 Jan 2030 | `--cbom-profile federal-draft` reports `federal:tls13_status` (library capability: OpenSSL ≥ 1.1.1); service configuration is #106 and observed negotiation #149 |
 | Appendix A: treat unknown asymmetric algorithms as vulnerable | The trust-store scan classifies any certificate without a recognised PQC or composite OID as classical |
 | Appendix B: describe the inventory methodology and tools | This document |
 | Align with NIST IR 8547 "or successor document" | IR 8547 is still a **draft**; see below |
@@ -182,8 +182,9 @@ them, since drafts in this list are expected to change.
 
 - **Capability, not use.** See [above](#capability-versus-in-use). Service
   configuration and observed negotiation are planned (#104–#107).
-- **Organisational items.** M-23-02 items 1, 2, 3, 7 and 8 need operator
-  input (#144).
+- **Organisational items.** M-23-02 items 1, 2, 3, 7 and 8 come from an
+  operator-supplied file (`--inventory-metadata`); the scanner validates
+  their shape, not their truth.
 - **Python prerequisite.** The scanner needs Python 3.9 or newer. Stock
   RHEL/Rocky/AlmaLinux 8 cloud images and stock SLES/openSUSE Leap 15
   images ship only Python 3.6, so the scanner exits 127 until a newer

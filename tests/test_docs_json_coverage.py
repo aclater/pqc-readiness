@@ -76,6 +76,10 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "detect_runtime_environment": ("`runtime_environment`",),
     "host_fs_unavailable_note": ("`host_fs_detections_unavailable`",),
     "scan_packages": ("`packages`",),
+    "scan_services": ("`service_crypto_linkage`",),
+    "_process_details": ("`service_crypto_linkage`",),
+    "_library_details": ("`service_crypto_linkage`",),
+    "go_tls_kex_default": ("`service_crypto_linkage`",),
     "_scan_rpm_packages": ("`packages`",),
     "classify_bundled_crypto": ("`packages`",),
     "parse_os_release": ("`os_release`",),
@@ -133,6 +137,7 @@ PATH_SECTIONS: dict[str, str] = {
     "trust_store": "`trust_store`",
     "crypto_material": "`crypto_material`",
     "runtime_environment": "`runtime_environment`",
+    "service_crypto_linkage": "`service_crypto_linkage`",
     "host_fs_detections_unavailable": "`host_fs_detections_unavailable`",
     "packages": "`packages`",
     "os_release": "`os_release`",
@@ -291,3 +296,36 @@ def test_every_aggregate_key_is_documented(tmp_path: Path) -> None:
     top = [k for k in rollup if not _documented(section, k)]
     skipped = [k for s in rollup["skipped"] for k in s if not _documented(section, k)]
     assert top == [] and skipped == []
+
+
+# ---------------------------------------------------------------------------
+# --ndjson events (#146)
+# ---------------------------------------------------------------------------
+
+NDJSON = "`--ndjson` events"
+# Rule-specific trigger values, documented as the SARIF properties bag.
+NDJSON_DYNAMIC = "unmapped.pqc_readiness.properties"
+
+
+@pytest.mark.parametrize(
+    "func", ["host_summary_event", "finding_event", "_metadata", "_device"]
+)
+def test_every_key_an_ndjson_producer_writes_is_documented(func: str) -> None:
+    section = _section(_sections(), NDJSON)
+    missing = sorted(k for k in _function_keys(func) if not _documented(section, k))
+    assert not missing, f"{func} emits keys not documented under {NDJSON}: {missing}"
+
+
+def test_every_ndjson_key_path_is_documented() -> None:
+    from test_sarif import _empty_report, _full_trigger_report
+
+    section = _section(_sections(), NDJSON)
+    missing = set()
+    for r in (_full_trigger_report(), _empty_report()):
+        for line in pr.render_ndjson(r).split("\n"):
+            for parent, key in _paths(json.loads(line)):
+                if parent.startswith(NDJSON_DYNAMIC):
+                    continue
+                if not _documented(section, key):
+                    missing.add(f"{parent}.{key}" if parent else key)
+    assert not missing, f"undocumented --ndjson keys: {sorted(missing)}"

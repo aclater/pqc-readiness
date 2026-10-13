@@ -68,6 +68,7 @@ from .detect.runtime import (  # noqa: F401
     detect_runtime_environment,
     parse_cgroup_for_container,
 )
+from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,
     PKG_MANAGER_ORDER,
@@ -237,6 +238,7 @@ from .render.spdx import (  # noqa: F401
     render_spdx,
 )
 from .render.prom import render_prometheus  # noqa: F401
+from .render.ndjson import render_ndjson  # noqa: F401
 from .cli import (  # noqa: F401
     EXIT_OUTPUT_WRITE_FAILED,
     ansible_ignored_flag_warnings,
@@ -248,6 +250,7 @@ from .cli import (  # noqa: F401
 )
 from . import detect, render  # noqa: F401
 from .render import json_report  # noqa: F401  (registers --json)
+from . import inventory_metadata  # noqa: F401  (registers --inventory-metadata)
 
 __all__ = [
     "ACCEL_PCI_HINTS",
@@ -410,6 +413,7 @@ __all__ = [
     "parse_certificate",
     "scan_crypto_material",
     "scan_packages",
+    "scan_services",
     "scan_trust_store",
     "set_host_prefix",
 ]
