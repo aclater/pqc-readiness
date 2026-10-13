@@ -23,8 +23,9 @@ from .. import registry as _registry
 # without a renderer-side patch.
 #
 # Refs:
-#   https://cyclonedx.org/docs/1.6/json/  (specVersion 1.6)
-#   https://csrc.nist.gov/pubs/ir/8547/final  (NIST IR 8547)
+#   https://cyclonedx.org/docs/1.7/json/  (specVersion 1.7, default; #138)
+#   https://cyclonedx.org/docs/1.6/json/  (specVersion 1.6, --cbom-version 1.6)
+#   https://csrc.nist.gov/pubs/ir/8547/ipd  (NIST IR 8547, initial public draft)
 #   https://spdx.github.io/spdx-spec/v3.0.1/  (SPDX 3.0.1)
 
 # Implementation platform mapping for CycloneDX algorithmProperties.
@@ -431,10 +432,11 @@ def canonical_assets(r: _report.Report) -> list[CryptoAsset]:
 # CycloneDX 1.6 CBOM rendering ----------------------------------------------
 #
 # A CBOM (Cryptographic Bill of Materials) is a CycloneDX BOM whose
-# `components` are populated with `cryptographic-asset` entries.  NIST IR
-# 8547 references CycloneDX 1.6 as the standard for cryptographic inventory
-# exchange, so emitting this shape lets downstream PQC-migration tooling
-# ingest pqc-readiness output without writing a bespoke translator.
+# `components` are populated with `cryptographic-asset` entries.  Emitting
+# the standard shape lets downstream PQC-migration tooling ingest
+# pqc-readiness output without a bespoke translator.  1.6 output is kept
+# byte-for-byte as it was (`--cbom-version 1.6`); 1.7 adds the fields the
+# 1.7 cryptographic-asset model introduced (see _cbom17_* below).
 
 
 # Provenance tag stamped onto every emitted CBOM asset so downstream
@@ -490,10 +492,231 @@ def _cbom_component(asset: CryptoAsset) -> dict[str, Any]:
     }
 
 
-def render_cbom(r: _report.Report) -> str:
-    """Render the report as a CycloneDX 1.6 CBOM (JSON).  The output is
-    schema-conformant — see tests/test_cbom.py for the schema check."""
-    components = [_cbom_component(a) for a in canonical_assets(r)]
+CBOM_VERSIONS: tuple[str, ...] = ("1.7", "1.6")
+CBOM_DEFAULT_VERSION = "1.7"
+
+# CycloneDX 1.7 algorithm families (cryptography-defs.json registry,
+# spec tag 1.7.2).  Name prefix -> registry family.  Families the
+# registry does not define are emitted as a pqc-readiness property
+# instead of `algorithmFamily`, which must be a registry value.
+_CDX17_FAMILY_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("ML-KEM", "ML-KEM"),
+    ("MLKEM", "ML-KEM"),
+    ("ML-DSA", "ML-DSA"),
+    ("MLDSA", "ML-DSA"),
+    ("SLH-DSA", "SLH-DSA"),
+    ("SLHDSA", "SLH-DSA"),
+    ("LMS", "LMS"),
+    ("HSS", "LMS"),
+    ("XMSS", "XMSS"),
+)
+# Not in the 1.7.2 registry (checked 2026-10-13): HQC (selected by NIST
+# 2025-03), FN-DSA (FIPS 206 draft), FrodoKEM, Classic McEliece, BIKE.
+_CDX17_UNREGISTERED_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("HQC", "HQC"),
+    ("FN-DSA", "FN-DSA"),
+    ("FALCON", "FN-DSA"),
+    ("FRODO", "FrodoKEM"),
+    ("MCELIECE", "Classic-McEliece"),
+    ("CLASSIC-MCELIECE", "Classic-McEliece"),
+    ("BIKE", "BIKE"),
+)
+
+
+_HYBRID_CURVE_MARKERS: tuple[str, ...] = (
+    "X25519",
+    "X448",
+    "SECP",
+    "NISTP",
+    "P256",
+    "P384",
+    "P521",
+    "BRAINPOOL",
+)
+
+
+def _cdx17_algorithm_family(name: str) -> tuple[str, bool] | None:
+    """(family, in_registry) for a PQC algorithm name, or None when the
+    name is not a recognised PQC family (hybrid groups, ISA features,
+    accelerators).  Hybrid names such as X25519MLKEM768 deliberately
+    return None: a combiner has no single registry family."""
+    upper = name.upper()
+    # Hybrids carry a classical curve anywhere in the name: X25519MLKEM768,
+    # SecP384r1MLKEM1024, mlkem768x25519-sha256, mlkem1024nistp384-sha384.
+    if any(c in upper for c in _HYBRID_CURVE_MARKERS):
+        return None
+    for prefix, family in _CDX17_FAMILY_PREFIXES:
+        if upper.startswith(prefix):
+            return family, True
+    for prefix, family in _CDX17_UNREGISTERED_PREFIXES:
+        if upper.startswith(prefix):
+            return family, False
+    return None
+
+
+def _cbom17_component(asset: CryptoAsset) -> dict[str, Any]:
+    """1.7 projection: the 1.6 component plus `algorithmFamily` (registry
+    families only) or, for families outside the registry, a marked
+    `pqc-readiness:algorithmFamily` property."""
+    comp = _cbom_component(asset)
+    if asset.asset_type != "algorithm":
+        return comp
+    fam = _cdx17_algorithm_family(asset.name)
+    if fam is None:
+        return comp
+    family, registered = fam
+    if registered:
+        comp["cryptoProperties"]["algorithmProperties"]["algorithmFamily"] = family
+    else:
+        comp["properties"].append(
+            {"name": "pqc-readiness:algorithmFamily", "value": family}
+        )
+        comp["properties"].append(
+            {
+                "name": "pqc-readiness:algorithmFamily:registry",
+                "value": "not-in-cyclonedx-1.7-registry",
+            }
+        )
+    return comp
+
+
+# Protocol components group the algorithm assets a protocol stack can
+# negotiate, through 1.7's generic `relatedCryptographicAssets` link
+# (which replaced the deprecated `cryptoRefArray`).  1.6 output has no
+# equivalent and does not get these components.
+_CDX17_PROTOCOLS: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
+    (
+        "protocol/tls",
+        "TLS 1.3 (OpenSSL key-exchange groups)",
+        "tls",
+        ("openssl_tls_hybrid", "openssl_tls_pqc"),
+    ),
+    (
+        "protocol/ssh",
+        "SSH (OpenSSH key exchange)",
+        "ssh",
+        ("ssh_kex_hybrid", "ssh_kex_pqc"),
+    ),
+)
+
+
+def _cbom17_protocol_components(assets: list[CryptoAsset]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for ref, name, ptype, categories in _CDX17_PROTOCOLS:
+        members = [a for a in assets if a.category in categories]
+        if not members:
+            continue
+        protocol: dict[str, Any] = {
+            "type": ptype,
+            "relatedCryptographicAssets": [
+                {"type": "algorithm", "ref": a.key} for a in members
+            ],
+        }
+        if ptype == "tls":
+            protocol["version"] = "1.3"
+        props = _cbom_provenance()
+        if members[0].source:
+            props.append({"name": "source", "value": members[0].source})
+        out.append(
+            {
+                "type": "cryptographic-asset",
+                "bom-ref": ref,
+                "name": name,
+                "cryptoProperties": {
+                    "assetType": "protocol",
+                    "protocolProperties": protocol,
+                },
+                "properties": props,
+            }
+        )
+    return out
+
+
+def _cdx17_certificate_state(not_before: str, not_after: str) -> str | None:
+    """Lifecycle state derivable from the validity window alone.  Revocation
+    cannot be known offline, so only pre-activation / active / deactivated
+    (expired) are ever emitted, and nothing when the dates don't parse."""
+    try:
+        start = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+        end = datetime.fromisoformat(not_after.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    now = datetime.now(timezone.utc)
+    if start.tzinfo is None or end.tzinfo is None:
+        return None
+    if now < start:
+        return "pre-activation"
+    if now > end:
+        return "deactivated"
+    return "active"
+
+
+def _cbom17_certificate_components(r: _report.Report) -> list[dict[str, Any]]:
+    """One `certificate` asset per entry in `trust_store.certificates`.
+
+    Contract for the per-certificate inventory (#108): each entry is a
+    dict with `sha256` (hex, required — the join key) and optionally
+    `serial`, `subject`, `issuer`, `not_before`, `not_after` (ISO 8601)
+    and `category`.  Today's trust-store scan is summary-only, so this
+    emits nothing until #108 populates the list."""
+    ts = r.trust_store or {}
+    out: list[dict[str, Any]] = []
+    for cert in ts.get("certificates") or []:
+        sha = str(cert.get("sha256") or "").lower()
+        if len(sha) != 64:
+            continue
+        props: dict[str, Any] = {
+            "certificateFormat": "X.509",
+            "fingerprint": {"alg": "SHA-256", "content": sha},
+        }
+        for src, dst in (
+            ("serial", "serialNumber"),
+            ("subject", "subjectName"),
+            ("issuer", "issuerName"),
+            ("not_before", "notValidBefore"),
+            ("not_after", "notValidAfter"),
+        ):
+            if cert.get(src):
+                props[dst] = str(cert[src])
+        state = _cdx17_certificate_state(
+            str(cert.get("not_before", "")), str(cert.get("not_after", ""))
+        )
+        if state:
+            props["certificateState"] = [{"state": state}]
+        extra = _cbom_provenance()
+        if cert.get("category"):
+            extra.append(
+                {"name": "trust_store:category", "value": str(cert["category"])}
+            )
+        out.append(
+            {
+                "type": "cryptographic-asset",
+                "bom-ref": f"cert/sha256:{sha}",
+                "name": str(cert.get("subject") or f"certificate {sha[:16]}"),
+                "cryptoProperties": {
+                    "assetType": "certificate",
+                    "certificateProperties": props,
+                },
+                "properties": extra,
+            }
+        )
+    return out
+
+
+def render_cbom(r: _report.Report, spec_version: str = CBOM_DEFAULT_VERSION) -> str:
+    """Render the report as a CycloneDX CBOM (JSON), specVersion 1.7 by
+    default or 1.6.  Both are schema-conformant — see tests/test_cbom.py.
+    The 1.6 projection is unchanged from earlier releases; 1.7 enriches
+    the same assets and adds protocol / certificate components."""
+    if spec_version not in CBOM_VERSIONS:
+        raise ValueError(f"unsupported CycloneDX version {spec_version!r}")
+    assets = canonical_assets(r)
+    if spec_version == "1.6":
+        components = [_cbom_component(a) for a in assets]
+    else:
+        components = [_cbom17_component(a) for a in assets]
+        components += _cbom17_protocol_components(assets)
+        components += _cbom17_certificate_components(r)
 
     timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
@@ -519,9 +742,9 @@ def render_cbom(r: _report.Report) -> str:
         host_component["properties"] = host_props
 
     bom: dict[str, Any] = {
-        "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+        "$schema": f"http://cyclonedx.org/schema/bom-{spec_version}.schema.json",
         "bomFormat": "CycloneDX",
-        "specVersion": "1.6",
+        "specVersion": spec_version,
         "serialNumber": f"urn:uuid:{uuid.uuid4()}",
         "version": 1,
         "metadata": {
@@ -543,14 +766,54 @@ def render_cbom(r: _report.Report) -> str:
     return json.dumps(bom, indent=2)
 
 
+# The output registry hands renderers only the Report, so the chosen
+# --cbom-version is recorded here by the flag's action.  add_arguments()
+# runs on every parser build (each main() call) and resets it, so a
+# previous invocation in the same process never leaks into the next.
+_selected_version = CBOM_DEFAULT_VERSION
+
+
+class _CbomVersionAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        global _selected_version
+        _selected_version = str(values)
+        setattr(namespace, self.dest, values)
+
+
 @_registry.register_arguments(12)
 def add_arguments(ap: argparse.ArgumentParser) -> None:
     """--cbom."""
     ap.add_argument(
         "--cbom",
         action="store_true",
-        help="emit CycloneDX 1.6 CBOM JSON (NIST IR 8547)",
+        help="emit a CycloneDX CBOM (cryptographic bill of materials) as JSON",
     )
 
 
-_registry.register_output(_registry.OutputFormat("cbom", 10, lambda r: render_cbom(r)))
+# Slot 19: the end of the output-format block, so the five format flags
+# stay together at the top of --help.
+@_registry.register_arguments(19)
+def add_version_argument(ap: argparse.ArgumentParser) -> None:
+    """--cbom-version."""
+    global _selected_version
+    _selected_version = CBOM_DEFAULT_VERSION
+    ap.add_argument(
+        "--cbom-version",
+        choices=list(CBOM_VERSIONS),
+        default=CBOM_DEFAULT_VERSION,
+        action=_CbomVersionAction,
+        help=f"CycloneDX specVersion for --cbom (default {CBOM_DEFAULT_VERSION})",
+    )
+
+
+def _render_selected(r: _report.Report) -> str:
+    return render_cbom(r, _selected_version)
+
+
+_registry.register_output(_registry.OutputFormat("cbom", 10, _render_selected))
