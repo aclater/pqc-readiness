@@ -23,8 +23,8 @@ from . import registry as _registry
 #
 # Five policy modes, four full and one composite:
 #   cnsa-2.0      US National Security Systems / NSA-aligned.  Pure PQC
-#                 preferred; hybrid permitted only where a protocol
-#                 mandates it (IKEv2).
+#                 preferred; hybrids permitted but not required (NSA
+#                 anticipates one for IKEv2).
 #   nist-civilian US federal civilian / FCEB.  ML-KEM, ML-DSA, SLH-DSA
 #                 per FIPS 203/204/205.  Hybrid permitted, not required.
 #   eu-anssi-bsi  EU public sector under ANSSI / BSI.  Hybrid actively
@@ -54,12 +54,13 @@ POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
         "requires_fips": True,
         "citation": (
             "CNSA 2.0 specifies ML-KEM-1024 and ML-DSA-87 for National "
-            "Security Systems.  Pure PQC is preferred; hybrid is "
-            "permitted only where a protocol mandates it (e.g., IKEv2)."
+            "Security Systems.  Pure PQC is preferred; hybrids are "
+            "permitted but not required, and NSA anticipates one for "
+            "IKEv2 (CNSA 2.0 FAQ ver. 2.1)."
         ),
         "source": (
-            "NSA CSA / CSI on Commercial National Security Algorithm "
-            "Suite 2.0 (CNSA 2.0 advisory and FAQ)"
+            "NSA CSA Announcing CNSA 2.0 (Sept 2022) and CNSA 2.0 FAQ "
+            "ver. 2.1 (Dec 2024)"
         ),
     },
     "nist-civilian": {
@@ -101,7 +102,11 @@ POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
             "Pure-PQC deployments are discouraged until confidence in "
             "the new primitives matures."
         ),
-        "source": "ANSSI position on PQC migration; BSI guidance on PQC",
+        "source": (
+            "BSI TR-02102-1 version 2026-01; ANSSI views on the PQC "
+            "transition (2023 follow up); EU Coordinated Implementation "
+            "Roadmap for the Transition to PQC v1.1 (2025)"
+        ),
     },
     "commercial": {
         "name": "Commercial / no specific regime",
@@ -125,6 +130,248 @@ POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
         "source": "no single source — see policy guidance documentation",
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# Migration timelines and their sources (#141)
+# ---------------------------------------------------------------------------
+#
+# Every milestone below was read from the issuing body's own document on
+# 2026-10-13 (archived copies where the publisher blocks scripted fetches;
+# noted per entry).  `status` is the document's own standing: "final" or
+# "draft".  Claims that could not be confirmed from a primary source are
+# deliberately absent: they are listed in the #141 PR, not encoded here.
+POLICY_SOURCES: dict[str, dict[str, Any]] = {
+    "us-nss-cnsa-2.0": {
+        "authority": "NSA (US National Security Systems)",
+        "documents": [
+            {
+                "title": "Announcing the Commercial National Security Algorithm Suite 2.0",
+                "date": "2022-09",
+                "status": "final",
+                "url": "https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF",
+            },
+            {
+                "title": "The Commercial National Security Algorithm Suite 2.0 and Quantum Computing FAQ, ver. 2.1",
+                "date": "2024-12",
+                "status": "final",
+                "url": "https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/0/CSI_CNSA_2.0_FAQ_.PDF",
+            },
+        ],
+        "milestones": [
+            {
+                "by": "2027-01-01",
+                "event": "All new NSS acquisitions CNSA 2.0 compliant (CNSSP 15)",
+            },
+            {
+                "by": "2030-12-31",
+                "event": "Equipment and services that cannot support CNSA 2.0 phased out",
+            },
+            {"by": "2031-12-31", "event": "CNSA 2.0 algorithms mandated for use"},
+            {"by": "2035", "event": "All NSS quantum-resistant (NSM-10)"},
+        ],
+        # Per-category "support and prefer" / "exclusively use" years from
+        # the 2022 advisory's transition timeline.
+        "categories": {
+            "software-firmware-signing": {
+                "support_and_prefer": "2025",
+                "exclusive_use": "2030",
+            },
+            "web-browsers-servers-cloud": {
+                "support_and_prefer": "2025",
+                "exclusive_use": "2033",
+            },
+            "traditional-networking": {
+                "support_and_prefer": "2026",
+                "exclusive_use": "2030",
+            },
+            "operating-systems": {
+                "support_and_prefer": "2027",
+                "exclusive_use": "2033",
+            },
+            "niche-equipment": {"support_and_prefer": "2030", "exclusive_use": "2033"},
+            "custom-legacy": {"support_and_prefer": None, "exclusive_use": "2033"},
+        },
+        "notes": [
+            "Only ML-KEM-1024, ML-DSA-87 and single-tree LMS/XMSS are approved; SLH-DSA and HSS/XMSS^MT are not.",
+            "Hybrids are permitted but not required.",
+        ],
+        "verified": "2026-10-13 (media.defense.gov blocks scripted fetches; read via web.archive.org)",
+    },
+    "us-nist": {
+        "authority": "NIST (US federal civilian)",
+        "documents": [
+            {
+                "title": "NIST IR 8547, Transition to Post-Quantum Cryptography Standards",
+                "date": "2024-11-12",
+                "status": "draft",
+                "url": "https://csrc.nist.gov/pubs/ir/8547/ipd",
+            },
+        ],
+        "milestones": [
+            {
+                "by": "2030",
+                "event": "Quantum-vulnerable algorithms at 112-bit strength deprecated after 2030 (draft)",
+            },
+            {
+                "by": "2035",
+                "event": "All quantum-vulnerable public-key algorithms disallowed after 2035 (draft)",
+            },
+        ],
+        "verified": "2026-10-13",
+    },
+    "eu": {
+        "authority": "EU NIS Cooperation Group (PQC work stream)",
+        "documents": [
+            {
+                "title": "A Coordinated Implementation Roadmap for the Transition to Post-Quantum Cryptography, Part 1, v1.1",
+                "date": "2025-06-11",
+                "status": "final",
+                "url": "https://digital-strategy.ec.europa.eu/en/library/coordinated-implementation-roadmap-transition-post-quantum-cryptography",
+            },
+        ],
+        "milestones": [
+            {
+                "by": "2026-12-31",
+                "event": "Member States complete First Steps, including national transition plans",
+            },
+            {
+                "by": "2030-12-31",
+                "event": "High-risk use cases transitioned; no stand-alone quantum-vulnerable public-key mechanisms",
+            },
+            {
+                "by": "2035-12-31",
+                "event": "Transition complete for as many systems as feasible; medium-risk use cases off stand-alone quantum-vulnerable mechanisms",
+            },
+        ],
+        "verified": "2026-10-13",
+    },
+    "de-bsi": {
+        "authority": "BSI (Germany)",
+        "documents": [
+            {
+                "title": "BSI TR-02102-1, Cryptographic Mechanisms: Recommendations and Key Lengths, version 2026-01",
+                "date": "2026-01-23",
+                "status": "final",
+                "url": "https://www.bsi.bund.de/SharedDocs/Downloads/EN/BSI/Publications/TechGuidelines/TG02102/BSI-TR-02102-1.pdf",
+            },
+        ],
+        "milestones": [],
+        "notes": [
+            "Quantum-safe mechanisms should be used in hybrid form, combined with a classical method.",
+            "ML-KEM-768 and ML-KEM-1024 are recommended, alongside FrodoKEM and Classic McEliece.",
+        ],
+        "verified": "2026-10-13",
+    },
+    "fr-anssi": {
+        "authority": "ANSSI (France)",
+        "documents": [
+            {
+                "title": "ANSSI views on the Post-Quantum Cryptography transition (2023 follow up)",
+                "date": "2023-12-21",
+                "status": "final",
+                "url": "https://cyber.gouv.fr/en/publications/follow-position-paper-post-quantum-cryptography",
+            },
+        ],
+        "milestones": [],
+        "notes": [
+            "Hybridation is required wherever post-quantum mitigation is needed in the short and medium term.",
+            "Hybrid PQC is recommended especially for products protecting information beyond 2030.",
+        ],
+        "verified": "2026-10-13",
+    },
+    "uk-ncsc": {
+        "authority": "NCSC (United Kingdom)",
+        "documents": [
+            {
+                "title": "Timelines for migration to post-quantum cryptography",
+                "date": "2026-08",
+                "status": "final",
+                "url": "https://www.ncsc.gov.uk/guidance/pqc-migration-timelines",
+            },
+        ],
+        "milestones": [
+            {
+                "by": "2028",
+                "event": "Migration goals defined, full discovery done, initial plan built",
+            },
+            {
+                "by": "2031",
+                "event": "Early, highest-priority migration activities done",
+            },
+            {
+                "by": "2035",
+                "event": "Migration of all systems, services and products complete",
+            },
+        ],
+        "verified": "2026-10-13",
+    },
+    "ca-cccs": {
+        "authority": "Canadian Centre for Cyber Security",
+        "documents": [
+            {
+                "title": "Roadmap for the migration to post-quantum cryptography for the Government of Canada (ITSM.40.001)",
+                "date": None,
+                "status": "final",
+                "url": "https://www.cyber.gc.ca/en/guidance/roadmap-migration-post-quantum-cryptography-government-canada-itsm40001",
+            },
+        ],
+        "milestones": [
+            {
+                "by": "2026-04",
+                "event": "Initial departmental PQC migration plan; annual progress reports from then",
+            },
+            {"by": "2031-12-31", "event": "High-priority systems migrated"},
+            {"by": "2035-12-31", "event": "Remaining systems migrated"},
+        ],
+        "verified": "2026-10-13",
+    },
+    "au-asd": {
+        "authority": "ASD (Australia)",
+        "documents": [
+            {
+                "title": "Information Security Manual, Guidelines for Cryptography (ISM-0472/0474/0475, Dec 2024)",
+                "date": "2024-12",
+                "status": "final",
+                "url": "https://www.cyber.gov.au/business-government/asds-cyber-security-frameworks/ism/cyber-security-guidelines/guidelines-for-cryptography",
+            },
+        ],
+        "milestones": [
+            {"by": "2030", "event": "DH, ECDH and ECDSA not approved beyond 2030"},
+        ],
+        "verified": "2026-10-13 (cyber.gov.au unreachable from the build host; read via web.archive.org)",
+    },
+}
+
+
+# Which sources back each recommendation policy.  The remaining national
+# timelines are reported alongside, for context, in `policy_sources`.
+POLICY_TIMELINE_SOURCES: dict[str, tuple[str, ...]] = {
+    "cnsa-2.0": ("us-nss-cnsa-2.0",),
+    "nist-civilian": ("us-nist",),
+    "eu-anssi-bsi": ("eu", "de-bsi", "fr-anssi"),
+    "commercial": (),
+}
+
+
+# CNSA 2.0 deadline category per workload role.
+CNSA_2_0_ROLE_CATEGORY: dict[str, str] = {
+    "tls-server": "web-browsers-servers-cloud",
+    "tls-client": "web-browsers-servers-cloud",
+    "signing-service": "software-firmware-signing",
+    "firmware-signing": "software-firmware-signing",
+}
+
+
+def _timeline(policy: str, role: str) -> dict[str, Any]:
+    """Per-record pointer into POLICY_SOURCES, plus the CNSA 2.0 deadline
+    category for the role when the policy is CNSA 2.0."""
+    out: dict[str, Any] = {"sources": list(POLICY_TIMELINE_SOURCES[policy])}
+    category = CNSA_2_0_ROLE_CATEGORY.get(role) if policy == "cnsa-2.0" else None
+    if category is not None:
+        dates = POLICY_SOURCES["us-nss-cnsa-2.0"]["categories"][category]
+        out["cnsa_2_0_category"] = {"category": category, **dates}
+    return out
 
 
 VALID_POLICIES = ("cnsa-2.0", "nist-civilian", "eu-anssi-bsi", "commercial")
@@ -303,6 +550,7 @@ def _recommendation_record(
             "openssl_version": openssl.get("version") or "",
             "kernel_release": (r.kernel_info or {}).get("release") or "",
         },
+        "timeline": _timeline(policy, role),
         "caveats": caveats,
     }
 
@@ -647,6 +895,7 @@ def _recommend_stub(r: _report.Report, policy: str, role: str) -> dict[str, Any]
             "isa_tier": (r.isa_tier or "unknown").lower(),
             "pqc_accelerator_present": _accel_pqc_capable(r.accelerators),
         },
+        "timeline": _timeline(policy, role),
         "caveats": [],
     }
 
@@ -692,6 +941,7 @@ def recommend(
             "hostname": r.hostname,
             "generated_at": r.generated_at,
             "recommendations": {p: _recommend_one(r, p, role) for p in VALID_POLICIES},
+            "policy_sources": POLICY_SOURCES,
         }
     if policy not in POLICY_PREFERENCES:
         raise ValueError(
@@ -705,6 +955,7 @@ def recommend(
         "hostname": r.hostname,
         "generated_at": r.generated_at,
         "recommendations": {policy: _recommend_one(r, policy, role)},
+        "policy_sources": POLICY_SOURCES,
     }
 
 
