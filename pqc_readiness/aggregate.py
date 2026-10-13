@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from . import gap as _gap
 from . import observations as _observations
 from . import report as _report
 from . import registry as _registry
@@ -58,6 +59,11 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
     accel_kinds: Counter[str] = Counter()
     detections_unavailable: Counter[str] = Counter()
     replace_required = 0
+    # Capability vs configuration verdict (#107): hosts per state per
+    # protocol, services per state, and hosts carrying any gap.
+    gap_by_protocol: dict[str, Counter[str]] = {p: Counter() for p in _gap.PROTOCOLS}
+    gap_services: Counter[str] = Counter()
+    gap_hosts: Counter[str] = Counter()
     for r in reports:
         total_hosts += 1
         by_arch[r.get("arch", "?")] += 1
@@ -86,6 +92,18 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 detections_unavailable[det_key] += 1
         if r.get("replace_required"):
             replace_required += 1
+        g = _gap.gap_for(r)
+        host_states: set[str] = set()
+        for proto in _gap.PROTOCOLS:
+            st = ((g.get("protocols") or {}).get(proto) or {}).get("state", "unknown")
+            gap_by_protocol[proto][st] += 1
+            host_states.add(st)
+        for svc in (g.get("services") or {}).get("items") or []:
+            gap_services[svc.get("state", "unknown")] += 1
+            host_states.add(svc.get("state", "unknown"))
+        for st in ("capable_not_configured", "configured_not_capable"):
+            if st in host_states:
+                gap_hosts[st] += 1
     out: dict[str, Any] = {
         "total_hosts": total_hosts,
         "schema_version": _report.SCHEMA_VERSION,
@@ -99,6 +117,16 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
     out["host_fs_detections_unavailable_host_count"] = dict(detections_unavailable)
     out["unique_cpu_models"] = sorted(cpu_models)
     out["replace_required_count"] = replace_required
+    out["pqc_deployment_gap"] = {
+        "hosts_by_protocol_state": {
+            p: dict(sorted(c.items())) for p, c in gap_by_protocol.items()
+        },
+        "services_by_state": dict(sorted(gap_services.items())),
+        "hosts_with_gap": {
+            st: gap_hosts.get(st, 0)
+            for st in ("capable_not_configured", "configured_not_capable")
+        },
+    }
     return out
 
 
@@ -127,6 +155,14 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
             w.writerow([group, k, v])
     for cpu in rollup.get("unique_cpu_models", []):
         w.writerow(["unique_cpu_models", cpu, 1])
+    gap = rollup.get("pqc_deployment_gap") or {}
+    for proto, states in (gap.get("hosts_by_protocol_state") or {}).items():
+        for st, n in states.items():
+            w.writerow([f"pqc_deployment_gap_{proto}", st, n])
+    for st, n in (gap.get("services_by_state") or {}).items():
+        w.writerow(["pqc_deployment_gap_services", st, n])
+    for st, n in (gap.get("hosts_with_gap") or {}).items():
+        w.writerow(["pqc_deployment_gap_hosts_with", st, n])
     obs = rollup.get("observations")
     if obs:
         w.writerow(["observations_valid", "", obs.get("valid", 0)])
@@ -138,6 +174,9 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
         for st in obs.get("states") or []:
             key = f"capable={st['capable']};configured={st['configured']};observed={st['observed']}"
             w.writerow(["observations_states", key, st["endpoints"]])
+        for st in obs.get("by_gap_state") or []:
+            key = f"protocol={st['protocol']};state={st['state']};observed={st['observed']}"
+            w.writerow(["observations_by_gap_state", key, st["endpoints"]])
     return buf.getvalue()
 
 

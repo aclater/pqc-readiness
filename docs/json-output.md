@@ -76,6 +76,7 @@ nothing was found.
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
+| `pqc_deployment_gap` | Capability vs configuration verdict (#107): for TLS, SSH and IPsec, and for every listening service when `--scan-services` ran, whether PQC is `deployed`, `capable_not_configured`, `configured_not_capable`, `not_capable`, `unknown` or `not_present`, with JSON paths to the fields that decided it. Computed from the other fields; no probe of its own. See [`pqc_deployment_gap`](#pqc_deployment_gap). |
 | `boot_chain` | Boot chain trust anchors and their algorithms: UEFI Secure Boot state and the PK / KEK / db / dbx / MOK signature lists, kernel module signing, IMA / EVM, kernel lockdown and TPM 2.0 post-quantum support. Populated only when `--scan-boot-chain` is set (`{}` otherwise). Keys: `available`, `secure_boot`, `module_signing`, `ima_evm`, `lockdown`, `tpm`, `summary` (see [Nested fields](#boot_chain)). |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
@@ -618,6 +619,60 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | `version_thresholds` | object | As above, `{minimum_version, note}` per capability. |
 | `reference` | string | JEP / Go release-note URLs. |
 
+### `pqc_deployment_gap`
+
+Joins what the host *can* do with what it is *set up* to do, per protocol
+and per listening service (#107). Every value is derived from fields already
+in the report, so a live scan, an offline `--root` scan and the aggregator
+re-reading an older report give the same answer. The fleet aggregator adds
+the third state, what an endpoint was *observed* to negotiate, when
+`--observations` is supplied (see [`--aggregate` observations
+join](#--aggregate-observations-join)).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `protocols` | object | `tls`, `ssh` and `ipsec`, each a verdict (below). |
+| `services` | object | Per-service verdicts; `{available: false}` without `--scan-services`. |
+| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`). Empty when there is nothing to fix. |
+
+A verdict (each `protocols.*` entry, and each service item):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `state` | string | `deployed` (capable and configured), `capable_not_configured` (a configuration change closes the gap), `configured_not_capable` (configured for PQC the software can't do: connections fail or fall back), `not_capable` (an upgrade is needed), `unknown` (the evidence doesn't decide), `not_present` (the protocol's software isn't on the host, e.g. no IPsec stack). |
+| `capable` | bool \| null | TLS: the system OpenSSL offers a hybrid or pure ML-KEM TLS group (`openssl.tls_groups`), else `openssl.pqc_native`, else, offline, `openssl.pqc_native_expected`. SSH: `sshd.openssh_supports_pqc_kex`, else `ssh_pqc.kex_groups`. IPsec: `ipsec_pqc.pqc`. Services: the library the process maps (`library_pqc_capable`) or its Go default. |
+| `configured` | bool \| null | TLS: `crypto_policy.pqc_enabled.tls_key_exchange`, else `openssl.config.pqc_key_exchange_by_default`. SSH: `sshd.pqc_offered` (sshd's effective `KexAlgorithms`), else the policy's server setting. IPsec: a configured connection offers ML-KEM, else the policy's IKE setting. Go services: their own crypto/tls default, which ignores the system policy. |
+| `evidence` | object | `{capable, configured}`: lists of JSON paths into this report for the fields that decided each value. Empty for `not_present`. |
+| `note` | string | Optional. SSH: PQC is offered but a classical method is preferred first. IPsec: connections the installed stack can't load (`ipsec_pqc.configured.capability_mismatch`). |
+
+`services`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | `--scan-services` ran (`service_crypto_linkage.available`). |
+| `items` | list[object] | One verdict per process / transport / port / state; instances that share all four (IPv4 and IPv6 sockets, or one daemon per systemd scope) are collapsed. |
+| `by_state` | object | Item count per `state`. |
+| `differing_from_host` | int | Items with `follows_host_default: false`. |
+| `listeners_without_crypto_library` | int | Attributed listeners whose process maps no crypto library and isn't a Go binary (no verdict). |
+| `listeners_unattributed` | int | Listeners whose owning process couldn't be read (no verdict). |
+
+Each `services.items[]` entry adds to the verdict keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `process` | string | Process name (`service_crypto_linkage.listeners[].process`). |
+| `systemd_units` | list[string] | Units of the collapsed instances. |
+| `protocol` | string | Transport: `tcp` or `udp`. |
+| `port` | int | Listening port. |
+| `kind` | string | `ssh` for sshd, which takes the host's SSH verdict; otherwise `tls`, meaning the process maps a TLS library (or is a Go binary). The port itself may not speak TLS (for example mDNS on `udp/5353` in a process that links a TLS library). |
+| `crypto_families` | list[string] | Library families the process maps, plus `go`. |
+| `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, or a Go binary using its own default; only those count in `gaps` and `pqc-020`. |
+| `listeners` | list[string] | JSON paths of the `service_crypto_linkage.listeners[]` entries behind this item. |
+
+SARIF / NDJSON: rule `pqc-020-pqc-capable-not-configured` reports one
+host-level result listing every protocol, and every service that differs
+from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
+when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`).
 ### `boot_chain`
 
 `{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount` the kernel config and modules are read from the host's `/usr/lib/modules/<release>/` (reachable through the deployments' read-only `/usr` mount; Fedora / RHEL ship the config there), never from the container's `/boot` or `/lib/modules`.
@@ -632,7 +687,7 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | `ima_evm` | object | IMA / EVM state (below). |
 | `lockdown` | string \| null | Active kernel lockdown mode from `/sys/kernel/security/lockdown` (`none`, `integrity`, `confidentiality`); null when unreadable. |
 | `tpm` | object | TPM 2.0 revision and post-quantum algorithms (below). |
-| `summary` | object | `{secure_boot_certificates, secure_boot_certificate_categories, secure_boot_all_classical, secure_boot_algorithms, module_signing_pqc, classical_layers}`. Certificates are counted across the databases that authorise boot code (`PK`, `KEK`, `db`, `MokList`); `secure_boot_certificate_categories` uses the trust-store buckets (`classical`, `hybrid_composite`, `pure_pqc`); `secure_boot_algorithms` lists e.g. `RSA-2048`, `EC P-384`. `classical_layers` lists every layer with no post-quantum key: `secure_boot`, `module_signing`, `ima`, `tpm` (SARIF `pqc-020`). |
+| `summary` | object | `{secure_boot_certificates, secure_boot_certificate_categories, secure_boot_all_classical, secure_boot_algorithms, module_signing_pqc, classical_layers}`. Certificates are counted across the databases that authorise boot code (`PK`, `KEK`, `db`, `MokList`); `secure_boot_certificate_categories` uses the trust-store buckets (`classical`, `hybrid_composite`, `pure_pqc`); `secure_boot_algorithms` lists e.g. `RSA-2048`, `EC P-384`. `classical_layers` lists every layer with no post-quantum key: `secure_boot`, `module_signing`, `ima`, `tpm` (SARIF `pqc-030`). |
 
 `secure_boot` (efivarfs; UEFI 2.10 EFI_SIGNATURE_LIST; GUIDs from edk2 and shim):
 
@@ -938,6 +993,7 @@ from the scanner's are not merged.
 | `host_fs_detections_unavailable_host_count` | object | Hosts on which each detection was flagged `unavailable_in_container`. |
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
+| `pqc_deployment_gap` | object | Capability vs configuration across the fleet (#107): `hosts_by_protocol_state` (for `tls`, `ssh`, `ipsec`: host count per state), `services_by_state` (service count per state across all hosts), and `hosts_with_gap` (hosts with at least one protocol or service in `capable_not_configured` / `configured_not_capable`). Reports without their own `pqc_deployment_gap` are evaluated from their fields. CSV rows: `pqc_deployment_gap_<protocol>`, `pqc_deployment_gap_services`, `pqc_deployment_gap_hosts_with`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
 | `observations` | object | Present only with `--observations FILE`: endpoint observations joined to the hosts and listening services in the reports (#149). See [`--aggregate` observations join](#--aggregate-observations-join). |
 
@@ -959,6 +1015,7 @@ record format and the matching rules are in
 | `by_status` | object | Record count per `status` (see `matches[]`). |
 | `by_observed_class` | object | Record count per observed class: `pure_pqc`, `hybrid`, `classical`, `unknown`. |
 | `states` | list[object] | One entry per combination seen on endpoints attributed to a host (`matched` or `no_service_scan`): `{capable, configured, observed, endpoints}`. `capable` and `configured` are `yes`, `no` or `unknown`; `observed` is the class. This is the input to the three-state verdict (#107). |
+| `by_gap_state` | list[object] | One entry per `{protocol, state, observed}` seen on attributed endpoints, with `endpoints`: the three-state view (#107). `state` is the endpoint's deployment-gap state (see [`pqc_deployment_gap`](#pqc_deployment_gap)); `observed` is the observed class. For example `state: deployed, observed: classical` is a capable, configured endpoint that a client still reached with classical key exchange. CSV rows: `observations_by_gap_state`. |
 | `per_host` | object | Keyed by `hostname`: `{endpoints, by_observed_class, capable_but_observed_classical, configured_but_observed_classical, stale}` over that host's attributed endpoints. |
 | `matches` | list[object] | One entry per valid record, in file order (fields below). |
 
@@ -978,7 +1035,8 @@ record format and the matching rules are in
 | `candidates` | list[string] | `ambiguous` only: hostnames of the hosts that fit. |
 | `listener` | object \| null | The matched listener: `protocol`, `address`, `port`, `bind_scope`, `network_namespace`, `process`, `systemd_unit`, `crypto_families`, `library_pqc_capable`, `go_default_hybrid` (a Go binary whose default offers hybrid ML-KEM), `matching_listeners` (how many listeners fit; the first in the host namespace is used). |
 | `capable` | bool \| null | TLS, QUIC, DTLS: the listener's library version ships hybrid ML-KEM, or its Go default offers it. SSH: the host's OpenSSH lists an ML-KEM kex. IKEv2: the IPsec stack supports ML-KEM. |
-| `configured` | bool \| null | TLS, QUIC, DTLS: the system crypto policy, else OpenSSL's default groups, allow a PQC group; Go listeners use their own default. SSH: the policy's server key-exchange setting. IKEv2: a configured connection offers ML-KEM, else the policy. Host defaults, not per-service settings. |
+| `configured` | bool \| null | TLS, QUIC, DTLS: the system crypto policy, else OpenSSL's default groups, allow a PQC group; Go listeners use their own default. SSH: sshd's effective `KexAlgorithms` (`sshd.pqc_offered`), else the policy's server key-exchange setting. IKEv2: a configured connection offers ML-KEM, else the policy. Host defaults, not per-service settings. |
+| `state` | string \| null | `classify(capable, configured)`, as in [`pqc_deployment_gap`](#pqc_deployment_gap); null when no host was attributed. |
 | `certificate_on_host` | bool \| null | When the record has `certificate_sha256` and a host matched: whether that certificate was found on the host. |
 | `stale` | bool \| null | The record is older or newer than the host's report by more than `max_age_days`; null when no host matched. |
 | `note` | string \| null | E.g. the listener is in another network namespace, reachable only through port mapping. |
@@ -1030,6 +1088,7 @@ Compliance Finding (2003) only:
 | `scan_mode` | 5001 | Offline `--root` scans only: the report's [`scan_mode`](#scan_mode) object (the event describes a filesystem tree, not a live host). |
 | `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
 | `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
+| `subject` | 2003 | Rules that fire once per service, library, install, IPsec connection or package (`pqc-011` to `pqc-018`, #193): what this finding is about, e.g. `service:tcp/ipv4/443:/usr/sbin/httpd`, `library:gnutls`, `ipsec:site-a`. Part of `finding_info.uid`, so each subject keeps its own stable ID. Absent for host-level rules. |
 
 ## Schema alignment with CycloneDX 1.6
 

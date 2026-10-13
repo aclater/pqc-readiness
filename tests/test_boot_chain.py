@@ -401,7 +401,7 @@ def test_non_linux_is_unavailable(monkeypatch) -> None:
 def test_sarif_finding_and_recommendation_caveat(host: Path) -> None:
     r = pr.Report(boot_chain=_full_host(host))
     finding = [
-        f for f in pr.build_findings(r) if f.rule_id == "pqc-020-classical-boot-chain"
+        f for f in pr.build_findings(r) if f.rule_id == "pqc-030-classical-boot-chain"
     ]
     assert len(finding) == 1 and finding[0].level == "note"
     assert finding[0].properties["boot_chain:classical_layers"] == [
@@ -415,7 +415,7 @@ def test_sarif_finding_and_recommendation_caveat(host: Path) -> None:
 
 def test_no_finding_without_scan() -> None:
     ids = [f.rule_id for f in pr.build_findings(pr.Report())]
-    assert "pqc-020-classical-boot-chain" not in ids
+    assert "pqc-030-classical-boot-chain" not in ids
 
 
 def test_text_section_and_json(host: Path) -> None:

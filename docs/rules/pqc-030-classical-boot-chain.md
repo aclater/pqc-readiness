@@ -1,4 +1,4 @@
-# pqc-020-classical-boot-chain
+# pqc-030-classical-boot-chain
 
 **Default level:** note
 

@@ -35,6 +35,7 @@ from .detect import protocols_libraries as _libraries
 from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
 from .detect import runtime_offline as _runtime_offline
+from . import gap as _gap
 from .detect import runtime_processes as _runtime_processes
 from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
@@ -168,7 +169,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     already be applied (set_host_prefix) and output/colour handling is
     the caller's job."""
     if _platform.OFFLINE_ROOT:
-        return _runtime_offline.collect_offline_report(args)
+        return _with_gap(_runtime_offline.collect_offline_report(args))
     arch = platform.machine().lower()
     flags = _hardware.cpu_flags(arch)
     total_gb, avail_gb = _hardware.memory_info()
@@ -343,6 +344,13 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         exit_code=code,
         inventory_metadata=getattr(args, "inventory_metadata", None),
     )
+    return _with_gap(r)
+
+
+def _with_gap(r: _report.Report) -> _report.Report:
+    """Attach the capability-vs-configuration verdict (#107), derived
+    purely from the fields already collected."""
+    r.pqc_deployment_gap = _gap.compute_gap(asdict(r))
     return r
 
 
