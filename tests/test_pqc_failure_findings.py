@@ -522,3 +522,47 @@ def test_listener_label_includes_address_so_v4_and_v6_differ() -> None:
     )
     msgs = [f.message for f in sarif.pqc_failure_findings(r)]
     assert "udp 127.0.0.1:323" in msgs[0] and "udp [::1]:323" in msgs[1]
+
+
+def test_offline_root_honours_scan_crypto_libraries(monkeypatch, tmp_path) -> None:
+    # --scan-crypto-libraries was accepted with --root but silently ignored;
+    # the library probe only reads files, so it now runs on the tree (#193).
+    import argparse
+
+    from pqc_readiness import _platform
+    from pqc_readiness.detect import protocols_libraries, runtime_offline
+
+    seen: list[str] = []
+
+    def fake_scan(os_release=None):  # noqa: ARG001
+        seen.append(_platform.HOST_PREFIX)
+        return {
+            "available": True,
+            "libraries": {
+                "libssh": {
+                    "installed": True,
+                    "version": "0.9.6",
+                    "evidence": "binary",
+                    "pqc_capable": False,
+                }
+            },
+        }
+
+    monkeypatch.setattr(protocols_libraries, "scan_crypto_libraries", fake_scan)
+    _platform.set_offline_root(str(tmp_path))
+    try:
+        args = argparse.Namespace(
+            scan_trust_store=False,
+            scan_crypto_material=False,
+            scan_packages=False,
+            scan_signing_keys=False,
+            scan_crypto_libraries=True,
+            inventory_metadata=None,
+        )
+        r = runtime_offline.collect_offline_report(args)
+    finally:
+        _platform.set_offline_root("")
+    assert seen == [str(tmp_path)]
+    assert r.crypto_libraries["libraries"]["libssh"]["pqc_capable"] is False
+    # The empty tree has no OpenSSL package either: undetermined, not fine.
+    assert _ids(r) == ["pqc-013-crypto-library-without-pqc", U]
