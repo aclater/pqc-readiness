@@ -154,6 +154,7 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "listener_capability": (OBSERVATIONS_JOIN, "`pqc_deployment_gap`"),
     "_verdict": ("`pqc_deployment_gap`",),
     "_services": ("`pqc_deployment_gap`",),
+    "_clients": ("`pqc_deployment_gap`",),
     "compute_gap": ("`pqc_deployment_gap`",),
 }
 

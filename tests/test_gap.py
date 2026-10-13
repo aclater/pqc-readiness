@@ -382,7 +382,11 @@ def _pqc020(r: pr.Report) -> list[sarif.Finding]:
 def test_pqc020_is_a_note_when_only_tls_ssh_gaps() -> None:
     (f,) = _pqc020(_report_with_gap(_rocky98_default()))
     assert f.level == "note"
-    assert f.properties == {"gap:protocols": ["tls", "ssh"], "gap:services": []}
+    assert f.properties == {
+        "gap:protocols": ["tls", "ssh"],
+        "gap:services": [],
+        "gap:clients": [],
+    }
 
 
 def test_pqc020_is_a_warning_for_services_or_ipsec() -> None:
@@ -398,7 +402,11 @@ def test_pqc020_is_a_warning_for_services_or_ipsec() -> None:
     raw["ssh_pqc"]["kex_groups"] = {"hybrid": [], "pure_pqc": [], "classical": ["x"]}
     (f,) = _pqc020(_report_with_gap(raw))
     assert f.level == "warning"
-    assert f.properties == {"gap:protocols": [], "gap:services": ["app tcp/8443"]}
+    assert f.properties == {
+        "gap:protocols": [],
+        "gap:services": ["app tcp/8443"],
+        "gap:clients": [],
+    }
 
     raw = _fedora44()
     raw["ipsec_pqc"] = {

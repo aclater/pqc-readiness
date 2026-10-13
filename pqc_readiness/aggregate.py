@@ -60,9 +60,12 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
     detections_unavailable: Counter[str] = Counter()
     replace_required = 0
     # Capability vs configuration verdict (#107): hosts per state per
-    # protocol, services per state, and hosts carrying any gap.
+    # protocol, services per state, and hosts carrying any gap; outbound
+    # client process groups (#202) per state, and their process counts.
     gap_by_protocol: dict[str, Counter[str]] = {p: Counter() for p in _gap.PROTOCOLS}
     gap_services: Counter[str] = Counter()
+    gap_clients: Counter[str] = Counter()
+    gap_client_processes: Counter[str] = Counter()
     gap_hosts: Counter[str] = Counter()
     for r in reports:
         total_hosts += 1
@@ -101,6 +104,11 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
         for svc in (g.get("services") or {}).get("items") or []:
             gap_services[svc.get("state", "unknown")] += 1
             host_states.add(svc.get("state", "unknown"))
+        for cl in (g.get("clients") or {}).get("items") or []:
+            st = cl.get("state", "unknown")
+            gap_clients[st] += 1
+            gap_client_processes[st] += int(cl.get("client_processes") or 0)
+            host_states.add(st)
         for st in ("capable_not_configured", "configured_not_capable"):
             if st in host_states:
                 gap_hosts[st] += 1
@@ -122,6 +130,8 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
             p: dict(sorted(c.items())) for p, c in gap_by_protocol.items()
         },
         "services_by_state": dict(sorted(gap_services.items())),
+        "client_groups_by_state": dict(sorted(gap_clients.items())),
+        "client_processes_by_state": dict(sorted(gap_client_processes.items())),
         "hosts_with_gap": {
             st: gap_hosts.get(st, 0)
             for st in ("capable_not_configured", "configured_not_capable")
@@ -161,6 +171,10 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
             w.writerow([f"pqc_deployment_gap_{proto}", st, n])
     for st, n in (gap.get("services_by_state") or {}).items():
         w.writerow(["pqc_deployment_gap_services", st, n])
+    for st, n in (gap.get("client_groups_by_state") or {}).items():
+        w.writerow(["pqc_deployment_gap_client_groups", st, n])
+    for st, n in (gap.get("client_processes_by_state") or {}).items():
+        w.writerow(["pqc_deployment_gap_client_processes", st, n])
     for st, n in (gap.get("hosts_with_gap") or {}).items():
         w.writerow(["pqc_deployment_gap_hosts_with", st, n])
     obs = rollup.get("observations")
