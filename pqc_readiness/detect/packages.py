@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import functools
 import logging
 import os
@@ -14,6 +15,7 @@ from typing import Any, Callable, Iterator
 from .. import _platform as _platform
 from ..detect import osinfo as _osinfo
 from ..detect import runtime as _runtime
+from .. import registry as _registry
 
 log = logging.getLogger("pqc-readiness")
 
@@ -888,3 +890,16 @@ def _scan_rpm_packages(family: str) -> dict[str, Any]:
     if note:
         out.update(note)
     return out
+
+
+@_registry.register_arguments(51)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--scan-packages."""
+    ap.add_argument(
+        "--scan-packages",
+        action="store_true",
+        help=(
+            "enumerate installed packages with bundled crypto "
+            "(rpm, dpkg, pacman and apk families)"
+        ),
+    )

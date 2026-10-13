@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 from . import report as _report
+from . import registry as _registry
 
 
 # ---------------------------------------------------------------------------
@@ -173,3 +175,19 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
     if output == "csv":
         return aggregate_to_csv(rollup), 0
     return json.dumps(rollup, indent=2), 0
+
+
+@_registry.register_arguments(90)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--aggregate, --aggregate-format."""
+    ap.add_argument(
+        "--aggregate",
+        metavar="DIR",
+        help="aggregate every *.json in DIR into a fleet rollup; exits when done",
+    )
+    ap.add_argument(
+        "--aggregate-format",
+        choices=["json", "csv"],
+        default="json",
+        help="output format for --aggregate (default: json)",
+    )

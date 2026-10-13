@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 import select
@@ -17,6 +18,7 @@ from typing import Any
 
 from . import _platform as _platform
 from .detect import config as _config
+from . import registry as _registry
 
 log = logging.getLogger("pqc-readiness")
 
@@ -781,3 +783,18 @@ def memory_bandwidth_probe() -> tuple[float | None, str]:
     except (MemoryError, OSError) as e:
         log.debug("memory_bandwidth_probe: STREAM-triad failed: %s", e)
         return None, f"probe failed: {e}"
+
+
+@_registry.register_arguments(20)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--bench, --bench-tls, --threads, --seconds."""
+    ap.add_argument(
+        "--bench", action="store_true", help="run PQC + classical microbench"
+    )
+    ap.add_argument(
+        "--bench-tls",
+        action="store_true",
+        help="run loopback TLS 1.3 handshake benchmark (classical/hybrid/PQC)",
+    )
+    ap.add_argument("--threads", type=int, default=1, help="add an N-way scaling test")
+    ap.add_argument("--seconds", type=int, default=1, help="seconds per benchmark op")

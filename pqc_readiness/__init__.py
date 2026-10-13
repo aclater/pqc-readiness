@@ -244,6 +244,7 @@ from .cli import (  # noqa: F401
     render_output,
 )
 from . import detect, render  # noqa: F401
+from .render import json_report  # noqa: F401  (registers --json)
 
 __all__ = [
     "ACCEL_PCI_HINTS",

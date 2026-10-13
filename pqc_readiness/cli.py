@@ -12,7 +12,7 @@ import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from . import _platform as _platform
 from . import aggregate as _aggregate
@@ -25,12 +25,10 @@ from .detect import packages as _packages
 from .detect import protocols as _protocols
 from .detect import runtime as _runtime
 from . import recommendation as _recommendation
-from .render import cbom as _cbom
-from .render import sarif as _sarif
-from .render import spdx as _spdx
 from .render import text as _text
 from . import report as _report
 from . import verdict as _verdict
+from . import registry as _registry
 
 log = logging.getLogger("pqc-readiness")
 
@@ -40,15 +38,6 @@ log = logging.getLogger("pqc-readiness")
 # ---------------------------------------------------------------------------
 
 
-def _positive_int(value: str) -> int:
-    """argparse `type=` for flags that must be >= 1."""
-    try:
-        n = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
-    return n
 
 
 def ansible_ignored_flag_warnings(args: argparse.Namespace) -> list[str]:
@@ -116,174 +105,22 @@ def _emit(text: str, path: Path | None) -> bool:
     return True
 
 
+def _package_doc() -> str | None:
+    """The package docstring doubles as the --help description."""
+    return sys.modules[__name__.rpartition(".")[0]].__doc__
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the CLI parser.  Kept separate from main() so tests and
     the README flag check can inspect the full flag set without running
     a scan."""
     ap = argparse.ArgumentParser(
-        description=__doc__,
+        prog="pqc-readiness",
+        description=_package_doc(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--json", action="store_true", help="emit JSON")
-    ap.add_argument("--markdown", action="store_true", help="emit markdown")
-    ap.add_argument(
-        "--cbom",
-        action="store_true",
-        help="emit CycloneDX 1.6 CBOM JSON (NIST IR 8547)",
-    )
-    ap.add_argument(
-        "--spdx",
-        action="store_true",
-        help="emit SPDX 3.0 JSON-LD (Security profile) for SPDX-native pipelines",
-    )
-    ap.add_argument(
-        "--sarif",
-        action="store_true",
-        help="emit SARIF 2.1.0 findings (OASIS) for security pipelines",
-    )
-    ap.add_argument(
-        "--bench", action="store_true", help="run PQC + classical microbench"
-    )
-    ap.add_argument(
-        "--bench-tls",
-        action="store_true",
-        help="run loopback TLS 1.3 handshake benchmark (classical/hybrid/PQC)",
-    )
-    ap.add_argument("--threads", type=int, default=1, help="add an N-way scaling test")
-    ap.add_argument("--seconds", type=int, default=1, help="seconds per benchmark op")
-    ap.add_argument(
-        "--check",
-        choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
-        help=(
-            "exit 4 if verdict is below TIER, or if cnsa-2.0 status != "
-            "compliant.  Ignored (with a stderr warning) under --ansible"
-        ),
-    )
-    ap.add_argument(
-        "--fips-strict",
-        action="store_true",
-        help=(
-            "exit 4 (parallel to --check) when FIPS is active but the "
-            "OpenSSL default provider exposes algorithms not present in "
-            "the FIPS provider's set.  See "
-            "docs/findings/fips-algorithm-fence.md for the underlying "
-            "behavior.  Ignored (with a stderr warning) under --ansible"
-        ),
-    )
-    dest = ap.add_mutually_exclusive_group()
-    dest.add_argument(
-        "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
-    )
-    dest.add_argument(
-        "--output",
-        metavar="FILE",
-        help=(
-            "write the report (any format, incl. --aggregate/--recommend/"
-            "--ansible) to FILE instead of stdout; the parent directory "
-            "must already exist.  Mutually exclusive with --save"
-        ),
-    )
-    ap.add_argument("--quiet", action="store_true", help="print only verdict line")
-    ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
-    ap.add_argument(
-        "--scan-trust-store",
-        action="store_true",
-        help="walk system trust store dirs and count PQC / hybrid certs",
-    )
-    ap.add_argument(
-        "--trust-store-max-certs",
-        type=_positive_int,
-        default=_certs.TRUST_STORE_MAX_CERTS_DEFAULT,
-        metavar="N",
-        help=(
-            "cap on unique certificates classified by --scan-trust-store "
-            f"(default {_certs.TRUST_STORE_MAX_CERTS_DEFAULT}); "
-            "trust_store.truncated is set when the cap is hit"
-        ),
-    )
-    ap.add_argument(
-        "--scan-packages",
-        action="store_true",
-        help=(
-            "enumerate installed packages with bundled crypto "
-            "(rpm, dpkg, pacman and apk families)"
-        ),
-    )
-    ap.add_argument(
-        "--host-mount",
-        metavar="PATH",
-        default="",
-        help=(
-            "path where the host root is mounted (DaemonSet / quadlet "
-            "pattern); host reads of /proc /sys /dev /etc, os-release and "
-            "the rpm / dpkg databases go through it"
-        ),
-    )
-    ap.add_argument(
-        "--ansible",
-        action="store_true",
-        help=(
-            "emit {ansible_facts: {pqc_readiness: ...}} JSON and always "
-            "exit 0; takes precedence over --check and --fips-strict"
-        ),
-    )
-    ap.add_argument(
-        "--recommend",
-        action="store_true",
-        help=(
-            "emit a host-specific PQC algorithm recommendation under the "
-            "selected policy and role, instead of the readiness report"
-        ),
-    )
-    ap.add_argument(
-        "--policy",
-        choices=[*_recommendation.VALID_POLICIES, "auto"],
-        default="auto",
-        help=(
-            "compliance context for --recommend; 'auto' (default) emits "
-            "all policies side by side"
-        ),
-    )
-    ap.add_argument(
-        "--role",
-        choices=list(_recommendation.VALID_ROLES),
-        default=None,
-        help=(
-            "workload role.  Drives both the recommendation engine "
-            "(every workload role is implemented; 'generic' returns a "
-            "stub response) and the memory-tier "
-            "threshold (per-role good thresholds: tls-server=16 GiB, "
-            "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
-            "2 GiB, generic=16 GiB).  When omitted, the report contains "
-            "memory tier evaluations for every role side-by-side under "
-            "memory.tier_by_role; the recommendation engine still "
-            "defaults to tls-server."
-        ),
-    )
-    ap.add_argument(
-        "--aggregate",
-        metavar="DIR",
-        help="aggregate every *.json in DIR into a fleet rollup; exits when done",
-    )
-    ap.add_argument(
-        "--aggregate-format",
-        choices=["json", "csv"],
-        default="json",
-        help="output format for --aggregate (default: json)",
-    )
-    ap.add_argument(
-        "--debug",
-        action="store_true",
-        help=(
-            "log detection diagnostics (failed reads, subprocess exit "
-            "codes) to stderr; report output on stdout is unchanged"
-        ),
-    )
-    ap.add_argument(
-        "--version",
-        action="version",
-        version=f"pqc-readiness {_report.SCRIPT_VERSION} (schema {_report.SCHEMA_VERSION})",
-    )
+    for add_arguments in _registry.argument_hooks():
+        add_arguments(ap)
     return ap
 
 
@@ -435,18 +272,6 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     return r
 
 
-# Report renderers in CLI precedence order: the first flag that is set
-# wins (json > cbom > spdx > sarif > markdown > quiet), plain text
-# otherwise.  Entries are lambdas, not direct function references, so the
-# renderer is looked up at call time and stays patchable in tests.
-_REPORT_RENDERERS: tuple[tuple[str, Callable[[_report.Report], str]], ...] = (
-    ("json", lambda r: json.dumps(asdict(r), indent=2)),
-    ("cbom", lambda r: _cbom.render_cbom(r)),
-    ("spdx", lambda r: _spdx.render_spdx(r)),
-    ("sarif", lambda r: _sarif.render_sarif(r)),
-    ("markdown", lambda r: _text.render_markdown(r)),
-    ("quiet", lambda r: r.verdict),
-)
 
 
 def render_output(r: _report.Report, args: argparse.Namespace) -> str:
@@ -465,9 +290,11 @@ def render_output(r: _report.Report, args: argparse.Namespace) -> str:
         if args.markdown:
             return _recommendation.render_recommendation_markdown(r, rec)
         return _recommendation.render_recommendation_text(r, rec)
-    for flag, renderer in _REPORT_RENDERERS:
-        if getattr(args, flag):
-            return renderer(r)
+    # First registered format whose flag is set wins (registry precedence:
+    # json > cbom > spdx > sarif > markdown > quiet); plain text otherwise.
+    for fmt in _registry.outputs():
+        if getattr(args, fmt.dest):
+            return fmt.render(r)
     return _text.render_text(r)
 
 
@@ -515,11 +342,7 @@ def _use_color(args: argparse.Namespace, out_path: Path | None) -> bool:
         sys.stdout.isatty()
         and out_path is None
         and not args.no_color
-        and not args.json
-        and not args.markdown
-        and not args.cbom
-        and not args.spdx
-        and not args.sarif
+        and not any(getattr(args, f.dest) for f in _registry.outputs() if f.machine_readable)
     )
 
 
@@ -558,3 +381,76 @@ def main(argv: list[str] | None = None) -> int:
     if not emit(render_output(r, args)):
         return EXIT_OUTPUT_WRITE_FAILED
     return exit_code_for(r, args)
+
+
+@_registry.register_arguments(30)
+def _add_gate_arguments(ap: argparse.ArgumentParser) -> None:
+    """--check, --fips-strict."""
+    ap.add_argument(
+        "--check",
+        choices=["excellent", "good", "marginal", "poor", "cnsa-2.0"],
+        help=(
+            "exit 4 if verdict is below TIER, or if cnsa-2.0 status != "
+            "compliant.  Ignored (with a stderr warning) under --ansible"
+        ),
+    )
+    ap.add_argument(
+        "--fips-strict",
+        action="store_true",
+        help=(
+            "exit 4 (parallel to --check) when FIPS is active but the "
+            "OpenSSL default provider exposes algorithms not present in "
+            "the FIPS provider's set.  See "
+            "docs/findings/fips-algorithm-fence.md for the underlying "
+            "behavior.  Ignored (with a stderr warning) under --ansible"
+        ),
+    )
+
+
+@_registry.register_arguments(31)
+def _add_destination_arguments(ap: argparse.ArgumentParser) -> None:
+    """--save | --output."""
+    dest = ap.add_mutually_exclusive_group()
+    dest.add_argument(
+        "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
+    )
+    dest.add_argument(
+        "--output",
+        metavar="FILE",
+        help=(
+            "write the report (any format, incl. --aggregate/--recommend/"
+            "--ansible) to FILE instead of stdout; the parent directory "
+            "must already exist.  Mutually exclusive with --save"
+        ),
+    )
+
+
+@_registry.register_arguments(70)
+def _add_ansible_argument(ap: argparse.ArgumentParser) -> None:
+    """--ansible."""
+    ap.add_argument(
+        "--ansible",
+        action="store_true",
+        help=(
+            "emit {ansible_facts: {pqc_readiness: ...}} JSON and always "
+            "exit 0; takes precedence over --check and --fips-strict"
+        ),
+    )
+
+
+@_registry.register_arguments(100)
+def _add_misc_arguments(ap: argparse.ArgumentParser) -> None:
+    """--debug, --version."""
+    ap.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "log detection diagnostics (failed reads, subprocess exit "
+            "codes) to stderr; report output on stdout is unchanged"
+        ),
+    )
+    ap.add_argument(
+        "--version",
+        action="version",
+        version=f"pqc-readiness {_report.SCRIPT_VERSION} (schema {_report.SCHEMA_VERSION})",
+    )

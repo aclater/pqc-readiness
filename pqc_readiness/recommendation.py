@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Any, Callable
 
 from . import algorithms as _algorithms
 from . import report as _report
+from . import registry as _registry
 
 
 # ---------------------------------------------------------------------------
@@ -740,3 +742,41 @@ def render_recommendation_markdown(report: _report.Report, rec: dict[str, Any]) 
                 L.append(f"- {c}")
             L.append("")
     return "\n".join(L).rstrip() + "\n"
+
+
+@_registry.register_arguments(80)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--recommend, --policy, --role."""
+    ap.add_argument(
+        "--recommend",
+        action="store_true",
+        help=(
+            "emit a host-specific PQC algorithm recommendation under the "
+            "selected policy and role, instead of the readiness report"
+        ),
+    )
+    ap.add_argument(
+        "--policy",
+        choices=[*VALID_POLICIES, "auto"],
+        default="auto",
+        help=(
+            "compliance context for --recommend; 'auto' (default) emits "
+            "all policies side by side"
+        ),
+    )
+    ap.add_argument(
+        "--role",
+        choices=list(VALID_ROLES),
+        default=None,
+        help=(
+            "workload role.  Drives both the recommendation engine "
+            "(every workload role is implemented; 'generic' returns a "
+            "stub response) and the memory-tier "
+            "threshold (per-role good thresholds: tls-server=16 GiB, "
+            "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
+            "2 GiB, generic=16 GiB).  When omitted, the report contains "
+            "memory tier evaluations for every role side-by-side under "
+            "memory.tier_by_role; the recommendation engine still "
+            "defaults to tls-server."
+        ),
+    )

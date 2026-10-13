@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
 import binascii
 import hashlib
@@ -9,6 +10,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
+from .. import registry as _registry
 
 
 log = logging.getLogger("pqc-readiness")
@@ -280,3 +282,24 @@ def scan_trust_store(
         "max_certs": max_certs,
         "truncated": len(unique) > max_certs,
     }
+
+
+@_registry.register_arguments(50)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--scan-trust-store, --trust-store-max-certs."""
+    ap.add_argument(
+        "--scan-trust-store",
+        action="store_true",
+        help="walk system trust store dirs and count PQC / hybrid certs",
+    )
+    ap.add_argument(
+        "--trust-store-max-certs",
+        type=_registry.positive_int,
+        default=TRUST_STORE_MAX_CERTS_DEFAULT,
+        metavar="N",
+        help=(
+            "cap on unique certificates classified by --scan-trust-store "
+            f"(default {TRUST_STORE_MAX_CERTS_DEFAULT}); "
+            "trust_store.truncated is set when the cap is hit"
+        ),
+    )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import uuid
@@ -11,6 +12,7 @@ from typing import Any
 from ..render import cbom as _cbom
 from ..render import sarif as _sarif
 from .. import report as _report
+from .. import registry as _registry
 
 
 # ---------------------------------------------------------------------------
@@ -381,3 +383,18 @@ def render_spdx(r: _report.Report) -> str:
 
     out = {"@context": SPDX_CONTEXT_URL, "@graph": graph}
     return json.dumps(out, indent=2)
+
+
+@_registry.register_arguments(13)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--spdx."""
+    ap.add_argument(
+        "--spdx",
+        action="store_true",
+        help="emit SPDX 3.0 JSON-LD (Security profile) for SPDX-native pipelines",
+    )
+
+
+_registry.register_output(
+    _registry.OutputFormat("spdx", 20, lambda r: render_spdx(r))
+)

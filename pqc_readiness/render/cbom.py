@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import uuid
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import report as _report
+from .. import registry as _registry
 
 
 # Canonical cryptographic-asset model ----------------------------------------
@@ -538,3 +540,18 @@ def render_cbom(r: _report.Report) -> str:
         "components": components,
     }
     return json.dumps(bom, indent=2)
+
+
+@_registry.register_arguments(12)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--cbom."""
+    ap.add_argument(
+        "--cbom",
+        action="store_true",
+        help="emit CycloneDX 1.6 CBOM JSON (NIST IR 8547)",
+    )
+
+
+_registry.register_output(
+    _registry.OutputFormat("cbom", 10, lambda r: render_cbom(r))
+)

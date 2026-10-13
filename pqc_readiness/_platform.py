@@ -4,6 +4,7 @@ Other modules call these through the module (``_platform._run``) so tests have o
 
 from __future__ import annotations
 
+import argparse
 import functools
 import logging
 import shutil
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .detect import runtime as _runtime
+from . import registry as _registry
 
 
 # Module logger.  Silent by default (WARNING); --debug routes DEBUG to
@@ -133,3 +135,18 @@ def is_linux() -> bool:
 
 def is_macos() -> bool:
     return sys.platform == "darwin"
+
+
+@_registry.register_arguments(60)
+def add_arguments(ap: argparse.ArgumentParser) -> None:
+    """--host-mount."""
+    ap.add_argument(
+        "--host-mount",
+        metavar="PATH",
+        default="",
+        help=(
+            "path where the host root is mounted (DaemonSet / quadlet "
+            "pattern); host reads of /proc /sys /dev /etc, os-release and "
+            "the rpm / dpkg databases go through it"
+        ),
+    )

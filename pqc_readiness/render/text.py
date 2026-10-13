@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Any
 
 from .. import report as _report
+from .. import registry as _registry
 
 
 # ---------------------------------------------------------------------------
@@ -586,3 +588,26 @@ def render_markdown(r: _report.Report) -> str:
             )
         L.append("")
     return "\n".join(L)
+
+
+@_registry.register_arguments(11)
+def add_format_arguments(ap: argparse.ArgumentParser) -> None:
+    """--markdown."""
+    ap.add_argument("--markdown", action="store_true", help="emit markdown")
+
+
+@_registry.register_arguments(40)
+def add_display_arguments(ap: argparse.ArgumentParser) -> None:
+    """--quiet, --no-color."""
+    ap.add_argument("--quiet", action="store_true", help="print only verdict line")
+    ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
+
+
+_registry.register_output(
+    _registry.OutputFormat("markdown", 40, lambda r: render_markdown(r))
+)
+
+
+_registry.register_output(
+    _registry.OutputFormat("quiet", 50, lambda r: r.verdict, machine_readable=False)
+)
