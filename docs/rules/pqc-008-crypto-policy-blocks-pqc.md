@@ -35,9 +35,14 @@ exposure on TLS key exchange.
   that no `NO-PQ` subpolicy is set (`update-crypto-policies --show`).
 - **SUSE:** openSUSE Leap 16.0's `DEFAULT` enables PQC. If the rule fires,
   check the active policy and its subpolicies the same way.
-- **Debian / Ubuntu:** there is no `crypto-policies` framework, so the rule
-  doesn't fire. Ubuntu 26.04's own framework (`crypto-config`) isn't read
-  yet (issue #170).
+- **Debian:** there is no system-wide crypto policy framework, so the rule
+  doesn't fire.
+- **Ubuntu 26.04:** its optional `crypto-config` framework is read
+  (`crypto_policy.framework` is `crypto-config`). Measured with
+  crypto-config 0.7.4, none of its profiles (`default`, `future`, `legacy`)
+  sets TLS groups, so PQC key exchange is left to OpenSSL's default and the
+  rule doesn't fire. It fires only if a profile sets `Groups` without a PQC
+  group.
 
 With Ansible, the RHEL `crypto_policies` system role sets the policy
 fleet-wide.

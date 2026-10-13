@@ -27,7 +27,9 @@ tests/fixtures/crypto_policies/):
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -39,6 +41,23 @@ from . import runtime as _runtime
 log = logging.getLogger("pqc-readiness")
 
 CRYPTO_POLICIES_DIR = "/etc/crypto-policies"
+# Ubuntu's crypto-config (#170): /var/lib/crypto-config/profiles/current
+# is a symlink to the active profile; each profile is a directory of
+# per-application snippets (openssl.conf.d, gnutls.conf, nginx.conf.d,
+# apt.conf.d, exim) plus metadata.json.  Measured on Ubuntu 26.04.1 with
+# crypto-config 0.7.4-0ubuntu2 (2026-10-13): no shipped profile sets TLS
+# groups, so PQC key exchange is left to the library default.
+CRYPTO_CONFIG_DIR = "/var/lib/crypto-config"
+_CRYPTO_CONFIG_SHARE = "/usr/share/crypto-config/profiles"
+_OPENSSL_PROFILE_KEYS = (
+    "MinProtocol",
+    "MaxProtocol",
+    "CipherString",
+    "Ciphersuites",
+    "Groups",
+    "Curves",
+    "SignatureAlgorithms",
+)
 _MODULE_DIRS = (
     "/usr/share/crypto-policies/policies/modules",
     "/etc/crypto-policies/policies/modules",
@@ -259,6 +278,126 @@ def _pqc_enabled(backends: dict[str, dict[str, Any]]) -> dict[str, bool | None]:
     }
 
 
+def _profile_label(resolved: str, profiles_dir: str) -> str:
+    """`default`, `future`, or a namespaced `debian/test1`, from the
+    resolved target of a profile symlink."""
+    for base in (profiles_dir, _CRYPTO_CONFIG_SHARE):
+        if resolved.startswith(base + "/"):
+            return resolved[len(base) + 1 :]
+    return os.path.basename(resolved)
+
+
+def _list_host_dir(path: str) -> list[str] | None:
+    try:
+        resolved = _packages.resolve_under_prefix(path, _platform.HOST_PREFIX)
+        return sorted(os.listdir(_platform.HOST_PREFIX + resolved))
+    except (OSError, _packages.RpmdbError) as e:
+        log.debug("crypto_policy: cannot list %s: %s", path, e)
+        return None
+
+
+def _crypto_config_profiles(profiles_dir: str) -> list[str]:
+    """Profiles under profiles/: entries with a metadata.json, one level
+    of namespacing allowed (Ubuntu ships `debian/test1`)."""
+    out: list[str] = []
+    for name in _list_host_dir(profiles_dir) or []:
+        if name == "current":
+            continue
+        entries = _list_host_dir(f"{profiles_dir}/{name}") or []
+        if "metadata.json" in entries:
+            out.append(name)
+            continue
+        for sub in entries:
+            if "metadata.json" in (
+                _list_host_dir(f"{profiles_dir}/{name}/{sub}") or []
+            ):
+                out.append(f"{name}/{sub}")
+    return out
+
+
+def parse_crypto_config_openssl(sections: dict[str, dict[str, str]]) -> dict[str, Any]:
+    """The TLS settings a crypto-config OpenSSL snippet sets, whatever its
+    section names (Ubuntu's `legacy` and `future` snippets use different
+    init sections), plus the @SECLEVEL and the PQC split of any Groups."""
+    wanted = {k.lower(): k for k in _OPENSSL_PROFILE_KEYS}
+    settings: dict[str, str] = {}
+    for body in sections.values():
+        for k, v in body.items():
+            canon = wanted.get(k.lower())
+            if canon and canon not in settings:
+                settings[canon] = v
+    m = re.search(r"@SECLEVEL=(\d)", settings.get("CipherString", ""))
+    groups_text = settings.get("Groups") or settings.get("Curves")
+    groups = [g for g in re.split(r"[:,\s]+", groups_text or "") if g]
+    return {
+        "settings": settings,
+        "seclevel": int(m.group(1)) if m else None,
+        "groups_configured": groups or None,
+        "pqc_groups": _classify_pqc(groups, _PQC_KEM_TOKEN_RE) if groups else None,
+    }
+
+
+def detect_crypto_config() -> dict[str, Any] | None:
+    """Ubuntu crypto-config state, or None when it isn't installed."""
+    profiles_dir = f"{CRYPTO_CONFIG_DIR}/profiles"
+    try:
+        current = _packages.resolve_under_prefix(
+            f"{profiles_dir}/current", _platform.HOST_PREFIX
+        )
+    except _packages.RpmdbError as e:
+        log.debug("crypto_policy: cannot resolve crypto-config current: %s", e)
+        return None
+    if not os.path.isdir(_platform.HOST_PREFIX + current):
+        return None
+    from . import config_openssl as _config_openssl  # avoids an import cycle
+
+    meta_text = _read_host_file(f"{profiles_dir}/current/metadata.json")
+    try:
+        meta = json.loads(meta_text) if meta_text else {}
+    except ValueError as e:
+        log.debug("crypto_policy: bad crypto-config metadata.json: %s", e)
+        meta = {}
+    parsed = _config_openssl.parse_openssl_cnf(
+        f"{profiles_dir}/current/openssl.conf.d",
+        _config_openssl._read,
+        _config_openssl._list_dir,
+    )
+    openssl = parse_crypto_config_openssl(parsed["sections"])
+    openssl["files"] = parsed["files"]
+    pqc_groups = openssl["pqc_groups"]
+    tls_kex: bool | None = (
+        None
+        if pqc_groups is None
+        else bool(pqc_groups["pure_pqc"] or pqc_groups["hybrid"])
+    )
+    return {
+        "available": True,
+        "framework": "crypto-config",
+        "active": _profile_label(current, profiles_dir),
+        "available_profiles": _crypto_config_profiles(profiles_dir),
+        "profile": {
+            "summary": meta.get("summary"),
+            "parent": meta.get("parent"),
+        },
+        "applications": [
+            e
+            for e in (_list_host_dir(f"{profiles_dir}/current") or [])
+            if e != "metadata.json"
+        ],
+        "openssl": openssl,
+        # crypto-config 0.7.4 configures neither OpenSSH nor IKE, and sets
+        # TLS groups only if a profile does: None means the library /
+        # daemon default applies, not that PQC is off.
+        "pqc_enabled": {
+            "tls_key_exchange": tls_kex,
+            "tls_signatures": None,
+            "ssh_key_exchange_client": None,
+            "ssh_key_exchange_server": None,
+            "ike_key_exchange": None,
+        },
+    }
+
+
 def detect_crypto_policy() -> dict[str, Any]:
     """Report the active system-wide crypto policy and what it lets PQC do.
 
@@ -269,9 +408,18 @@ def detect_crypto_policy() -> dict[str, Any]:
     state = _read_host_file(f"{CRYPTO_POLICIES_DIR}/state/current")
     configured_text = _read_host_file(f"{CRYPTO_POLICIES_DIR}/config")
     if state is None and configured_text is None:
+        cc = detect_crypto_config()
+        if cc is not None:
+            note = _runtime._host_fs_note_for("crypto_policy")
+            if note:
+                cc.update(note)
+            return cc
         out: dict[str, Any] = {
             "available": False,
-            "reason": f"no system-wide crypto policy framework ({CRYPTO_POLICIES_DIR} not found)",
+            "reason": (
+                "no system-wide crypto policy framework "
+                f"({CRYPTO_POLICIES_DIR} and {CRYPTO_CONFIG_DIR} not found)"
+            ),
         }
         note = _runtime._host_fs_note_for("crypto_policy")
         if note:
@@ -307,6 +455,7 @@ def detect_crypto_policy() -> dict[str, Any]:
         reboot_required = (base == "FIPS") != kernel_fips
     out = {
         "available": True,
+        "framework": "crypto-policies",
         "active": name["active"],
         "base_policy": base,
         "subpolicies": subs,

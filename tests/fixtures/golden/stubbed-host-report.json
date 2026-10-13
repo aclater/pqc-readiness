@@ -264,6 +264,7 @@
       },
       "base_policy": "DEFAULT",
       "configured": "DEFAULT",
+      "framework": "crypto-policies",
       "pq_disabled_by_subpolicy": [],
       "pq_subpolicies_active": [],
       "pqc_enabled": {
