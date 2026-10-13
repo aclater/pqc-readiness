@@ -9,6 +9,8 @@ from typing import Any
 from .. import report as _report
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
+from ..detect import protocols_boot as _boot
+from ..detect import protocols_kerberos as _kerberos
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +633,111 @@ def _render_text_signing_keys(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_boot_chain(r: _report.Report) -> list[str]:
+    """Secure Boot, module signing, IMA and TPM (--scan-boot-chain, #112)."""
+    bc = r.boot_chain
+    if not bc:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "14. Boot chain")]
+    if not bc.get("available"):
+        L += [f"   Unavailable: {bc.get('reason')}", ""]
+        return L
+    sb = bc.get("secure_boot") or {}
+    if sb.get("available"):
+        state = {True: "enabled", False: "disabled", None: "unknown"}[sb.get("enabled")]
+        L.append(f"   Secure Boot:      {state} (setup mode: {sb.get('setup_mode')})")
+        for key, db in (sb.get("databases") or {}).items():
+            if not db.get("present"):
+                continue
+            certs = db.get("certificates") or []
+            algos = sorted(
+                {
+                    f"{c.get('key_algorithm')} {c.get('key_size') or ''}".strip()
+                    for c in certs
+                }
+            )
+            L.append(
+                f"   {key:<9} {len(certs)} cert(s), {db.get('sha256_hashes', 0)} hash(es)"
+                + (f": {', '.join(algos)}" if algos else "")
+            )
+    else:
+        L.append(f"   Secure Boot:      {sb.get('reason')}")
+    mod = bc.get("module_signing") or {}
+    sample = mod.get("sample_module") or {}
+    if sample.get("parsed"):
+        size = f"-{sample['key_size']}" if sample.get("key_size") else ""
+        L.append(
+            f"   Module signing:   {sample.get('signature_algorithm')}{size} / "
+            f"{sample.get('digest_algorithm')} ({sample.get('signer')})"
+        )
+    elif mod.get("key_types_configured"):
+        L.append(
+            f"   Module signing:   {'/'.join(mod['key_types_configured'])} (kernel config)"
+        )
+    ima = bc.get("ima_evm") or {}
+    ima_algos = sorted(
+        {str(c.get("key_algorithm")) for c in ima.get("certificates") or []}
+    )
+    if ima_algos:
+        L.append(f"   IMA certificates: {', '.join(ima_algos)}")
+    if bc.get("lockdown"):
+        L.append(f"   Lockdown:         {bc['lockdown']}")
+    tpm = bc.get("tpm") or {}
+    if tpm.get("queried"):
+        L.append(
+            f"   TPM:              spec {tpm.get('spec_revision')}, PQC algorithms: "
+            + (", ".join(tpm.get("pqc_algorithms") or []) or "none")
+        )
+    elif tpm.get("present"):
+        L.append(f"   TPM:              not queried ({tpm.get('reason')})")
+    for line in _boot.describe_classical_layers(bc):
+        L.append(C.wrap(C.YELLOW, f"   Classical: {line}."))
+    L.append("")
+    return L
+
+
+def _render_text_kerberos(r: _report.Report) -> list[str]:
+    """Kerberos enctypes and PKINIT (--scan-kerberos, #109)."""
+    kb = r.kerberos
+    if not kb:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "15. Kerberos")]
+    if not kb.get("available"):
+        L += [f"   Unavailable: {kb.get('reason')}", ""]
+        return L
+    cfg = kb.get("config") or {}
+    permitted = (cfg.get("enctype_lists") or {}).get("permitted_enctypes") or {}
+    L.append(
+        f"   permitted_enctypes ({permitted.get('source')}): "
+        + ", ".join(permitted.get("enctypes") or [])
+    )
+    for kt in kb.get("keytabs") or []:
+        if kt.get("parsed"):
+            counts = ", ".join(
+                f"{n} x{c}" for n, c in sorted((kt.get("enctypes") or {}).items())
+            )
+            L.append(
+                f"   Keytab {kt['path']}: {len(kt.get('entries') or [])} keys ({counts})"
+            )
+        else:
+            L.append(f"   Keytab {kt['path']}: {kt.get('reason')}")
+    pk = cfg.get("pkinit") or {}
+    if pk.get("identity_configured"):
+        ident = pk.get("identity") or {}
+        L.append(
+            "   PKINIT identity: "
+            + (
+                ", ".join(ident.get("key_algorithms") or [])
+                or str(ident.get("store") or "?")
+            )
+        )
+    level, parts = _kerberos.describe_findings(kb)
+    for part in parts:
+        L.append(C.wrap(C.YELLOW, f"   {part[0].upper() + part[1:]}."))
+    L.append("")
+    return L
+
+
 def _offline_na_sections(r: _report.Report) -> str:
     """Human-readable list of what an offline --root scan cannot answer."""
     return (
@@ -908,6 +1015,8 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_signing_keys(r))
     L.extend(_render_text_crypto_libraries(r))
     L.extend(_render_text_processes(r))
+    L.extend(_render_text_boot_chain(r))
+    L.extend(_render_text_kerberos(r))
     L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_deployment_gap(r))
     L.extend(_render_text_verdict(r))

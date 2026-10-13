@@ -10,11 +10,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from .. import report as _report
+from .. import gap as _gap
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import config_sshd as _config_sshd
 from ..detect import protocols_libraries as _libraries
 from ..detect import runtime_services as _services
+from ..detect import protocols_boot as _boot
+from ..detect import protocols_kerberos as _kerberos
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +378,43 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-020-pqc-capable-not-configured.md",
     ),
+    # pqc-030 .. pqc-039: detect-protocols lane (#137 rule-ID blocks).
+    RuleSpec(
+        id="pqc-030-classical-boot-chain",
+        short_description="The boot chain's signing keys are all classical.",
+        full_description=(
+            "The keys that authorise boot code and kernel code (UEFI Secure "
+            "Boot PK / KEK / db, shim MOK, the kernel module signing key, IMA "
+            "code-signing certificates) use classical algorithms only, and "
+            "the TPM reports no ML-KEM / ML-DSA support.  CNSA 2.0 expects "
+            "software and firmware signing to use ML-DSA-87 or LMS / XMSS by "
+            "2030; Linux supports ML-DSA module signing from 7.0.  "
+            "Informational: these keys belong to the firmware vendor, the "
+            "distribution and the machine owner, and are the slowest to "
+            "rotate, so they need planning early."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-030-classical-boot-chain.md",
+    ),
+    RuleSpec(
+        id="pqc-031-kerberos-weak-enctypes",
+        short_description=(
+            "Kerberos allows deprecated or 128-bit encryption types, or uses "
+            "classical PKINIT."
+        ),
+        full_description=(
+            "Kerberos keys are symmetric: the quantum risk is Grover's "
+            "algorithm, which leaves a 128-bit key about 64-bit security, and "
+            "CNSA 2.0 requires AES-256.  A warning when deprecated enctypes "
+            "(DES, 3DES, RC4; RFC 6649 / RFC 8429) are permitted by "
+            "krb5.conf / kdc.conf, by MIT's default list, or present as keytab "
+            "keys; a note when only 128-bit AES / Camellia enctypes are the "
+            "concern, or when PKINIT (RSA / (EC)DH) is configured, for which "
+            "no post-quantum standard exists yet."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-031-kerberos-weak-enctypes.md",
+    ),
 )
 
 
@@ -425,6 +465,12 @@ SECURITY_SEVERITY: dict[str, str] = {
     # Package-signing trust anchors need rotating to PQC keys; the fix is
     # upstream's, the host only has to trust the new key: low.
     "pqc-009-classical-package-signing-keys": "3.1",
+    # Boot-chain trust anchors: long rotation lead time, fix is the
+    # vendor's / distribution's: low, like pqc-009 (#112).
+    "pqc-030-classical-boot-chain": "3.1",
+    # Deprecated enctypes are a classical weakness today, not only a
+    # quantum one: medium (#109).
+    "pqc-031-kerberos-weak-enctypes": "4.3",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
     # Software that will fail at PQC (#193).  A running service that can't
@@ -741,6 +787,42 @@ def build_findings(r: _report.Report) -> list[Finding]:
     gap_finding = _capable_not_configured_finding(r)
     if gap_finding is not None:
         findings.append(gap_finding)
+    boot = r.boot_chain
+    layers = _boot.describe_classical_layers(boot)
+    if layers:
+        summary = boot.get("summary") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-030-classical-boot-chain",
+                level="note",
+                message="Boot chain is classical: " + "; ".join(layers) + ".",
+                properties={
+                    "boot_chain:classical_layers": summary.get("classical_layers"),
+                    "boot_chain:secure_boot_algorithms": summary.get(
+                        "secure_boot_algorithms"
+                    ),
+                    "boot_chain:module_signing_pqc": summary.get("module_signing_pqc"),
+                },
+            )
+        )
+
+    kb = r.kerberos
+    kb_level, kb_parts = _kerberos.describe_findings(kb)
+    if kb_level:
+        ks = kb.get("summary") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-031-kerberos-weak-enctypes",
+                level=kb_level,
+                message="Kerberos: " + "; ".join(kb_parts) + ".",
+                properties={
+                    "kerberos:deprecated_enctypes": ks.get("deprecated_enctypes"),
+                    "kerberos:aes128_enctypes": ks.get("aes128_enctypes"),
+                    "kerberos:enctypes_in_keytabs": ks.get("enctypes_in_keytabs"),
+                    "kerberos:pkinit_classical": ks.get("pkinit_classical"),
+                },
+            )
+        )
 
     return findings
 
@@ -762,10 +844,18 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
         if s.get("state") == "capable_not_configured"
         and not s.get("follows_host_default")
     ]
-    if not protocols and not services:
+    clients = [
+        str(c.get("exe") or c.get("process"))
+        for c in (g.get("clients") or {}).get("items") or []
+        # Outbound client process groups (#202); as for services, only the
+        # ones whose verdict differs from the host's TLS verdict.
+        if c.get("state") == "capable_not_configured"
+        and not c.get("follows_host_default")
+    ]
+    if not protocols and not services and not clients:
         return None
     # Only TLS / SSH protocol gaps: pqc-008 / pqc-010 already report them.
-    restates_only = not services and set(protocols) <= {"tls", "ssh"}
+    restates_only = not services and not clients and set(protocols) <= {"tls", "ssh"}
     parts = []
     if protocols:
         parts.append("protocols: " + ", ".join(protocols))
@@ -774,6 +864,10 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
             "services: "
             + ", ".join(services[:6])
             + (", ..." if len(services) > 6 else "")
+        )
+    if clients:
+        parts.append(
+            "clients: " + ", ".join(clients[:6]) + (", ..." if len(clients) > 6 else "")
         )
     return Finding(
         rule_id="pqc-020-pqc-capable-not-configured",
@@ -786,6 +880,7 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
         properties={
             "gap:protocols": protocols,
             "gap:services": services,
+            "gap:clients": clients,
         },
     )
 
@@ -829,43 +924,6 @@ def _listener_label(lst: dict[str, Any]) -> str:
     return f"{who} on {lst.get('protocol')} {addr}:{lst.get('port')}"
 
 
-# OpenSSL sonames before 3.0: libssl.so.1.1 / .so.1.0.0 upstream,
-# libssl.so.10 on RHEL 7 (1.0.2).  OpenSSL 3.x uses .so.3, so a 1.x / 10
-# soname is definite evidence of a pre-3.5 library even when no version
-# string could be read (measured: AlmaLinux 8.10 sshd, OpenSSL 1.1.1k).
-_OPENSSL_PRE3_SONAME = re.compile(
-    r"/lib(?:ssl|crypto)\.so\.(?:1(?:\.[0-9][0-9a-z.]*)?|10)$"
-)
-
-# Service-linkage families that --scan-crypto-libraries also probes from the
-# library file itself (#110); its binary evidence settles libraries whose
-# version has no threshold in the service probe.
-_LIBRARY_PROBE_NAME = {"gnutls": "gnutls", "wolfssl": "wolfssl", "aws-lc": "aws-lc"}
-
-
-def _service_lib_capable(
-    lib: dict[str, Any], probes: dict[str, Any]
-) -> tuple[bool | None, str]:
-    """PQC capability of one library a service maps, with the evidence
-    used: the service probe's own verdict, then the library probe's
-    reading of the same file (or same version), then the OpenSSL soname."""
-    capable = lib.get("library_pqc_capable")
-    if capable is not None:
-        return bool(capable), "version"
-    name = _LIBRARY_PROBE_NAME.get(str(lib.get("family")))
-    probe = probes.get(name) if name else None
-    if probe and probe.get("installed") and probe.get("pqc_capable") is not None:
-        same_file = lib.get("path") in (probe.get("files") or [])
-        same_version = lib.get("version") and lib.get("version") == probe.get("version")
-        if same_file or same_version:
-            return bool(probe["pqc_capable"]), "crypto_libraries"
-    if lib.get("family") == "openssl" and _OPENSSL_PRE3_SONAME.search(
-        str(lib.get("path") or "")
-    ):
-        return False, "soname"
-    return None, ""
-
-
 def _listener_props(lst: dict[str, Any]) -> dict[str, Any]:
     return {
         "service:protocol": lst.get("protocol"),
@@ -887,7 +945,7 @@ def _service_findings(r: _report.Report) -> list[Finding]:
     for lst in scl.get("listeners") or []:
         subject = _listener_subject(lst)
         libs = lst.get("crypto_libraries") or []
-        verdicts = [(lib, *_service_lib_capable(lib, probes)) for lib in libs]
+        verdicts = [(lib, *_gap.library_capable(lib, probes)) for lib in libs]
         failing = [(lib, ev) for lib, cap, ev in verdicts if cap is False]
         unknown = [lib for lib, cap, _ev in verdicts if cap is None]
         if failing:

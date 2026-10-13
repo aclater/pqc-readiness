@@ -77,6 +77,8 @@ nothing was found.
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
 | `pqc_deployment_gap` | Capability vs configuration verdict (#107): for TLS, SSH and IPsec, and for every listening service when `--scan-services` ran, whether PQC is `deployed`, `capable_not_configured`, `configured_not_capable`, `not_capable`, `unknown` or `not_present`, with JSON paths to the fields that decided it. Computed from the other fields; no probe of its own. See [`pqc_deployment_gap`](#pqc_deployment_gap). |
+| `boot_chain` | Boot chain trust anchors and their algorithms: UEFI Secure Boot state and the PK / KEK / db / dbx / MOK signature lists, kernel module signing, IMA / EVM, kernel lockdown and TPM 2.0 post-quantum support. Populated only when `--scan-boot-chain` is set (`{}` otherwise). Keys: `available`, `secure_boot`, `module_signing`, `ima_evm`, `lockdown`, `tpm`, `summary` (see [Nested fields](#boot_chain)). |
+| `kerberos` | Kerberos encryption types and PKINIT: the client / KDC enctype lists (`krb5.conf` with includes, `kdc.conf`), keytab entries (principal, kvno, enctype; never keys) and PKINIT settings. Populated only when `--scan-kerberos` is set (`{}` otherwise). Keys: `available`, `config_files`, `config`, `kdc`, `keytabs`, `summary` (see [Nested fields](#kerberos)). |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -632,7 +634,8 @@ join](#--aggregate-observations-join)).
 | --- | --- | --- |
 | `protocols` | object | `tls`, `ssh` and `ipsec`, each a verdict (below). |
 | `services` | object | Per-service verdicts; `{available: false}` without `--scan-services`. |
-| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`). Empty when there is nothing to fix. |
+| `clients` | object | Per outbound-client process group verdicts (#202); `{available: false}` without `--scan-processes`. |
+| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`), and every such client group (`client:<exe>:<state>`). Empty when there is nothing to fix. |
 
 A verdict (each `protocols.*` entry, and each service item):
 
@@ -668,10 +671,137 @@ Each `services.items[]` entry adds to the verdict keys:
 | `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, or a Go binary using its own default; only those count in `gaps` and `pqc-020`. |
 | `listeners` | list[string] | JSON paths of the `service_crypto_linkage.listeners[]` entries behind this item. |
 
+`clients` (#202): one verdict per `process_crypto_linkage.groups[]` entry
+with at least one process in the `client` role (outbound-only TLS clients a
+service scan can't see). Listening servers are covered by `services`; idle
+processes negotiate nothing. A Go binary is judged on its own crypto/tls
+default: Go 1.24+ is capable, and `GODEBUG tlsmlkem=0` (environment, or
+`DefaultGODEBUG` from an old `go` line in go.mod) makes it
+`capable_not_configured`; older Go is `not_capable`. Otherwise the group
+negotiates with the libraries it maps under the host's TLS configuration and
+is not capable when any of them is known not to be, the same judgement the
+`pqc-011` / `pqc-013` failure findings use (`library_capable`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | `--scan-processes` ran (`process_crypto_linkage.available`). |
+| `items` | list[object] | One verdict per client process group, ordered by state (`deployed` first) then client process count. |
+| `by_state` | object | Client group count per `state`. |
+| `client_processes_by_state` | object | Client process count per `state`. |
+| `differing_from_host` | int | Items with `follows_host_default: false`. |
+| `groups_omitted_by_scan` | int | Optional. Process groups the scan dropped at its group cap (`process_crypto_linkage.omitted_groups`); they have no verdict. |
+
+Each `clients.items[]` entry adds to the verdict keys:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `exe` | string | Executable path of the group. |
+| `process` | string | Process name. |
+| `systemd_units` | list[string] | Units of the group's processes. |
+| `client_processes` | int | Processes in the group in the `client` role. |
+| `crypto_families` | list[string] | Library families the group maps, plus `go`. |
+| `follows_host_default` | bool | The group reached the host's TLS verdict through the host default; false for a Go binary (its own default) or a group whose libraries give a different state. Only groups with `false` count in `gaps` and `pqc-020`. |
+| `group` | string | JSON path of the `process_crypto_linkage.groups[]` entry. |
+
 SARIF / NDJSON: rule `pqc-020-pqc-capable-not-configured` reports one
-host-level result listing every protocol, and every service that differs
-from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
+host-level result listing every protocol, and every service and client
+group that differs from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
 when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`).
+### `boot_chain`
+
+`{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount` the kernel config and modules are read from the host's `/usr/lib/modules/<release>/` (reachable through the deployments' read-only `/usr` mount; Fedora / RHEL ship the config there), never from the container's `/boot` or `/lib/modules`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False off Linux; then only `reason` follows. |
+| `reason` | string | Why the inventory did not run, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `secure_boot` | object | UEFI Secure Boot (below). |
+| `module_signing` | object | Kernel module signing (below). |
+| `ima_evm` | object | IMA / EVM state (below). |
+| `lockdown` | string \| null | Active kernel lockdown mode from `/sys/kernel/security/lockdown` (`none`, `integrity`, `confidentiality`); null when unreadable. |
+| `tpm` | object | TPM 2.0 revision and post-quantum algorithms (below). |
+| `summary` | object | `{secure_boot_certificates, secure_boot_certificate_categories, secure_boot_all_classical, secure_boot_algorithms, module_signing_pqc, classical_layers}`. Certificates are counted across the databases that authorise boot code (`PK`, `KEK`, `db`, `MokList`); `secure_boot_certificate_categories` uses the trust-store buckets (`classical`, `hybrid_composite`, `pure_pqc`); `secure_boot_algorithms` lists e.g. `RSA-2048`, `EC P-384`. `classical_layers` lists every layer with no post-quantum key: `secure_boot`, `module_signing`, `ima`, `tpm` (SARIF `pqc-030`). |
+
+`secure_boot` (efivarfs; UEFI 2.10 EFI_SIGNATURE_LIST; GUIDs from edk2 and shim):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False on legacy BIOS boot or without efivarfs. |
+| `firmware` | string | `uefi` or `bios`. |
+| `reason` | string | Why `available` is false: legacy BIOS, efivarfs not mounted, or efivarfs not readable (measured: rootless podman with default SELinux labels is denied efivarfs; the quadlet's `SecurityLabelDisable` lifts that). |
+| `enabled` | bool \| null | The `SecureBoot` variable. |
+| `setup_mode` | bool \| null | The `SetupMode` variable (true: no PK enrolled, keys can be changed freely). |
+| `shim_validation_disabled` | bool | shim's `MokSBStateRT` says signature validation is disabled. |
+| `databases` | object | `PK`, `KEK`, `db`, `dbx`, `MokList` (shim `MokListRT`), `MokListX` (shim `MokListXRT`). Each is `{present: false}` when absent, otherwise `{present, source, certificates, sha256_hashes, rsa2048_keys, other_entries, errors}`: `source` is `efivars` or `mok-variables` (the kernel's complete copy of the MOK lists); `certificates` holds `{subject, issuer, sha256, not_after, key_algorithm, key_size, category}` for each X.509 entry; `sha256_hashes` and `rsa2048_keys` count those entry types; `other_entries` maps other signature-type GUIDs to counts; `errors` lists malformed lists or entries. `dbx` and `MokListX` revoke, so they don't count towards `summary`. |
+
+`module_signing`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `kernel_release` | string | Running kernel release (`/proc/sys/kernel/osrelease`). |
+| `kernel_config_source` | string \| null | Where the kernel config was read: `/boot/config-<release>` (bare metal only), `/lib/modules/<release>/config`, `/usr/lib/modules/<release>/config` or `/proc/config.gz`. |
+| `module_sig` | bool \| null | `CONFIG_MODULE_SIG`. |
+| `module_sig_force` | bool \| null | `CONFIG_MODULE_SIG_FORCE`. |
+| `module_sig_hash` | string \| null | `CONFIG_MODULE_SIG_HASH`, e.g. `sha512`. |
+| `key_types_configured` | list[string] | `CONFIG_MODULE_SIG_KEY_TYPE_*` set to `y`: `RSA`, `ECDSA`, `MLDSA_44`, `MLDSA_65`, `MLDSA_87` (the ML-DSA options exist from Linux 7.0). |
+| `sig_enforce` | bool \| null | `/sys/module/module/parameters/sig_enforce`. |
+| `sample_module` | object \| null | The first module from `modules.dep` whose signature could be read: `{module, signed}`, plus for signed modules `{format, parsed}` and, when the PKCS#7 signature parsed, `{signer, digest_algorithm, signature_algorithm, signature_algorithm_oid, key_size, category}` (`key_size` is the RSA modulus size implied by the signature length; `category` is `classical` or `pure_pqc`), or `reason` when it did not. `.ko.zst` modules need Python 3.14 (`compression.zstd`). |
+| `pqc` | bool \| null | The sample module, else the configured key type, is ML-DSA. |
+
+`ima_evm`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `ima_securityfs` | bool | `/sys/kernel/security/ima` exists. |
+| `cmdline` | object | IMA / EVM kernel parameters present on `/proc/cmdline`: `ima_policy`, `ima_appraise`, `ima_hash`, `ima_template`, `evm`. |
+| `policy` | object | `{readable: false}` unless the IMA policy is readable (root, `CONFIG_IMA_READ_POLICY`); then `{readable, rules, measure_rules, appraise_rules, signature_required_rules}` (`signature_required_rules` counts `appraise_type=imasig`). |
+| `evm_mode` | int \| null | Value of the EVM securityfs file (a bitmask; 0 means EVM is not initialised). |
+| `certificates` | list[object] | IMA code-signing certificates under `/etc/keys/ima` (Fedora ships them), same fields as the Secure Boot certificates plus `path`. |
+
+`tpm` (one read-only `TPM2_GetCapability` on `/dev/tpmrm0`; needs root or the `tss` group):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `present` | bool | `/sys/class/tpm/tpm0` exists. |
+| `version_major` | int \| null | `tpm_version_major` from sysfs (1 or 2). |
+| `queried` | bool | The capability query ran. |
+| `reason` | string | Why it did not. |
+| `family` | string \| null | `TPM_PT_FAMILY_INDICATOR`, e.g. `2.0`. |
+| `spec_revision` | string \| null | `TPM_PT_REVISION` / 100, e.g. `1.59`, `1.85`. |
+| `spec_year` | int \| null | `TPM_PT_YEAR`. |
+| `manufacturer` | string \| null | `TPM_PT_MANUFACTURER` as ASCII, e.g. `IBM`, `INTC`. |
+| `pqc_algorithms` | list[string] | Post-quantum algorithms the TPM implements: `ML-KEM`, `ML-DSA`, `HashML-DSA` (TPM 2.0 Library v1.85 IDs 0x00A0-0x00A2). |
+| `pqc_capable` | bool | Any of them. |
+| `spec_note` | string | Where the v1.85 algorithm IDs come from (a release candidate, per wolfTPM's implementation). |
+
+### `kerberos`
+
+`{}` unless `--scan-kerberos`. Read in-process (no `klist`): `/etc/krb5.conf` and everything it pulls in with `include` / `includedir` (symlinks resolved under the host prefix, so the RHEL crypto-policies back-end in `/etc/krb5.conf.d` is the host's), `kdc.conf`, and keytabs. Keytabs are parsed from MIT's FILE keytab format; key contents are skipped by length and never stored or emitted. Enctype names and status follow the IANA Kerberos Encryption Type Numbers registry. Works with `--root`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False when neither `/etc/krb5.conf` nor a `kdc.conf` exists. |
+| `reason` | string | Why `available` is false, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `config_files` | list[string] | Configuration files read, in order. |
+| `config` | object | `{allow_weak_crypto, default_keytab_name, enctype_lists, pkinit}` from `[libdefaults]` (below). |
+| `kdc` | object \| null | `{path, realms}` from `/var/kerberos/krb5kdc/kdc.conf` or `/etc/krb5kdc/kdc.conf`; `realms` maps each realm to `{supported_enctypes, master_key_type}` (salt types dropped). Null without a `kdc.conf`. |
+| `keytabs` | list[object] | One per keytab found (`/etc/krb5.keytab`, `default_keytab_name`, `*.keytab` up to three levels under `/etc`): `{path, readable, reason}` when unreadable (keytabs are root-only), otherwise `{path, readable, parsed, format_version, entries, enctypes}` (`parsed: false` with `reason` for a malformed file). Each `entries` item is `{principal, kvno, enctype, enctype_number, status}`; `enctypes` maps enctype name to key count. |
+| `summary` | object | `{enctypes_allowed, enctypes_in_keytabs, deprecated_enctypes, aes128_enctypes, keytab_keys_128_bit_only, pkinit_classical}`. `enctypes_allowed` is the union of every expanded list, the KDC `supported_enctypes` and the keytab enctypes. `pkinit_classical` is true when a PKINIT identity is configured with classical certificates, null when the identity store can't be read (e.g. a PKCS#11 token), false when PKINIT isn't used. Drives SARIF `pqc-031`. |
+
+`config.enctype_lists` has one entry per `permitted_enctypes`, `default_tkt_enctypes` and `default_tgs_enctypes`: `{raw, source, enctypes}`. `raw` is the configured string; `source` is `configured`, `permitted_enctypes` (unset, so `permitted_enctypes` applies, as in krb5 1.18 and later) or `mit_default` (unset everywhere: MIT's built-in default, which still includes the deprecated `des3-cbc-sha1` and `arcfour-hmac`); `enctypes` is the list expanded with MIT's rules (aliases, the `aes` / `des3` / `rc4` / `camellia` families, `DEFAULT`, `-x` removal), with MIT's "weak" types dropped unless `allow_weak_crypto` is true.
+
+Enctype `status`: `deprecated` (DES, 3DES, RC4: RFC 6649 / RFC 8429), `aes128` (128-bit AES / Camellia: about 64-bit security against Grover's algorithm; CNSA 2.0 requires AES-256), `ok` (256-bit), `unknown`.
+
+`config.pkinit`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `settings` | list[string] | Every `pkinit_*` tag found in `[libdefaults]`, `[realms]` or `[kdcdefaults]`. |
+| `anchors` | object \| null | `pkinit_anchors`. For a `FILE:` value `{path, exists, certificates, categories, key_algorithms}` (`exists: false` when the file is missing, as with Fedora's stock `ca-bundle.crt` path); otherwise `{value}` naming only the store type. |
+| `identity_configured` | bool | `pkinit_identity` / `pkinit_identities` is set: PKINIT is in use. Anchors alone don't count. |
+| `identity` | object \| null | For a `FILE:` identity, the same fields as `anchors` (certificates only; the key half is never read); for other stores `{store}` (e.g. `PKCS11`). |
 
 ### `os_release`
 
@@ -925,7 +1055,7 @@ from the scanner's are not merged.
 | `host_fs_detections_unavailable_host_count` | object | Hosts on which each detection was flagged `unavailable_in_container`. |
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
-| `pqc_deployment_gap` | object | Capability vs configuration across the fleet (#107): `hosts_by_protocol_state` (for `tls`, `ssh`, `ipsec`: host count per state), `services_by_state` (service count per state across all hosts), and `hosts_with_gap` (hosts with at least one protocol or service in `capable_not_configured` / `configured_not_capable`). Reports without their own `pqc_deployment_gap` are evaluated from their fields. CSV rows: `pqc_deployment_gap_<protocol>`, `pqc_deployment_gap_services`, `pqc_deployment_gap_hosts_with`. |
+| `pqc_deployment_gap` | object | Capability vs configuration across the fleet (#107): `hosts_by_protocol_state` (for `tls`, `ssh`, `ipsec`: host count per state), `services_by_state` (service count per state across all hosts), `client_groups_by_state` / `client_processes_by_state` (outbound-client process groups from `--scan-processes`, and their client process counts, per state; #202), and `hosts_with_gap` (hosts with at least one protocol, service or client group in `capable_not_configured` / `configured_not_capable`). Reports without their own `pqc_deployment_gap` are evaluated from their fields. CSV rows: `pqc_deployment_gap_<protocol>`, `pqc_deployment_gap_services`, `pqc_deployment_gap_client_groups`, `pqc_deployment_gap_client_processes`, `pqc_deployment_gap_hosts_with`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
 | `observations` | object | Present only with `--observations FILE`: endpoint observations joined to the hosts and listening services in the reports (#149). See [`--aggregate` observations join](#--aggregate-observations-join). |
 

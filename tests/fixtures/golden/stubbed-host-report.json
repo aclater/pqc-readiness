@@ -5,6 +5,7 @@
     "arch": "x86_64",
     "benchmark": null,
     "benchmark_tls_handshake": null,
+    "boot_chain": {},
     "cnsa_2_0": {
       "hash_compliant": false,
       "kem_compliant": false,
@@ -311,6 +312,7 @@
     "isa_reason": "AVX2 + AES-NI + PCLMULQDQ - production-capable in software",
     "isa_score": 6,
     "isa_tier": "good",
+    "kerberos": {},
     "kernel_crypto_hw": [
       "aesni_intel"
     ],
@@ -398,6 +400,9 @@
     "per_algo": {},
     "pkcs11_modules": [],
     "pqc_deployment_gap": {
+      "clients": {
+        "available": false
+      },
       "gaps": [],
       "protocols": {
         "ipsec": {
