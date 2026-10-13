@@ -75,7 +75,11 @@ def _time(dt: datetime) -> bytes:
 
 def _rsa_spki(bits: int) -> bytes:
     modulus = (1 << (bits - 1)) | 1
-    rsa_pub = _tlv(0x30, _tlv(0x02, b"\x00" + modulus.to_bytes(bits // 8, "big")) + _tlv(0x02, b"\x01\x00\x01"))
+    rsa_pub = _tlv(
+        0x30,
+        _tlv(0x02, b"\x00" + modulus.to_bytes(bits // 8, "big"))
+        + _tlv(0x02, b"\x01\x00\x01"),
+    )
     alg = _tlv(0x30, _oid("1.2.840.113549.1.1.1") + b"\x05\x00")
     return _tlv(0x30, alg + _tlv(0x03, b"\x00" + rsa_pub))
 
@@ -186,7 +190,8 @@ def test_parse_leaf_fields_and_rfc4514_name() -> None:
 
 def test_parse_generalizedtime_and_ec_curve() -> None:
     der = build_cert(
-        not_after=datetime(2061, 6, 1, tzinfo=timezone.utc), spki=_ec_spki("1.3.132.0.34")
+        not_after=datetime(2061, 6, 1, tzinfo=timezone.utc),
+        spki=_ec_spki("1.3.132.0.34"),
     )
     c = pr.parse_certificate(der)
     assert c["not_after"] == "2061-06-01T00:00:00+00:00"
@@ -199,7 +204,9 @@ def test_v1_self_signed_without_basic_constraints_is_a_ca() -> None:
 
 
 def test_self_signed_leaf_with_ca_false_stays_leaf() -> None:
-    der = build_cert(subject="localhost", issuer="localhost", basic_constraints_ca=False)
+    der = build_cert(
+        subject="localhost", issuer="localhost", basic_constraints_ca=False
+    )
     c = pr.parse_certificate(der)
     assert c["self_signed"] is True and c["role"] == "leaf"
 
@@ -244,7 +251,12 @@ def test_discovers_leaf_ca_keys_and_pairs_public_halves(tmp_path) -> None:
     _write(tmp_path / "certs/localhost.crt", to_pem(leaf), 0o644)
     key_pem, _ = fake_key_pem()
     _write(tmp_path / "private/localhost.key", key_pem)
-    ca = build_cert(subject="Example CA", issuer="Example CA", basic_constraints_ca=True, spki=_ec_spki("1.2.840.10045.3.1.7"))
+    ca = build_cert(
+        subject="Example CA",
+        issuer="Example CA",
+        basic_constraints_ca=True,
+        spki=_ec_spki("1.2.840.10045.3.1.7"),
+    )
     _write(tmp_path / "ca/ca.pem", to_pem(ca), 0o644)
     combined = build_cert(subject="haproxy.example", spki=_ec_spki("1.3.132.0.34"))
     key2, _ = fake_key_pem("EC")
@@ -253,7 +265,11 @@ def test_discovers_leaf_ca_keys_and_pairs_public_halves(tmp_path) -> None:
     r = _scan(tmp_path)
     assert r["available"] is True
     s = r["summary"]
-    assert (s["certificates"], s["leaf_certificates"], s["ca_certificates"]) == (3, 2, 1)
+    assert (s["certificates"], s["leaf_certificates"], s["ca_certificates"]) == (
+        3,
+        2,
+        1,
+    )
     assert s["private_keys"] == 2
     keys = {k["path"].rsplit("/", 1)[-1]: k for k in r["private_keys"]}
     pk = keys["localhost.key"]
@@ -269,7 +285,11 @@ def test_discovers_leaf_ca_keys_and_pairs_public_halves(tmp_path) -> None:
 
 def test_ambiguous_stem_gives_no_public_half(tmp_path) -> None:
     for d in ("a", "b"):
-        _write(tmp_path / d / "server.crt", to_pem(build_cert(subject=f"{d}.example", serial=ord(d))), 0o644)
+        _write(
+            tmp_path / d / "server.crt",
+            to_pem(build_cert(subject=f"{d}.example", serial=ord(d))),
+            0o644,
+        )
     key_pem, _ = fake_key_pem()
     _write(tmp_path / "server.key", key_pem)
     (k,) = _scan(tmp_path)["private_keys"]
@@ -282,8 +302,13 @@ def test_private_key_permissions_and_encryption(tmp_path) -> None:
     enc_pem, _ = fake_key_pem("ENCRYPTED")
     _write(tmp_path / "enc.key", enc_pem, 0o600)
     keys = {Path(k["path"]).name: k for k in _scan(tmp_path)["private_keys"]}
-    assert keys["open.key"]["world_readable"] is True and keys["open.key"]["mode"] == "0644"
-    assert keys["open.key"]["key_type"] == "RSA" and keys["open.key"]["encrypted"] is False
+    assert (
+        keys["open.key"]["world_readable"] is True
+        and keys["open.key"]["mode"] == "0644"
+    )
+    assert (
+        keys["open.key"]["key_type"] == "RSA" and keys["open.key"]["encrypted"] is False
+    )
     assert keys["enc.key"]["world_readable"] is False
     assert keys["enc.key"]["encrypted"] is True
 
@@ -301,7 +326,13 @@ def test_private_key_bytes_never_reach_any_output(tmp_path, monkeypatch) -> None
     cm = _scan(tmp_path)
     assert cm["summary"]["private_keys"] == 5
     r = pr.Report(hostname="h", crypto_material=cm, trust_store={})
-    outputs = [json.dumps(cm), pr.render_text(r), pr.render_markdown(r), pr.render_sarif(r), pr.render_spdx(r)]
+    outputs = [
+        json.dumps(cm),
+        pr.render_text(r),
+        pr.render_markdown(r),
+        pr.render_sarif(r),
+        pr.render_spdx(r),
+    ]
     outputs += [pr.render_cbom(r, v) for v in ("1.6", "1.7")]
     blob = "\n".join(outputs).encode()
     for m in markers:
@@ -337,12 +368,22 @@ def test_oversized_file_is_skipped(tmp_path, monkeypatch) -> None:
     assert _scan(tmp_path)["summary"]["certificates"] == 0
 
 
-def test_host_mount_reads_host_tree_and_reroots_absolute_links(tmp_path, monkeypatch) -> None:
+def test_host_mount_reads_host_tree_and_reroots_absolute_links(
+    tmp_path, monkeypatch
+) -> None:
     host = tmp_path / "host"
-    _write(host / "etc/pki/tls/certs/server.crt", to_pem(build_cert(subject="host-cert")), 0o644)
+    _write(
+        host / "etc/pki/tls/certs/server.crt",
+        to_pem(build_cert(subject="host-cert")),
+        0o644,
+    )
     # An absolute link on the host must resolve inside the host tree, not
     # in the scanner container's own filesystem.
-    _write(host / "etc/pki/real/target.crt", to_pem(build_cert(subject="via-link", serial=9)), 0o644)
+    _write(
+        host / "etc/pki/real/target.crt",
+        to_pem(build_cert(subject="via-link", serial=9)),
+        0o644,
+    )
     os.symlink("/etc/pki/real/target.crt", host / "etc/pki/tls/certs/link.crt")
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(host))
     r = cd.scan_crypto_material(paths=["/etc/pki"], now=NOW)
@@ -354,10 +395,23 @@ def test_host_mount_reads_host_tree_and_reroots_absolute_links(tmp_path, monkeyp
 
 
 def test_deadline_flags(tmp_path) -> None:
-    _write(tmp_path / "a.crt", to_pem(build_cert(not_after=datetime(2031, 6, 1, tzinfo=timezone.utc))), 0o644)
-    _write(tmp_path / "b.crt", to_pem(build_cert(serial=2, not_after=datetime(2036, 6, 1, tzinfo=timezone.utc))), 0o644)
+    _write(
+        tmp_path / "a.crt",
+        to_pem(build_cert(not_after=datetime(2031, 6, 1, tzinfo=timezone.utc))),
+        0o644,
+    )
+    _write(
+        tmp_path / "b.crt",
+        to_pem(
+            build_cert(serial=2, not_after=datetime(2036, 6, 1, tzinfo=timezone.utc))
+        ),
+        0o644,
+    )
     certs = sorted(_scan(tmp_path)["certificates"], key=lambda c: c["not_after"])
-    assert [(c["valid_past_2030"], c["valid_past_2035"]) for c in certs] == [(True, False), (True, True)]
+    assert [(c["valid_past_2030"], c["valid_past_2035"]) for c in certs] == [
+        (True, False),
+        (True, True),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +419,9 @@ def test_deadline_flags(tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _jks(trusted: list[bytes], private_chain: list[bytes] | None = None, marker: bytes = b"") -> bytes:
+def _jks(
+    trusted: list[bytes], private_chain: list[bytes] | None = None, marker: bytes = b""
+) -> bytes:
     def utf(s: str) -> bytes:
         return struct.pack(">H", len(s)) + s.encode()
 
@@ -378,7 +434,9 @@ def _jks(trusted: list[bytes], private_chain: list[bytes] | None = None, marker:
     if private_chain is not None:
         enc = marker * 3
         entries += struct.pack(">I", 1) + utf("server") + struct.pack(">Q", 0)
-        entries += struct.pack(">I", len(enc)) + enc + struct.pack(">I", len(private_chain))
+        entries += (
+            struct.pack(">I", len(enc)) + enc + struct.pack(">I", len(private_chain))
+        )
         for der in private_chain:
             entries += utf("X.509") + struct.pack(">I", len(der)) + der
         n += 1
@@ -409,7 +467,9 @@ def test_truncated_jks_is_reported_not_raised(tmp_path) -> None:
 def test_pkcs12_is_not_opened_except_cacerts_via_keytool(tmp_path, monkeypatch) -> None:
     _write(tmp_path / "client.p12", b"\x30\x82\x01\x00" + b"\x00" * 300, 0o600)
     calls: list[list[str]] = []
-    pem = to_pem(build_cert(subject="jdk root", issuer="jdk root", basic_constraints_ca=True))
+    pem = to_pem(
+        build_cert(subject="jdk root", issuer="jdk root", basic_constraints_ca=True)
+    )
 
     def fake_run(cmd, timeout=None):  # noqa: ARG001
         calls.append(cmd)
@@ -417,11 +477,18 @@ def test_pkcs12_is_not_opened_except_cacerts_via_keytool(tmp_path, monkeypatch) 
 
     monkeypatch.setattr(pr._platform, "_run", fake_run)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-    _write(tmp_path / "jdk/lib/security/cacerts", b"\x30\x82\x02\x00" + b"\x00" * 600, 0o644)
+    _write(
+        tmp_path / "jdk/lib/security/cacerts",
+        b"\x30\x82\x02\x00" + b"\x00" * 600,
+        0o644,
+    )
     r = _scan(tmp_path)
     stores = {Path(k["path"]).name: k for k in r["keystores"]}
     assert stores["client.p12"]["listed"] is False
-    assert stores["cacerts"]["listed"] is True and stores["cacerts"]["certificates_found"] == 1
+    assert (
+        stores["cacerts"]["listed"] is True
+        and stores["cacerts"]["certificates_found"] == 1
+    )
     (cmd,) = calls  # only cacerts was opened, with the published default password
     assert "-storepass" in cmd and cmd[cmd.index("-storepass") + 1] == "changeit"
 
@@ -435,7 +502,15 @@ def test_trust_store_populates_cbom17_certificate_contract(tmp_path) -> None:
     shutil.copy(FIXTURES / "ml-dsa-65.pem", tmp_path / "ml.pem")
     ts = pr.scan_trust_store(dirs=[str(tmp_path)])
     (c,) = ts["certificates"]
-    for key in ("sha256", "serial", "subject", "issuer", "not_before", "not_after", "category"):
+    for key in (
+        "sha256",
+        "serial",
+        "subject",
+        "issuer",
+        "not_before",
+        "not_after",
+        "category",
+    ):
         assert c[key]
     bom = json.loads(pr.render_cbom(pr.Report(hostname="h", trust_store=ts), "1.7"))
     refs = {comp["bom-ref"] for comp in bom["components"]}
@@ -456,7 +531,13 @@ def test_trust_store_reads_host_dirs_under_host_mount(tmp_path, monkeypatch) -> 
 
 def test_cli_flags_parse(tmp_path) -> None:
     args = pr.cli.build_parser().parse_args(
-        ["--scan-crypto-material", "--crypto-material-path", str(tmp_path), "--crypto-material-max-files", "9"]
+        [
+            "--scan-crypto-material",
+            "--crypto-material-path",
+            str(tmp_path),
+            "--crypto-material-max-files",
+            "9",
+        ]
     )
     assert args.scan_crypto_material is True
     assert args.crypto_material_path == [str(tmp_path)]
@@ -472,8 +553,14 @@ def test_collect_report_runs_scan_only_when_asked(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(cd, "scan_crypto_material", fake)
     parser = pr.cli.build_parser()
-    out = pr.cli.collect_report(parser.parse_args(["--crypto-material-path", str(tmp_path)]))
+    out = pr.cli.collect_report(
+        parser.parse_args(["--crypto-material-path", str(tmp_path)])
+    )
     assert out.crypto_material == {} and calls == []
-    out = pr.cli.collect_report(parser.parse_args(["--scan-crypto-material", "--crypto-material-path", str(tmp_path)]))
+    out = pr.cli.collect_report(
+        parser.parse_args(
+            ["--scan-crypto-material", "--crypto-material-path", str(tmp_path)]
+        )
+    )
     assert out.crypto_material == {"available": True}
     assert calls == [([str(tmp_path)], cd.CRYPTO_MATERIAL_MAX_FILES_DEFAULT)]
