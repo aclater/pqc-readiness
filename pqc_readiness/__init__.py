@@ -265,6 +265,7 @@ from .render.spdx import (  # noqa: F401
 )
 from .render.prom import render_prometheus  # noqa: F401
 from .render.ndjson import render_ndjson  # noqa: F401
+from .render.sbom import render_sbom  # noqa: F401
 from .cli import (  # noqa: F401
     EXIT_OUTPUT_WRITE_FAILED,
     ansible_ignored_flag_warnings,
