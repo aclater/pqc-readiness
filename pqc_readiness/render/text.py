@@ -191,8 +191,19 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
         if pure:
             L.append(f"     pure PQC:  {', '.join(pure)}")
     if r.ipsec_pqc.get("available"):
+        impl = {"strongswan": "strongSwan", "libreswan": "Libreswan"}.get(
+            str(r.ipsec_pqc.get("implementation")), "IPsec"
+        )
         L.append(
-            f"   strongSwan:    PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}"
+            f"   {impl + ':':<15}PQC support {'yes' if r.ipsec_pqc.get('pqc') else 'no'}"
+        )
+    ike_sum = (r.ipsec_pqc.get("configured") or {}).get("summary") or {}
+    if ike_sum.get("ike_proposals"):
+        L.append(
+            f"   IKE config:    {ike_sum['ike_proposals']} proposal(s) in "
+            f"{ike_sum.get('connections', 0)} connection(s); ML-KEM offered by "
+            f"{ike_sum.get('connections_offering_pqc', 0)}, required by "
+            f"{ike_sum.get('connections_requiring_pqc', 0)}"
         )
     if r.nss.get("available"):
         L.append(
