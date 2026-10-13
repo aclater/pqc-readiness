@@ -3882,21 +3882,12 @@ def _isa_supports_large_params(isa_tier_str: str, has_pqc_accel: bool) -> bool:
     return isa_tier_str == "excellent" or has_pqc_accel
 
 
-def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
+def _recommend_kem(
+    policy: str, isa: str, accel_pqc: bool, caveats: list[str]
+) -> tuple[str, str, str]:
+    """Policy-driven KEM choice shared by the TLS roles.  Returns
+    (algorithm, mode, reason) and appends any ISA caveat to `caveats`."""
     pref = POLICY_PREFERENCES[policy]
-    isa = (r.isa_tier or "unknown").lower()
-    accel_pqc = _accel_pqc_capable(r.accelerators)
-    fips_kernel = bool((r.fips or {}).get("kernel"))
-    openssl = r.openssl or {}
-    tls_groups = openssl.get("tls_groups") or {}
-    hybrid_groups = list(tls_groups.get("hybrid") or [])
-    pure_groups = list(tls_groups.get("pure_pqc") or [])
-    openssl_version = openssl.get("version") or ""
-    kernel_release = (r.kernel_info or {}).get("release") or ""
-
-    caveats: list[str] = []
-
-    # KEM choice -----------------------------------------------------------
     if policy == "cnsa-2.0":
         kem_chosen = "ML-KEM-1024"
         if _isa_supports_large_params(isa, accel_pqc):
@@ -3934,24 +3925,27 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
             "deployments; consider hybrid for long-confidentiality data"
         )
 
-    # Hybrid vs pure for the KEM ------------------------------------------
-    if pref["hybrid_policy"] == "recommended":
-        kem_mode = "hybrid"
-    elif pref["hybrid_policy"] == "discouraged":
-        # CNSA 2.0: pure preferred.  Hybrid is permitted only where the
-        # protocol mandates it (IKEv2).  TLS server is not IKEv2.
-        kem_mode = "pure"
-    else:
-        # nist-civilian / commercial: pure default; hybrid is permitted.
-        kem_mode = "pure"
+    # Hybrid vs pure.  CNSA 2.0 discourages hybrid except where the
+    # protocol mandates it (IKEv2); TLS is not IKEv2.  nist-civilian and
+    # commercial default to pure with hybrid permitted.
+    kem_mode = "hybrid" if pref["hybrid_policy"] == "recommended" else "pure"
+    return kem_chosen, kem_mode, kem_reason
 
-    # Capability check on advertised TLS 1.3 groups -----------------------
+
+def _tls_group_caveats(
+    openssl: dict[str, Any], kem_mode: str, endpoint: str, caveats: list[str]
+) -> None:
+    """Check the advertised TLS 1.3 groups can carry the chosen KEM mode.
+    `endpoint` is 'server' or 'client' and only affects wording."""
+    tls_groups = openssl.get("tls_groups") or {}
+    hybrid_groups = list(tls_groups.get("hybrid") or [])
+    pure_groups = list(tls_groups.get("pure_pqc") or [])
     if openssl.get("available"):
         if kem_mode == "hybrid" and not hybrid_groups:
             caveats.append(
                 "No TLS 1.3 hybrid groups are advertised by this OpenSSL "
                 "build.  Upgrade OpenSSL or load the relevant provider "
-                "before deploying a hybrid TLS server."
+                f"before deploying a hybrid TLS {endpoint}."
             )
         elif kem_mode == "pure" and not pure_groups:
             caveats.append(
@@ -3966,7 +3960,65 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
             "with TLS 1.3 PQC group support is installed."
         )
 
-    # Signature choice ----------------------------------------------------
+
+def _fips_caveat(policy: str, fips_kernel: bool, caveats: list[str]) -> None:
+    pref = POLICY_PREFERENCES[policy]
+    if pref["requires_fips"] and not fips_kernel:
+        caveats.append(
+            f"Kernel FIPS mode is not enabled.  {pref['name']} requires "
+            "use of FIPS-validated cryptographic modules; enable kernel "
+            "FIPS mode and load a FIPS-validated provider before going "
+            "to production."
+        )
+
+
+def _recommendation_record(
+    r: Report,
+    policy: str,
+    role: str,
+    kem: dict[str, Any],
+    signature: dict[str, Any],
+    caveats: list[str],
+) -> dict[str, Any]:
+    """Assemble the per-policy record.  Every implemented role emits the
+    same keys so downstream consumers never special-case a role."""
+    pref = POLICY_PREFERENCES[policy]
+    hash_chosen = pref["hash_primary"]
+    openssl = r.openssl or {}
+    return {
+        "role": role,
+        "policy": policy,
+        "policy_authority": pref["authority"],
+        "policy_basis": pref["citation"],
+        "policy_source": pref["source"],
+        "implemented": True,
+        "kem": kem,
+        "signature": signature,
+        "hash": {
+            "algorithm": hash_chosen,
+            "reason": f"{hash_chosen} aligned with {pref['name']} guidance",
+        },
+        "host_capability_inputs": {
+            "isa_tier": (r.isa_tier or "unknown").lower(),
+            "pqc_accelerator_present": _accel_pqc_capable(r.accelerators),
+            "fips_kernel": bool((r.fips or {}).get("kernel")),
+            "openssl_version": openssl.get("version") or "",
+            "kernel_release": (r.kernel_info or {}).get("release") or "",
+        },
+        "caveats": caveats,
+    }
+
+
+def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
+    isa = (r.isa_tier or "unknown").lower()
+    accel_pqc = _accel_pqc_capable(r.accelerators)
+    caveats: list[str] = []
+
+    kem_chosen, kem_mode, kem_reason = _recommend_kem(policy, isa, accel_pqc, caveats)
+    _tls_group_caveats(r.openssl or {}, kem_mode, "server", caveats)
+
+    # Signature: a TLS server signs every handshake, so sign latency is
+    # the constraint.
     if policy == "cnsa-2.0":
         sig_chosen = "ML-DSA-87"
         if _isa_supports_large_params(isa, accel_pqc):
@@ -4007,49 +4059,98 @@ def _recommend_tls_server(r: Report, policy: str) -> dict[str, Any]:
                 "ML-DSA-65 — balanced default for civilian/commercial deployments"
             )
 
-    # Hash ----------------------------------------------------------------
-    hash_chosen = pref["hash_primary"]
-    hash_reason = f"{hash_chosen} aligned with {pref['name']} guidance"
+    _fips_caveat(policy, bool((r.fips or {}).get("kernel")), caveats)
+    return _recommendation_record(
+        r,
+        policy,
+        "tls-server",
+        {"algorithm": kem_chosen, "mode": kem_mode, "reason": kem_reason},
+        {"algorithm": sig_chosen, "reason": sig_reason},
+        caveats,
+    )
 
-    # FIPS state caveats --------------------------------------------------
-    if pref["requires_fips"] and not fips_kernel:
+
+# Size of the ML-KEM encapsulation key a TLS client places in its
+# ClientHello key_share.  FIPS 203: ek = 384*k + 32 bytes (k=3 for
+# ML-KEM-768, k=4 for ML-KEM-1024).  A test pins the ML-KEM-768 value to
+# PQC_SIZES so the two tables cannot drift.
+ML_KEM_ENCAPS_KEY_BYTES: dict[str, int] = {
+    "ML-KEM-768": 384 * 3 + 32,
+    "ML-KEM-1024": 384 * 4 + 32,
+}
+# Hybrid groups (X25519MLKEM768 etc.) append a classical share.
+X25519_SHARE_BYTES = 32
+# Key shares above this size push the ClientHello past what some legacy
+# middleboxes accept in a single record/segment during migration.
+CLIENT_HELLO_MIDDLEBOX_BYTES = 1200
+
+
+def _recommend_tls_client(r: Report, policy: str) -> dict[str, Any]:
+    isa = (r.isa_tier or "unknown").lower()
+    accel_pqc = _accel_pqc_capable(r.accelerators)
+    caveats: list[str] = []
+
+    kem_chosen, kem_mode, kem_reason = _recommend_kem(policy, isa, accel_pqc, caveats)
+    _tls_group_caveats(r.openssl or {}, kem_mode, "client", caveats)
+
+    share_bytes = ML_KEM_ENCAPS_KEY_BYTES[kem_chosen]
+    if kem_mode == "hybrid":
+        share_bytes += X25519_SHARE_BYTES
+    if share_bytes > CLIENT_HELLO_MIDDLEBOX_BYTES:
         caveats.append(
-            f"Kernel FIPS mode is not enabled.  {pref['name']} requires "
-            "use of FIPS-validated cryptographic modules; enable kernel "
-            "FIPS mode and load a FIPS-validated provider before going "
-            "to production."
+            f"The {kem_chosen} ({kem_mode}) key share adds {share_bytes} "
+            "bytes to the ClientHello.  Some middleboxes on legacy "
+            f"networks mishandle ClientHellos with key shares over "
+            f"{CLIENT_HELLO_MIDDLEBOX_BYTES} bytes; test the network path "
+            "before enforcing PQC-only negotiation."
         )
 
-    # Build the recommendation record ------------------------------------
-    return {
-        "role": "tls-server",
-        "policy": policy,
-        "policy_authority": pref["authority"],
-        "policy_basis": pref["citation"],
-        "policy_source": pref["source"],
-        "implemented": True,
-        "kem": {
-            "algorithm": kem_chosen,
-            "mode": kem_mode,
-            "reason": kem_reason,
-        },
-        "signature": {
-            "algorithm": sig_chosen,
-            "reason": sig_reason,
-        },
-        "hash": {
-            "algorithm": hash_chosen,
-            "reason": hash_reason,
-        },
-        "host_capability_inputs": {
-            "isa_tier": isa,
-            "pqc_accelerator_present": accel_pqc,
-            "fips_kernel": fips_kernel,
-            "openssl_version": openssl_version,
-            "kernel_release": kernel_release,
-        },
-        "caveats": caveats,
-    }
+    # Signature: a TLS client verifies the server's certificate chain and
+    # does not sign (outside mTLS), so verify throughput is the
+    # constraint.  ML-DSA verify is far cheaper than sign, so ISA tier
+    # matters much less than for a server.
+    if policy == "cnsa-2.0":
+        sig_chosen = "ML-DSA-87"
+        if isa in ("poor", "marginal") and not accel_pqc:
+            sig_reason = (
+                "ML-DSA-87 mandated by CNSA 2.0; client cost is "
+                "certificate-chain verify, not sign"
+            )
+            caveats.append(
+                f"Policy mandates ML-DSA-87 and host ISA tier is '{isa}' "
+                "without a PQC accelerator; ML-DSA-87 verify p99 latency "
+                "per certificate chain will be higher than on modern "
+                "hardware.  Verify is cheap relative to sign, so this "
+                "is rarely limiting for a client."
+            )
+        else:
+            sig_reason = (
+                "ML-DSA-87 per CNSA 2.0; ISA tier comfortably supports "
+                "ML-DSA-87 verify throughput for server certificate chains"
+            )
+    else:
+        sig_chosen = "ML-DSA-65"
+        if isa in ("poor", "marginal") and not accel_pqc:
+            sig_reason = (
+                f"ML-DSA-65 because ISA tier is '{isa}'; ML-DSA-65 verify "
+                "keeps certificate-chain validation latency low on this host"
+            )
+        else:
+            sig_reason = (
+                "ML-DSA-65 — matches the server certificates civilian/"
+                "commercial deployments issue; ISA tier comfortably "
+                "supports ML-DSA verify throughput"
+            )
+
+    _fips_caveat(policy, bool((r.fips or {}).get("kernel")), caveats)
+    return _recommendation_record(
+        r,
+        policy,
+        "tls-client",
+        {"algorithm": kem_chosen, "mode": kem_mode, "reason": kem_reason},
+        {"algorithm": sig_chosen, "reason": sig_reason},
+        caveats,
+    )
 
 
 def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
@@ -4057,10 +4158,8 @@ def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
     policy basis so the JSON shape is consistent across roles, but
     leaves the algorithm fields empty.
 
-    TODO(#13): expand to fully implement tls-client, signing-service,
-    and firmware-signing.  Each has its own SLO profile (e.g.,
-    firmware-signing tolerates SLH-DSA; tls-client cares about
-    handshake size more than throughput)."""
+    Roles with a dedicated recommender are listed in
+    _ROLE_RECOMMENDERS; anything else lands here."""
     pref = POLICY_PREFERENCES[policy]
     return {
         "role": role,
@@ -4071,7 +4170,7 @@ def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
         "implemented": False,
         "note": (
             f"Recommendations for role={role!r} are not yet implemented.  "
-            "Only role='tls-server' is supported in this revision."
+            "Implemented roles: " + ", ".join(sorted(_ROLE_RECOMMENDERS)) + "."
         ),
         "host_capability_inputs": {
             "isa_tier": (r.isa_tier or "unknown").lower(),
@@ -4081,9 +4180,16 @@ def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
     }
 
 
+_ROLE_RECOMMENDERS: dict[str, Callable[[Report, str], dict[str, Any]]] = {
+    "tls-server": _recommend_tls_server,
+    "tls-client": _recommend_tls_client,
+}
+
+
 def _recommend_one(r: Report, policy: str, role: str) -> dict[str, Any]:
-    if role == "tls-server":
-        return _recommend_tls_server(r, policy)
+    impl = _ROLE_RECOMMENDERS.get(role)
+    if impl is not None:
+        return impl(r, policy)
     return _recommend_stub(r, policy, role)
 
 
@@ -6122,8 +6228,8 @@ def main() -> int:
         default=None,
         help=(
             "workload role.  Drives both the recommendation engine "
-            "(only 'tls-server' is fully implemented; other roles "
-            "currently return a stub response) and the memory-tier "
+            "('tls-server' and 'tls-client' are fully implemented; other "
+            "roles currently return a stub response) and the memory-tier "
             "threshold (per-role good thresholds: tls-server=16 GiB, "
             "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
             "2 GiB, generic=16 GiB).  When omitted, the report contains "

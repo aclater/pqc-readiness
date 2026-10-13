@@ -256,8 +256,94 @@ def test_unknown_role_raises() -> None:
         pr.recommend(r, policy="commercial", role="not-a-role")
 
 
+# ---------------------------------------------------------------------------
+# tls-client role (#90)
+# ---------------------------------------------------------------------------
+
+_EXPECTED_TLS = {
+    "cnsa-2.0": ("ML-KEM-1024", "pure", "ML-DSA-87", "SHA-384"),
+    "nist-civilian": ("ML-KEM-768", "pure", "ML-DSA-65", "SHA-256"),
+    "eu-anssi-bsi": ("ML-KEM-768", "hybrid", "ML-DSA-65", "SHA-256"),
+    "commercial": ("ML-KEM-768", "pure", "ML-DSA-65", "SHA-256"),
+}
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_tls_client_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy=policy, role="tls-client")["recommendations"][policy]
+    kem, mode, sig, hash_ = _EXPECTED_TLS[policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "tls-client"
+    assert sub["kem"]["algorithm"] == kem
+    assert sub["kem"]["mode"] == mode
+    assert sub["signature"]["algorithm"] == sig
+    assert sub["hash"]["algorithm"] == hash_
+    # A client verifies the server chain; it does not sign.
+    assert "verify" in sub["signature"]["reason"]
+    assert "sign p99" not in sub["signature"]["reason"]
+    assert all("sign p99" not in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_tls_client_reasons_differ_from_tls_server(policy: str) -> None:
+    r = _make_report(isa_tier="good")
+    client = pr.recommend(r, policy, "tls-client")["recommendations"][policy]
+    server = pr.recommend(r, policy, "tls-server")["recommendations"][policy]
+    assert client["signature"]["algorithm"] == server["signature"]["algorithm"]
+    assert client["signature"]["reason"] != server["signature"]["reason"]
+
+
+def test_tls_client_cnsa_poor_isa_caveat_references_verify() -> None:
+    r = _make_report(isa_tier="poor")
+    sub = pr.recommend(r, "cnsa-2.0", "tls-client")["recommendations"]["cnsa-2.0"]
+    assert any("ML-DSA-87 verify p99" in c for c in sub["caveats"])
+
+
+def test_tls_client_middlebox_caveat_for_ml_kem_1024() -> None:
+    r = _make_report(isa_tier="excellent")
+    sub = pr.recommend(r, "cnsa-2.0", "tls-client")["recommendations"]["cnsa-2.0"]
+    caveat = [c for c in sub["caveats"] if "middlebox" in c]
+    assert len(caveat) == 1
+    # FIPS 203: ML-KEM-1024 encapsulation key = 384*4 + 32 bytes.
+    assert "1568 bytes" in caveat[0]
+
+
+def test_tls_client_no_middlebox_caveat_for_pure_ml_kem_768() -> None:
+    """A pure ML-KEM-768 share (1184 bytes) stays under the threshold."""
+    r = _make_report(isa_tier="excellent")
+    for policy in ("nist-civilian", "commercial"):
+        sub = pr.recommend(r, policy, "tls-client")["recommendations"][policy]
+        assert not any("middlebox" in c for c in sub["caveats"])
+
+
+def test_tls_client_hybrid_share_size_includes_classical_component() -> None:
+    """X25519MLKEM768 = 1184 + 32 bytes, which crosses the threshold."""
+    r = _make_report(isa_tier="excellent")
+    sub = pr.recommend(r, "eu-anssi-bsi", "tls-client")["recommendations"][
+        "eu-anssi-bsi"
+    ]
+    assert any("1216 bytes" in c for c in sub["caveats"])
+
+
+def test_ml_kem_encaps_key_sizes_match_pqc_sizes() -> None:
+    assert (
+        pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-768"] == pr.PQC_SIZES["ML-KEM-768"]["pk"]
+    )
+    assert pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-1024"] == 1568
+
+
+def test_tls_client_missing_hybrid_groups_caveat_names_client() -> None:
+    r = _make_report(hybrid_groups=[])
+    sub = pr.recommend(r, "eu-anssi-bsi", "tls-client")["recommendations"][
+        "eu-anssi-bsi"
+    ]
+    assert any("hybrid TLS client" in c for c in sub["caveats"])
+
+
 @pytest.mark.parametrize(
-    "role", ["tls-client", "signing-service", "firmware-signing"]
+    "role", ["signing-service", "firmware-signing"]
 )
 def test_other_roles_return_stub(role: str) -> None:
     r = _make_report()

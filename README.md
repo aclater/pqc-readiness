@@ -155,7 +155,7 @@ Flags below are grouped by purpose.
 | --- | --- |
 | `--recommend` | Emit a host-specific PQC recommendation instead of the readiness report. |
 | `--policy {cnsa-2.0,nist-civilian,eu-anssi-bsi,commercial,auto}` | Compliance context for `--recommend`. `auto` (default) emits all four policies side by side. |
-| `--role {tls-server,tls-client,signing-service,firmware-signing}` | Role for `--recommend`. Only `tls-server` is fully implemented; other roles return a stub response. |
+| `--role {tls-server,tls-client,signing-service,firmware-signing}` | Role for `--recommend`. `tls-server` and `tls-client` are fully implemented; other roles return a stub response. See [docs/recommendation-policies.md](docs/recommendation-policies.md#roles). |
 
 ### Output
 
