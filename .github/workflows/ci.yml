@@ -37,7 +37,9 @@ jobs:
           # jsonschema + referencing are dev-only; the runtime stays
           # stdlib + optional numpy.  jsonschema is needed by the CBOM
           # tests to validate against the bundled CycloneDX 1.6 schema.
-          pip install pytest ruff mypy numpy jsonschema referencing
+          # ruff and mypy are pinned: an unpinned upgrade changed ruff's
+          # default rule set and broke lint on unchanged code (#97).
+          pip install pytest ruff==0.17.0 mypy==2.4.0 numpy jsonschema referencing
 
       - name: ruff check
         run: ruff check pqc_readiness.py tests/
