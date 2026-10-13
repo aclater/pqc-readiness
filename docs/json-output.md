@@ -75,6 +75,7 @@ nothing was found.
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
+| `boot_chain` | Boot chain trust anchors and their algorithms: UEFI Secure Boot state and the PK / KEK / db / dbx / MOK signature lists, kernel module signing, IMA / EVM, kernel lockdown and TPM 2.0 post-quantum support. Populated only when `--scan-boot-chain` is set (`{}` otherwise). Keys: `available`, `secure_boot`, `module_signing`, `ima_evm`, `lockdown`, `tpm`, `summary` (see [Nested fields](#boot_chain)). |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -578,6 +579,74 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | `pqc_capable` | bool | Any install meets the first threshold. |
 | `version_thresholds` | object | As above, `{minimum_version, note}` per capability. |
 | `reference` | string | JEP / Go release-note URLs. |
+
+### `boot_chain`
+
+`{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount`, `/boot`, `/lib/modules` and `/usr/lib/modules` are read under the prefix along with `/sys` and `/proc`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False off Linux; then only `reason` follows. |
+| `reason` | string | Why the inventory did not run, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `secure_boot` | object | UEFI Secure Boot (below). |
+| `module_signing` | object | Kernel module signing (below). |
+| `ima_evm` | object | IMA / EVM state (below). |
+| `lockdown` | string \| null | Active kernel lockdown mode from `/sys/kernel/security/lockdown` (`none`, `integrity`, `confidentiality`); null when unreadable. |
+| `tpm` | object | TPM 2.0 revision and post-quantum algorithms (below). |
+| `summary` | object | `{secure_boot_certificates, secure_boot_certificate_categories, secure_boot_all_classical, secure_boot_algorithms, module_signing_pqc, classical_layers}`. Certificates are counted across the databases that authorise boot code (`PK`, `KEK`, `db`, `MokList`); `secure_boot_certificate_categories` uses the trust-store buckets (`classical`, `hybrid_composite`, `pure_pqc`); `secure_boot_algorithms` lists e.g. `RSA-2048`, `EC P-384`. `classical_layers` lists every layer with no post-quantum key: `secure_boot`, `module_signing`, `ima`, `tpm` (SARIF `pqc-020`). |
+
+`secure_boot` (efivarfs; UEFI 2.10 EFI_SIGNATURE_LIST; GUIDs from edk2 and shim):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False on legacy BIOS boot or without efivarfs. |
+| `firmware` | string | `uefi` or `bios`. |
+| `reason` | string | Why `available` is false. |
+| `enabled` | bool \| null | The `SecureBoot` variable. |
+| `setup_mode` | bool \| null | The `SetupMode` variable (true: no PK enrolled, keys can be changed freely). |
+| `shim_validation_disabled` | bool | shim's `MokSBStateRT` says signature validation is disabled. |
+| `databases` | object | `PK`, `KEK`, `db`, `dbx`, `MokList` (shim `MokListRT`), `MokListX` (shim `MokListXRT`). Each is `{present: false}` when absent, otherwise `{present, source, certificates, sha256_hashes, rsa2048_keys, other_entries, errors}`: `source` is `efivars` or `mok-variables` (the kernel's complete copy of the MOK lists); `certificates` holds `{subject, issuer, sha256, not_after, key_algorithm, key_size, category}` for each X.509 entry; `sha256_hashes` and `rsa2048_keys` count those entry types; `other_entries` maps other signature-type GUIDs to counts; `errors` lists malformed lists or entries. `dbx` and `MokListX` revoke, so they don't count towards `summary`. |
+
+`module_signing`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `kernel_release` | string | Running kernel release (`/proc/sys/kernel/osrelease`). |
+| `kernel_config_source` | string \| null | Where the kernel config was read: `/boot/config-<release>`, `/lib/modules/<release>/config` or `/proc/config.gz`. |
+| `module_sig` | bool \| null | `CONFIG_MODULE_SIG`. |
+| `module_sig_force` | bool \| null | `CONFIG_MODULE_SIG_FORCE`. |
+| `module_sig_hash` | string \| null | `CONFIG_MODULE_SIG_HASH`, e.g. `sha512`. |
+| `key_types_configured` | list[string] | `CONFIG_MODULE_SIG_KEY_TYPE_*` set to `y`: `RSA`, `ECDSA`, `MLDSA_44`, `MLDSA_65`, `MLDSA_87` (the ML-DSA options exist from Linux 7.0). |
+| `sig_enforce` | bool \| null | `/sys/module/module/parameters/sig_enforce`. |
+| `sample_module` | object \| null | The first module from `modules.dep` whose signature could be read: `{module, signed}`, plus for signed modules `{format, parsed}` and, when the PKCS#7 signature parsed, `{signer, digest_algorithm, signature_algorithm, signature_algorithm_oid, key_size, category}` (`key_size` is the RSA modulus size implied by the signature length; `category` is `classical` or `pure_pqc`), or `reason` when it did not. `.ko.zst` modules need Python 3.14 (`compression.zstd`). |
+| `pqc` | bool \| null | The sample module, else the configured key type, is ML-DSA. |
+
+`ima_evm`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `ima_securityfs` | bool | `/sys/kernel/security/ima` exists. |
+| `cmdline` | object | IMA / EVM kernel parameters present on `/proc/cmdline`: `ima_policy`, `ima_appraise`, `ima_hash`, `ima_template`, `evm`. |
+| `policy` | object | `{readable: false}` unless the IMA policy is readable (root, `CONFIG_IMA_READ_POLICY`); then `{readable, rules, measure_rules, appraise_rules, signature_required_rules}` (`signature_required_rules` counts `appraise_type=imasig`). |
+| `evm_mode` | int \| null | Value of the EVM securityfs file (a bitmask; 0 means EVM is not initialised). |
+| `certificates` | list[object] | IMA code-signing certificates under `/etc/keys/ima` (Fedora ships them), same fields as the Secure Boot certificates plus `path`. |
+
+`tpm` (one read-only `TPM2_GetCapability` on `/dev/tpmrm0`; needs root or the `tss` group):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `present` | bool | `/sys/class/tpm/tpm0` exists. |
+| `version_major` | int \| null | `tpm_version_major` from sysfs (1 or 2). |
+| `queried` | bool | The capability query ran. |
+| `reason` | string | Why it did not. |
+| `family` | string \| null | `TPM_PT_FAMILY_INDICATOR`, e.g. `2.0`. |
+| `spec_revision` | string \| null | `TPM_PT_REVISION` / 100, e.g. `1.59`, `1.85`. |
+| `spec_year` | int \| null | `TPM_PT_YEAR`. |
+| `manufacturer` | string \| null | `TPM_PT_MANUFACTURER` as ASCII, e.g. `IBM`, `INTC`. |
+| `pqc_algorithms` | list[string] | Post-quantum algorithms the TPM implements: `ML-KEM`, `ML-DSA`, `HashML-DSA` (TPM 2.0 Library v1.85 IDs 0x00A0-0x00A2). |
+| `pqc_capable` | bool | Any of them. |
+| `spec_note` | string | Where the v1.85 algorithm IDs come from (a release candidate, per wolfTPM's implementation). |
 
 ### `os_release`
 
