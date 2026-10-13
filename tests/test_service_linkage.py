@@ -365,7 +365,7 @@ def test_go_tls_kex_default(
 
 
 def test_environ_only_godebug_is_extracted() -> None:
-    environ = b"SECRET_TOKEN=hunter2\0GODEBUG=tlsmlkem=0\0PATH=/usr/bin\0"
+    environ = b"SECRET_TOKEN=hunter2\0GODEBUG=tlsmlkem=0\0PATH=/usr/bin\0"  # pragma: allowlist secret
     assert rs._go_godebug_from_environ(environ) == "tlsmlkem=0"
 
 
@@ -468,7 +468,7 @@ def _populate(host: FakeHost) -> None:
         sockets=(1003,),
         exe=gosrv,
         cgroup="0::/system.slice/gosrv.service\n",
-        environ=b"API_KEY=do-not-leak\0GODEBUG=tlsmlkem=0\0",
+        environ=b"API_KEY=do-not-leak\0GODEBUG=tlsmlkem=0\0",  # pragma: allowlist secret
     )
 
 
