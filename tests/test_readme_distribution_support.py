@@ -107,3 +107,31 @@ def test_named_workflow_files_actually_exist() -> None:
         f"README Distribution support § references workflow files that "
         f"do not exist: {missing}. Existing workflows: {sorted(workflow_files)}."
     )
+
+
+WEEKLY_PHRASE = re.compile(r"\bweekly\b", re.IGNORECASE)
+
+
+def test_weekly_cadence_claims_reference_scheduled_workflow() -> None:
+    """Any tier row whose cadence cell claims weekly validation must name
+    a workflow file that actually has a `schedule:` trigger (#83).
+
+    The Tier 2 row said "Periodic (weekly)" for months while no workflow
+    in the repo had a cron trigger; this pins the claim to a real one.
+    """
+    offenders: list[tuple[str, str]] = []
+    for tier, _distros, cadence in _tier_rows():
+        if not WEEKLY_PHRASE.search(cadence):
+            continue
+        scheduled = [
+            name
+            for name in WORKFLOW_REF.findall(cadence)
+            if (WORKFLOWS_DIR / name).is_file()
+            and re.search(r"^\s*schedule:", (WORKFLOWS_DIR / name).read_text(), re.MULTILINE)
+        ]
+        if not scheduled:
+            offenders.append((tier, cadence))
+    assert not offenders, (
+        "README tier rows claim weekly validation without naming a "
+        f"workflow that has a schedule: trigger. Offending rows: {offenders}"
+    )

@@ -202,7 +202,7 @@ CI or in maintainer testing — not a support contract.
 | Tier | Distros | Validation cadence |
 | --- | --- | --- |
 | **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every PR runs `pytest` + `ruff` + `mypy --strict` on the GitHub-hosted `ubuntu-latest` runner under CPython 3.11 / 3.12 / 3.13 (`.github/workflows/ci.yml`); per-OS validation against the actual Tier 1 images runs out-of-band — see *"What 'every change' actually means"* below. |
-| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Periodic (weekly) — fixes accepted. EL8 is additionally covered every PR: `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the resulting image. |
+| **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 25.10, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Weekly — `.github/workflows/ci-tier2-weekly.yml` runs the full `pytest` suite inside each distro's stock container image every Monday (non-blocking; fixes accepted). EL8 is additionally covered every PR: `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the resulting image. |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
 Cross-distro probing uses a single `detect_os()` source of truth that
@@ -234,6 +234,12 @@ distros happens out-of-band via the
 [`aclater/distro-matrix`](https://github.com/aclater/distro-matrix)
 libvirt + KVM runner; surfacing those runs as a CI artefact is tracked
 in [issue #41](https://github.com/aclater/pqc-readiness/issues/41).
+Separately, `.github/workflows/ci-tier2-weekly.yml` runs the `pytest`
+suite every Monday inside the stock *container* image of each Tier 2
+distro (Fedora, Rocky / AlmaLinux 9 and 10, Debian 13, Ubuntu 25.10,
+SLES via SUSE BCI). That exercises each distro's Python, OpenSSL and
+OpenSSH userspace, but not a booted kernel; it can also be run on
+demand from the Actions tab (`workflow_dispatch`).
 The phrase "Every change (CI)" in earlier revisions of this table
 overstated what GitHub Actions exercises today — see
 [issue #44](https://github.com/aclater/pqc-readiness/issues/44) for

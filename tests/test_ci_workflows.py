@@ -145,3 +145,16 @@ def test_containers_workflow_runs_pytest_inside_image(image: str) -> None:
     assert f"FROM pqc-readiness:{image}" in body
     assert f"pqc-readiness:{image}-test" in body
     assert "python3 -m pytest tests/ -q" in body
+
+
+def test_tier2_weekly_workflow_is_scheduled_and_non_blocking() -> None:
+    """ci-tier2-weekly.yml backs the README's Tier 2 "weekly" promise
+    (#83): it must run on a weekly cron, be runnable on demand, and not
+    let one broken distro fail the others."""
+    body = _read_workflow("ci-tier2-weekly.yml")
+    assert 'cron: "0 6 * * 1"' in body
+    assert "workflow_dispatch:" in body
+    assert "continue-on-error: true" in body
+    assert "fail-fast: false" in body
+    for distro in ("fedora", "rocky", "almalinux", "debian", "ubuntu", "bci"):
+        assert distro in body, f"Tier 2 distro image missing: {distro}"
