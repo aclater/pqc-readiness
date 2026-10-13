@@ -34,6 +34,17 @@ def _valid_report(
     }
 
 
+_ROLLUP_COUNTER_KEYS = (
+    "by_arch",
+    "by_os_release_id",
+    "by_isa_tier",
+    "by_verdict",
+    "by_runtime_environment",
+    "accelerator_kinds_host_count",
+    "host_fs_detections_unavailable_host_count",
+)
+
+
 def test_run_aggregator_empty_dir_emits_zero_hosts(tmp_path: Path) -> None:
     out_text, exit_code = pr.run_aggregator(tmp_path, output="json")
     assert exit_code == 0
@@ -42,6 +53,34 @@ def test_run_aggregator_empty_dir_emits_zero_hosts(tmp_path: Path) -> None:
     assert rollup["skipped"] == []
     assert rollup["by_arch"] == {}
     assert rollup["replace_required_count"] == 0
+
+
+def test_run_aggregator_empty_dir_emits_every_rollup_key_empty(
+    tmp_path: Path,
+) -> None:
+    """A DaemonSet volume before any pod reports is an empty dir.  The
+    rollup must still carry the full key set (zeroed) so dashboards and
+    CSV loaders see a stable shape rather than missing columns."""
+    out_text, _ = pr.run_aggregator(tmp_path, output="json")
+    rollup = json.loads(out_text)
+    assert rollup["schema_version"] == pr.SCHEMA_VERSION
+    for key in _ROLLUP_COUNTER_KEYS:
+        assert rollup[key] == {}, key
+    assert rollup["unique_cpu_models"] == []
+    assert rollup["replace_required_count"] == 0
+    assert rollup["skipped"] == []
+
+
+def test_aggregate_reports_empty_list_matches_run_aggregator_shape(
+    tmp_path: Path,
+) -> None:
+    """Programmatic callers hit aggregate_reports directly; its empty-input
+    result must have the same keys as the run_aggregator path (minus the
+    `skipped` list run_aggregator adds)."""
+    direct = pr.aggregate_reports([])
+    via_dir = json.loads(pr.run_aggregator(tmp_path, output="json")[0])
+    via_dir.pop("skipped")
+    assert direct == via_dir
 
 
 def test_run_aggregator_single_host(tmp_path: Path) -> None:
