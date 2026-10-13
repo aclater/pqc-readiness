@@ -516,11 +516,36 @@ def test_parse_cgroup_for_container_bare_metal() -> None:
 
 
 def test_parse_rpm_packages() -> None:
-    text = "openssl 3.5.5\nnss 3.122.1\nnss 3.122.1\njava-21-openjdk 21.0.5\n"
+    # Fixture mirrors `rpm -qa --queryformat '%{NAME} %{VERSION}\\n'` on a
+    # RHEL 10 host, incl. a multi-arch duplicate (openssl-libs i686+x86_64).
+    text = (FIXTURES / "packages" / "rpm-qa-sample.txt").read_text()
     out = pr.parse_whitespace_pkg_lines(text)
-    assert {"name": "openssl", "version": "3.5.5"} in out
-    assert {"name": "java-21-openjdk", "version": "21.0.5"} in out
-    assert len(out) == 4
+    assert {"name": "openssl-libs", "version": "3.5.1"} in out
+    assert {"name": "java-21-openjdk", "version": "21.0.8.0.9"} in out
+    assert {"name": "openssh-server", "version": "9.9p1"} in out
+    # The parser preserves duplicates; dedup happens in classify_bundled_crypto.
+    assert sum(1 for e in out if e["name"] == "openssl-libs") == 2
+    assert len(out) == 20
+    assert all(set(e.keys()) == {"name", "version"} for e in out)
+
+
+def test_classify_bundled_crypto_rhel_from_rpm_fixture() -> None:
+    text = (FIXTURES / "packages" / "rpm-qa-sample.txt").read_text()
+    pkgs = pr.parse_whitespace_pkg_lines(text)
+    out = pr.classify_bundled_crypto(pkgs, family="rhel")
+    names = [p["package"] for p in out]
+    assert len(names) == len(set(names))
+    assert set(names) == {
+        "java-21-openjdk",
+        "java-21-openjdk-headless",
+        "golang",
+        "nodejs",
+        "python3",
+        "firefox",
+    }
+    # System crypto libraries are not "bundled" crypto.
+    for system_lib in ("openssl", "openssl-libs", "nss", "gnutls", "libgcrypt"):
+        assert system_lib not in names
 
 
 def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
