@@ -6081,6 +6081,46 @@ def render_markdown(r: Report) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Exit code when --output FILE cannot be written after the probe ran.
+# Distinct from 0-4 so a write failure is never mistaken for a verdict.
+EXIT_OUTPUT_WRITE_FAILED = 5
+
+
+def _validate_output_path(
+    ap: argparse.ArgumentParser, output: str | None
+) -> Path | None:
+    """Fail fast (argparse usage error, exit 2) before any probing when
+    --output FILE cannot possibly be written.  The parent directory is
+    deliberately never created: a typo should not leave stray directory
+    trees on a customer host."""
+    if not output:
+        return None
+    path = Path(output)
+    parent = path.parent
+    if not parent.is_dir():
+        ap.error(f"--output: parent directory {str(parent)!r} does not exist")
+    if path.is_dir():
+        ap.error(f"--output: {output!r} is a directory")
+    if not os.access(parent, os.W_OK):
+        ap.error(f"--output: parent directory {str(parent)!r} is not writable")
+    return path
+
+
+def _emit(text: str, path: Path | None) -> bool:
+    """Write report text to stdout, or to --output FILE when given.
+    Returns False (after reporting on stderr) if the file write fails."""
+    if path is None:
+        print(text)
+        return True
+    try:
+        path.write_text(text + "\n")
+    except OSError as e:
+        print(f"--output: cannot write {str(path)!r}: {e}", file=sys.stderr)
+        return False
+    log.debug("wrote report to %s", path)
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -6129,8 +6169,18 @@ def main() -> int:
             "behavior."
         ),
     )
-    ap.add_argument(
+    dest = ap.add_mutually_exclusive_group()
+    dest.add_argument(
         "--save", action="store_true", help="save JSON to ~/.cache/pqc-readiness/"
+    )
+    dest.add_argument(
+        "--output",
+        metavar="FILE",
+        help=(
+            "write the report (any format, incl. --aggregate/--recommend/"
+            "--ansible) to FILE instead of stdout; the parent directory "
+            "must already exist.  Mutually exclusive with --save"
+        ),
     )
     ap.add_argument("--quiet", action="store_true", help="print only verdict line")
     ap.add_argument("--no-color", action="store_true", help="disable ANSI color")
@@ -6218,6 +6268,10 @@ def main() -> int:
         format="%(name)s: %(levelname)s: %(message)s",
         stream=sys.stderr,
     )
+    out_path = _validate_output_path(ap, args.output)
+
+    def emit(text: str) -> bool:
+        return _emit(text, out_path)
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
     if args.aggregate:
@@ -6226,8 +6280,7 @@ def main() -> int:
             print(f"--aggregate: {d} is not a directory", file=sys.stderr)
             return 2
         body, code = run_aggregator(d, output=args.aggregate_format)
-        print(body)
-        return code
+        return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
 
     global HOST_PREFIX
     if args.host_mount:
@@ -6235,6 +6288,7 @@ def main() -> int:
 
     C.configure(
         sys.stdout.isatty()
+        and out_path is None
         and not args.no_color
         and not args.json
         and not args.markdown
@@ -6392,31 +6446,34 @@ def main() -> int:
         # Ansible's set_fact / register patterns expect a top-level
         # ansible_facts wrapper.  The task must always exit 0 or Ansible
         # will mark the play as failed regardless of the report content.
-        print(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2))
+        if not emit(json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2)):
+            return EXIT_OUTPUT_WRITE_FAILED
         return 0
     if args.recommend:
         rec = recommend(r, policy=args.policy, role=args.role or "tls-server")
         if args.json:
-            print(json.dumps(rec, indent=2))
+            rec_text = json.dumps(rec, indent=2)
         elif args.markdown:
-            print(render_recommendation_markdown(r, rec))
+            rec_text = render_recommendation_markdown(r, rec)
         else:
-            print(render_recommendation_text(r, rec))
-        return 0
+            rec_text = render_recommendation_text(r, rec)
+        return 0 if emit(rec_text) else EXIT_OUTPUT_WRITE_FAILED
     if args.json:
-        print(json.dumps(asdict(r), indent=2))
+        report_text = json.dumps(asdict(r), indent=2)
     elif args.cbom:
-        print(render_cbom(r))
+        report_text = render_cbom(r)
     elif args.spdx:
-        print(render_spdx(r))
+        report_text = render_spdx(r)
     elif args.sarif:
-        print(render_sarif(r))
+        report_text = render_sarif(r)
     elif args.markdown:
-        print(render_markdown(r))
+        report_text = render_markdown(r)
     elif args.quiet:
-        print(r.verdict)
+        report_text = r.verdict
     else:
-        print(render_text(r))
+        report_text = render_text(r)
+    if not emit(report_text):
+        return EXIT_OUTPUT_WRITE_FAILED
 
     if args.fips_strict and r.fips.get("fence_check_active") and not r.fips.get(
         "algorithm_fence_engaged"

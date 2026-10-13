@@ -53,6 +53,7 @@ privileged DaemonSet on OpenShift.
 ./pqc-readiness --recommend           # policy-aware algorithm recommendation
 ./pqc-readiness --check excellent     # exit 4 if below tier (CI gating)
 ./pqc-readiness --save                # save JSON to ~/.cache/pqc-readiness/
+./pqc-readiness --json --output /var/lib/pqc/report.json  # write to a chosen path
 ./pqc-readiness --version             # script + JSON schema versions
 ./pqc-readiness --help                # full flag reference
 ```
@@ -164,6 +165,7 @@ Flags below are grouped by purpose.
 | `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--ansible` | See [Output formats](#output-formats). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
+| `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
 | `--quiet` | Print only the verdict line. |
 | `--no-color` | Disable ANSI colour. Auto-disabled when stdout is not a TTY. |
 
@@ -191,6 +193,7 @@ Flags below are grouped by purpose.
 | 2 | Marginal — works, plan for an accelerator at scale. |
 | 3 | Poor — software-only and too slow for production. |
 | 4 | `--check` threshold not met (tier below floor, or `cnsa-2.0` not compliant). |
+| 5 | `--output FILE` could not be written after the probe ran (e.g. disk full). An unusable path detected up front (missing parent directory, path is a directory) is a usage error and exits 2 before probing. |
 
 `--ansible` always exits 0; the verdict is in the JSON body.
 
