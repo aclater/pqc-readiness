@@ -151,6 +151,12 @@ def _spdx_host_package(
     pkg["software_primaryPurpose"] = "platform"
     if r.cpu_model:
         pkg["description"] = f"CPU: {r.cpu_model}"
+    if r.scan_mode:
+        # Offline --root scan (#152): no CPU; say what was scanned instead.
+        pkg["description"] = (
+            f"Offline filesystem tree {r.scan_mode.get('root')}: host hardware, "
+            "kernel, process and benchmark sections not applicable"
+        )
     return pkg
 
 

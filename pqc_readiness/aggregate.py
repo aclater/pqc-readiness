@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from . import observations as _observations
 from . import report as _report
 from . import registry as _registry
 
@@ -126,6 +127,17 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
             w.writerow([group, k, v])
     for cpu in rollup.get("unique_cpu_models", []):
         w.writerow(["unique_cpu_models", cpu, 1])
+    obs = rollup.get("observations")
+    if obs:
+        w.writerow(["observations_valid", "", obs.get("valid", 0)])
+        w.writerow(["observations_invalid", "", len(obs.get("invalid") or [])])
+        w.writerow(["observations_stale", "", obs.get("stale", 0)])
+        for group in ("by_status", "by_observed_class"):
+            for k, v in (obs.get(group) or {}).items():
+                w.writerow([f"observations_{group}", k, v])
+        for st in obs.get("states") or []:
+            key = f"capable={st['capable']};configured={st['configured']};observed={st['observed']}"
+            w.writerow(["observations_states", key, st["endpoints"]])
     return buf.getvalue()
 
 
@@ -165,15 +177,32 @@ def _iter_aggregator_reports(
         yield data
 
 
-def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
+def run_aggregator(
+    dir_path: Path,
+    output: str = "json",
+    observations: Path | None = None,
+    observations_max_age_days: float = _observations.DEFAULT_MAX_AGE_DAYS,
+) -> tuple[str, int]:
     """Read every *.json under DIR, validate schema, return (output, exit_code).
     Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view).
 
     Files are parsed and reduced one at a time (#88), so peak memory does
-    not grow with fleet size."""
+    not grow with fleet size.  With `observations`, the same pass also
+    builds a compact host index (names, listeners, certificate
+    fingerprints) and the rollup gains an `observations` join (#149).
+    Raises observations.ObservationFileError when the file is unusable."""
+    loaded = _observations.load_observations(observations) if observations else None
     skipped: list[dict[str, str]] = []
-    rollup = _aggregate_iter(_iter_aggregator_reports(dir_path, skipped))
+    reports: Iterable[dict[str, Any]] = _iter_aggregator_reports(dir_path, skipped)
+    index = _observations.HostIndex()
+    if loaded is not None:
+        reports = _observations.index_reports(reports, index)
+    rollup = _aggregate_iter(reports)
     rollup["skipped"] = skipped
+    if loaded is not None:
+        rollup["observations"] = _observations.join_observations(
+            loaded, index, max_age_days=observations_max_age_days
+        )
     if output == "csv":
         return aggregate_to_csv(rollup), 0
     return json.dumps(rollup, indent=2), 0
@@ -192,4 +221,25 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         choices=["json", "csv"],
         default="json",
         help="output format for --aggregate (default: json)",
+    )
+    ap.add_argument(
+        "--observations",
+        metavar="FILE",
+        help=(
+            "with --aggregate: join endpoint-observation records (what a "
+            "network-side tool saw an endpoint negotiate; schema in "
+            "docs/schemas/) to the hosts and listening services in the "
+            "reports"
+        ),
+    )
+    ap.add_argument(
+        "--observations-max-age-days",
+        type=float,
+        default=_observations.DEFAULT_MAX_AGE_DAYS,
+        metavar="DAYS",
+        help=(
+            "flag an observation as stale when it was made more than DAYS "
+            "before or after the matched host's report "
+            f"(default {_observations.DEFAULT_MAX_AGE_DAYS:g})"
+        ),
     )

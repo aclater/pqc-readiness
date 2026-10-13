@@ -11,6 +11,7 @@ from typing import Any
 from .. import report as _report
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
+from ..detect import config_sshd as _config_sshd
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +205,26 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="note",
         help_uri=f"{SARIF_HELP_BASE}/pqc-009-classical-package-signing-keys.md",
     ),
+    RuleSpec(
+        id="pqc-010-sshd-pqc-kex-not-offered",
+        short_description=(
+            "OpenSSH supports a PQC key exchange but sshd does not offer it "
+            "(or not first)."
+        ),
+        full_description=(
+            "The installed OpenSSH supports hybrid post-quantum key exchange "
+            "(mlkem768x25519-sha256 / mlkem1024nistp384-sha384, RFC 10042, "
+            "or sntrup761x25519-sha512), but sshd's effective KexAlgorithms "
+            "offers none of them, so SSH sessions to this host stay "
+            "quantum-vulnerable to harvest-now-decrypt-later.  Measured on "
+            "Rocky Linux 9.8 with the DEFAULT crypto policy.  Reported as a "
+            "note when a PQC method is offered but a classical one is "
+            "preferred.  Usually fixed by the system crypto policy "
+            "or KexAlgorithms in sshd_config."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-010-sshd-pqc-kex-not-offered.md",
+    ),
 )
 
 
@@ -242,6 +263,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     # PQC-capable library held back by system policy; a config change fixes
     # it, so just below pqc-001 (#104).
     "pqc-008-crypto-policy-blocks-pqc": "5.0",
+    # Same shape for SSH: PQC-capable OpenSSH held back by sshd config;
+    # a config change fixes it (#105).
+    "pqc-010-sshd-pqc-kex-not-offered": "5.0",
     # Appliance may not support PQC; unverified dependency: medium.
     "pqc-006-no-network-hsm-pqc-firmware": "4.3",
     # Hardware cannot run PQC in software at production speed: medium.
@@ -293,7 +317,7 @@ def _sarif_host_properties(r: _report.Report) -> dict[str, Any]:
     SARIF 2.1.0 lets us attach an arbitrary `properties` bag at the
     `run` level so consumers (Splunk dashboards, custom scripts) can
     correlate findings to a specific host without scraping `message`."""
-    return {
+    props: dict[str, Any] = {
         "host:hostname": r.hostname,
         "host:os": r.os,
         "host:arch": r.arch,
@@ -301,6 +325,12 @@ def _sarif_host_properties(r: _report.Report) -> dict[str, Any]:
         "tool:version": _report.SCRIPT_VERSION,
         "report:generated_at": r.generated_at,
     }
+    if r.scan_mode:
+        # Offline --root scan (#152): findings describe a filesystem tree.
+        props["scan:mode"] = r.scan_mode.get("mode")
+        props["scan:root"] = r.scan_mode.get("root")
+        props["scan:not_applicable"] = list(r.scan_mode.get("not_applicable") or [])
+    return props
 
 
 def build_findings(r: _report.Report) -> list[Finding]:
@@ -500,6 +530,38 @@ def build_findings(r: _report.Report) -> list[Finding]:
                         for k in sk.get("keys") or []
                         if k.get("key_id")
                     ),
+                },
+            )
+        )
+
+    sshd = r.sshd
+    gap = _config_sshd.sshd_pqc_gap(sshd)
+    if gap is not None:
+        offered = sshd.get("kex_offered") or []
+        if gap == "not_offered":
+            level, msg = (
+                "warning",
+                "sshd offers no post-quantum key exchange although the "
+                "installed OpenSSH supports one; offered: "
+                + ", ".join(offered[:4])
+                + (", ..." if len(offered) > 4 else "")
+                + ".",
+            )
+        else:
+            level, msg = (
+                "note",
+                f"sshd offers a post-quantum key exchange but prefers "
+                f"{sshd.get('first_kex')} first.",
+            )
+        findings.append(
+            Finding(
+                rule_id="pqc-010-sshd-pqc-kex-not-offered",
+                level=level,
+                message=msg,
+                properties={
+                    "sshd:source": sshd.get("source"),
+                    "sshd:first_kex": sshd.get("first_kex"),
+                    "sshd:gap": gap,
                 },
             )
         )

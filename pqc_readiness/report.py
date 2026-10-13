@@ -61,6 +61,8 @@ class Report:
     nss: dict[str, Any] = field(default_factory=dict)
     # System-wide crypto policy and what it lets PQC do (#104).
     crypto_policy: dict[str, Any] = field(default_factory=dict)
+    # Effective sshd key exchange + host keys (#105).
+    sshd: dict[str, Any] = field(default_factory=dict)
     kernel_info: dict[str, Any] = field(default_factory=dict)
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)
@@ -83,6 +85,9 @@ class Report:
     # Package-signing trust anchors (--scan-signing-keys, #153); {} when
     # not requested, like trust_store and packages.
     signing_keys: dict[str, Any] = field(default_factory=dict)
+    # GnuTLS / libgcrypt / libssh / wolfSSL / AWS-LC / JDK / Go PQC
+    # capability (--scan-crypto-libraries, #110); {} when not requested.
+    crypto_libraries: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is
@@ -101,3 +106,6 @@ class Report:
     # Operator-supplied facts from --inventory-metadata FILE (OMB M-23-02
     # items the host can't know); None when the flag isn't given (#144).
     inventory_metadata: dict[str, Any] | None = None
+    # --root PATH (#152): offline scan of a filesystem tree.  None for live
+    # scans; otherwise {mode, root, not_applicable, partial, reason}.
+    scan_mode: dict[str, Any] | None = None

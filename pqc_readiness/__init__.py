@@ -68,6 +68,7 @@ from .detect.runtime import (  # noqa: F401
     detect_runtime_environment,
     parse_cgroup_for_container,
 )
+from .detect.runtime_offline import collect_offline_report  # noqa: F401
 from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,
@@ -159,10 +160,21 @@ from .detect.protocols import (  # noqa: F401
     parse_ssh_kex,
     parse_ssh_version,
 )
+from .detect.protocols_libraries import (  # noqa: F401
+    LIBRARY_SPECS,
+    scan_crypto_libraries,
+)
 from .detect.protocols_signing import (  # noqa: F401
     parse_key_blob,
     parse_spki_pem,
     scan_signing_keys,
+)
+from .detect.config_sshd import (  # noqa: F401
+    describe_public_key,
+    detect_sshd,
+    parse_sshd_config,
+    parse_sshd_t,
+    sshd_pqc_gap,
 )
 from .detect.config_policy import (  # noqa: F401
     detect_crypto_policy,
@@ -337,6 +349,11 @@ __all__ = [
     "cpu_model",
     "detect_accelerators",
     "detect_crypto_policy",
+    "detect_sshd",
+    "parse_sshd_config",
+    "parse_sshd_t",
+    "describe_public_key",
+    "sshd_pqc_gap",
     "detect_fips_mode",
     "detect_fips_mode_from_providers_text",
     "detect_ipsec_pqc",

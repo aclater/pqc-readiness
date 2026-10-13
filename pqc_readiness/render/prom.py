@@ -89,23 +89,37 @@ def render_prometheus(r: _report.Report) -> str:
         "Scanner and JSON schema version of this report (value is always 1).",
         [({"version": _report.SCRIPT_VERSION, "schema": _report.SCHEMA_VERSION}, 1.0)],
     )
+    # An offline --root scan (#152) has no readiness tier, CPU or memory:
+    # every tier series is 0 and the host-only gauges are omitted, so a
+    # dashboard never reads a filesystem tree as an "excellent" host.
+    offline = bool(r.scan_mode)
+    if offline:
+        m.family(
+            "offline_scan",
+            "1 when this report describes a filesystem tree scanned offline (--root), not a live host.",
+            [({}, 1.0)],
+        )
     m.family(
         "verdict_tier",
         "Overall PQC readiness tier; the series for the current tier is 1.",
-        _state_set(_TIERS, _EXIT_CODE_TIER.get(r.exit_code, "poor"), "tier"),
+        _state_set(
+            _TIERS,
+            None if offline else _EXIT_CODE_TIER.get(r.exit_code, "poor"),
+            "tier",
+        ),
     )
     m.family(
         "isa_tier",
         "CPU instruction-set tier for PQC; the series for the current tier is 1.",
         _state_set(_TIERS, r.isa_tier, "tier"),
     )
-    if isinstance(r.isa_score, (int, float)):
+    if isinstance(r.isa_score, (int, float)) and not offline:
         m.family(
             "isa_score",
             "Weighted score of PQC-relevant CPU features.",
             [({}, float(r.isa_score))],
         )
-    replace = _bool(r.replace_required)
+    replace = None if offline else _bool(r.replace_required)
     if replace is not None:
         m.family(
             "replace_required",
