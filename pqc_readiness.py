@@ -4583,14 +4583,12 @@ def overall_verdict(
 #   auto          Side-by-side recommendation under all four real
 #                 policies, with no single "preferred" answer.
 #
-# Roles:
-#   tls-server        fully implemented
-#   tls-client        stub: returns {"implemented": False, ...}
-#   signing-service   stub: returns {"implemented": False, ...}
-#   firmware-signing  stub: returns {"implemented": False, ...}
-#
-# The non-tls-server roles are intentionally stubs — see issue #13
-# acceptance criteria, which scope the first cut to tls-server.
+# Roles (all implemented except `generic`):
+#   tls-server        KEM + signature, weighted to sign/handshake cost
+#   tls-client        KEM + signature, weighted to verify cost (#90)
+#   signing-service   signature only (kem.mode "n/a"), sign throughput (#91)
+#   firmware-signing  signature only; SLH-DSA primary outside CNSA 2.0 (#92)
+#   generic           stub: returns {"implemented": False, ...}
 
 POLICY_PREFERENCES: dict[str, dict[str, Any]] = {
     "cnsa-2.0": {
