@@ -1,0 +1,214 @@
+{
+  "exit_code": 1,
+  "report": {
+    "accelerators": [],
+    "arch": "x86_64",
+    "benchmark": null,
+    "benchmark_tls_handshake": null,
+    "cnsa_2_0": {
+      "hash_compliant": false,
+      "kem_compliant": false,
+      "notes": [
+        "OpenSSL not available; cannot verify ML-KEM-1024 (KEM) or ML-DSA-87 (signature) availability.",
+        "/proc/crypto not available; cannot verify AES-256 (symmetric) or hardware-accelerated SHA-384/SHA-512 (hash)."
+      ],
+      "requirements": {
+        "hash": [
+          "SHA-384",
+          "SHA-512"
+        ],
+        "kem": [
+          "ML-KEM-1024"
+        ],
+        "signature": [
+          "ML-DSA-87"
+        ],
+        "symmetric": [
+          "AES-256"
+        ]
+      },
+      "signature_compliant": false,
+      "status": "unknown",
+      "symmetric_compliant": false
+    },
+    "cores_logical": 16,
+    "cores_physical": 8,
+    "cpu_freq_mhz": 3000.0,
+    "cpu_model": "Stub CPU @ 3.0GHz",
+    "exit_code": 1,
+    "fips": {
+      "enabled": false,
+      "sources": []
+    },
+    "fips_pqc_conflict": null,
+    "host_fs_detections_unavailable": {},
+    "hostname": "golden-host",
+    "hsm_present_but_not_pqc": false,
+    "ipsec_pqc": {
+      "available": false
+    },
+    "isa_features": {
+      "aes": {
+        "name": "AES-NI",
+        "purpose": "AES hardware (DRBG, hybrid)"
+      },
+      "avx2": {
+        "name": "AVX2",
+        "purpose": "256-bit SIMD; baseline for optimized PQC"
+      },
+      "pclmulqdq": {
+        "name": "PCLMULQDQ",
+        "purpose": "Carry-less multiply"
+      },
+      "sha_ni": {
+        "name": "SHA-NI",
+        "purpose": "SHA-256 hardware (hybrid TLS)"
+      }
+    },
+    "isa_reason": "AVX2 + AES-NI + PCLMULQDQ - production-capable in software",
+    "isa_score": 6,
+    "isa_tier": "good",
+    "kernel_crypto_hw": [
+      "aesni_intel"
+    ],
+    "kernel_info": {
+      "release": "6.12.0-stub"
+    },
+    "ktls_supported": true,
+    "mem_avail_gb": 24.0,
+    "mem_total_gb": 32.0,
+    "memory": {
+      "reason": "32.0 GiB >= 16 GiB threshold for role=generic",
+      "tier": "good",
+      "tier_basis": {
+        "role": "generic",
+        "role_supplied": false,
+        "threshold_gib_good": 16.0
+      },
+      "tier_by_role": {
+        "firmware-signing": {
+          "reason": "32.0 GiB >= 2 GiB threshold for role=firmware-signing",
+          "threshold_gib_good": 2.0,
+          "tier": "good"
+        },
+        "generic": {
+          "reason": "32.0 GiB >= 16 GiB threshold for role=generic",
+          "threshold_gib_good": 16.0,
+          "tier": "good"
+        },
+        "signing-service": {
+          "reason": "32.0 GiB >= 8 GiB threshold for role=signing-service",
+          "threshold_gib_good": 8.0,
+          "tier": "good"
+        },
+        "tls-client": {
+          "reason": "32.0 GiB >= 4 GiB threshold for role=tls-client",
+          "threshold_gib_good": 4.0,
+          "tier": "good"
+        },
+        "tls-server": {
+          "reason": "32.0 GiB >= 16 GiB threshold for role=tls-server",
+          "threshold_gib_good": 16.0,
+          "tier": "good"
+        }
+      }
+    },
+    "memory_bandwidth_gb_s": null,
+    "memory_bandwidth_method": null,
+    "nss": {
+      "available": false
+    },
+    "openssl": {
+      "kem_algorithms": [
+        "ML-KEM-512",
+        "ML-KEM-768",
+        "ML-KEM-1024"
+      ],
+      "pqc_native": true,
+      "signature_algorithms": [
+        "ML-DSA-44",
+        "ML-DSA-65",
+        "ML-DSA-87"
+      ],
+      "tls_groups": {
+        "classical": [
+          "X25519",
+          "secp256r1"
+        ],
+        "hybrid": [
+          "X25519MLKEM768"
+        ],
+        "pure_pqc": [
+          "MLKEM768"
+        ]
+      },
+      "version": "OpenSSL 3.5.0 stub"
+    },
+    "os": "Red Hat Enterprise Linux 10.0 (Stub)",
+    "os_release": {
+      "family": "rhel",
+      "id": "rhel",
+      "pretty_name": "Red Hat Enterprise Linux 10.0 (Stub)",
+      "version_id": "10.0"
+    },
+    "packages": {},
+    "per_algo": {},
+    "pkcs11_modules": [],
+    "pqc_sizes": {
+      "ML-DSA-65": {
+        "pk": 1952,
+        "role": "general sig",
+        "sig": 3309,
+        "sk": 4032
+      },
+      "ML-DSA-87": {
+        "pk": 2592,
+        "role": "high-sec sig",
+        "sig": 4627,
+        "sk": 4896
+      },
+      "ML-KEM-768": {
+        "ct": 1088,
+        "pk": 1184,
+        "role": "TLS KEM",
+        "shared": 32,
+        "sk": 2400
+      },
+      "SLH-DSA-SHA2-128f": {
+        "pk": 32,
+        "role": "fast/large sig",
+        "sig": 17088,
+        "sk": 64
+      },
+      "SLH-DSA-SHA2-128s": {
+        "pk": 32,
+        "role": "small/slow sig",
+        "sig": 7856,
+        "sk": 64
+      },
+      "SLH-DSA-SHA2-256f": {
+        "pk": 64,
+        "role": "high-sec sig",
+        "sig": 49856,
+        "sk": 128
+      }
+    },
+    "production_estimate": {},
+    "replace_required": false,
+    "runtime_environment": {
+      "environment": "bare_metal",
+      "evidence": []
+    },
+    "schema_version": "1.3",
+    "ssh_pqc": {
+      "available": false
+    },
+    "tpm_pqc": {
+      "present": false
+    },
+    "trust_store": {},
+    "verdict": "GOOD - production-capable in software",
+    "verdict_caveat": "Verdict reflects CPU instruction-set and memory only; no PQC microbenchmark was run on this host.  Re-run with --bench for measured per-algorithm rates and tier validation.",
+    "verdict_reason": "Fine for TLS termination at moderate QPS; benchmark before committing to SLH-DSA. ISA: AVX2 + AES-NI + PCLMULQDQ - production-capable in software. Memory: 32.0 GiB >= 16 GiB threshold for role=generic."
+  }
+}
