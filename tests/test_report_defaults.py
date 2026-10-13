@@ -57,7 +57,7 @@ def test_main_json_without_bench_emits_null(
 def test_schema_version_is_1_2() -> None:
     """#70/#82/#87 are additive or null-normalising changes: minor bump
     per docs/schema-alignment.md, not a major bump."""
-    assert pr.SCHEMA_VERSION == "1.3"
+    assert pr.SCHEMA_VERSION == "1.4"
 
 
 DOCS_DIR = Path(pr.__file__).resolve().parent / "docs"
