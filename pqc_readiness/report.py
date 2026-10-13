@@ -59,11 +59,17 @@ class Report:
     ssh_pqc: dict[str, Any] = field(default_factory=dict)
     ipsec_pqc: dict[str, Any] = field(default_factory=dict)
     nss: dict[str, Any] = field(default_factory=dict)
+    # System-wide crypto policy and what it lets PQC do (#104).
+    crypto_policy: dict[str, Any] = field(default_factory=dict)
     kernel_info: dict[str, Any] = field(default_factory=dict)
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
+    crypto_material: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
+    # --scan-services (#111): listening sockets -> owning process -> the
+    # crypto library it maps (or Go toolchain).  {} when not requested.
+    service_crypto_linkage: dict[str, Any] = field(default_factory=dict)
     # Per-detection `unavailable_in_container` flags for host-fs-dependent
     # probes (PCI accel, kernel crypto, ktls, FIPS, TPM, kernel info, OS
     # release, PKCS#11 modules).  Populated only when the report was

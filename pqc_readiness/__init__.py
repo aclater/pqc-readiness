@@ -68,6 +68,7 @@ from .detect.runtime import (  # noqa: F401
     detect_runtime_environment,
     parse_cgroup_for_container,
 )
+from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,
     PKG_MANAGER_ORDER,
@@ -158,6 +159,10 @@ from .detect.protocols import (  # noqa: F401
     parse_ssh_kex,
     parse_ssh_version,
 )
+from .detect.config_policy import (  # noqa: F401
+    detect_crypto_policy,
+    policy_blocks_capable_pqc,
+)
 from .detect.certs import (  # noqa: F401
     COMPOSITE_SIG_OID_RE,
     DERError,
@@ -168,8 +173,10 @@ from .detect.certs import (  # noqa: F401
     TRUST_STORE_MAX_FILE_BYTES,
     categorise_cert_oids,
     cert_algorithm_oids,
+    parse_certificate,
     scan_trust_store,
 )
+from .detect.certs_discovery import scan_crypto_material  # noqa: F401
 from .verdict import (  # noqa: F401
     CNSA_2_0_REQUIREMENTS,
     evaluate_cnsa_2_0,
@@ -324,6 +331,7 @@ __all__ = [
     "cpu_freq_mhz",
     "cpu_model",
     "detect_accelerators",
+    "detect_crypto_policy",
     "detect_fips_mode",
     "detect_fips_mode_from_providers_text",
     "detect_ipsec_pqc",
@@ -384,6 +392,7 @@ __all__ = [
     "parse_ssh_version",
     "parse_whitespace_pkg_lines",
     "per_algo_verdict",
+    "policy_blocks_capable_pqc",
     "production_estimate",
     "query_rpm_named",
     "query_rpm_named_from_inventory",
@@ -407,7 +416,10 @@ __all__ = [
     "run_classical_baseline",
     "run_pqc_bench",
     "run_tls_handshake_bench",
+    "parse_certificate",
+    "scan_crypto_material",
     "scan_packages",
+    "scan_services",
     "scan_trust_store",
     "set_host_prefix",
 ]

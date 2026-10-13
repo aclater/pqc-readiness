@@ -1,0 +1,67 @@
+  { 1.2.840.113549.1.1.1, 2.5.8.1.1, RSA, rsaEncryption } @ default
+  { 1.2.840.10045.2.1, EC, id-ecPublicKey } @ default
+  { 1.3.101.110, X25519 } @ default
+  { 1.3.101.111, X448 } @ default
+  { 2.16.840.1.101.3.4.4.1, id-alg-ml-kem-512, ML-KEM-512, MLKEM512 } @ default
+  { 2.16.840.1.101.3.4.4.2, id-alg-ml-kem-768, ML-KEM-768, MLKEM768 } @ default
+  { 2.16.840.1.101.3.4.4.3, id-alg-ml-kem-1024, ML-KEM-1024, MLKEM1024 } @ default
+  X25519MLKEM768 @ default
+  X448MLKEM1024 @ default
+  SecP256r1MLKEM768 @ default
+  SecP384r1MLKEM1024 @ default
+  efrodo640aes @ oqsprovider
+  p256_efrodo640aes @ oqsprovider
+  x25519_efrodo640aes @ oqsprovider
+  efrodo640shake @ oqsprovider
+  p256_efrodo640shake @ oqsprovider
+  x25519_efrodo640shake @ oqsprovider
+  efrodo976aes @ oqsprovider
+  p384_efrodo976aes @ oqsprovider
+  x448_efrodo976aes @ oqsprovider
+  efrodo976shake @ oqsprovider
+  p384_efrodo976shake @ oqsprovider
+  x448_efrodo976shake @ oqsprovider
+  efrodo1344aes @ oqsprovider
+  p521_efrodo1344aes @ oqsprovider
+  efrodo1344shake @ oqsprovider
+  p521_efrodo1344shake @ oqsprovider
+  frodo640aes @ oqsprovider
+  p256_frodo640aes @ oqsprovider
+  x25519_frodo640aes @ oqsprovider
+  frodo640shake @ oqsprovider
+  p256_frodo640shake @ oqsprovider
+  x25519_frodo640shake @ oqsprovider
+  frodo976aes @ oqsprovider
+  p384_frodo976aes @ oqsprovider
+  x448_frodo976aes @ oqsprovider
+  frodo976shake @ oqsprovider
+  p384_frodo976shake @ oqsprovider
+  x448_frodo976shake @ oqsprovider
+  frodo1344aes @ oqsprovider
+  p521_frodo1344aes @ oqsprovider
+  frodo1344shake @ oqsprovider
+  p521_frodo1344shake @ oqsprovider
+  SecP256r1MLKEM512 @ oqsprovider
+  x25519_mlkem512 @ oqsprovider
+  bp256_mlkem512 @ oqsprovider
+  p384_mlkem768 @ oqsprovider
+  x448_mlkem768 @ oqsprovider
+  bp384_mlkem768 @ oqsprovider
+  p521_mlkem1024 @ oqsprovider
+  bp512_mlkem1024 @ oqsprovider
+  bikel1 @ oqsprovider
+  p256_bikel1 @ oqsprovider
+  x25519_bikel1 @ oqsprovider
+  bikel3 @ oqsprovider
+  p384_bikel3 @ oqsprovider
+  x448_bikel3 @ oqsprovider
+  bikel5 @ oqsprovider
+  p521_bikel5 @ oqsprovider
+  hqc1 @ oqsprovider
+  p256_hqc1 @ oqsprovider
+  x25519_hqc1 @ oqsprovider
+  hqc3 @ oqsprovider
+  p384_hqc3 @ oqsprovider
+  x448_hqc3 @ oqsprovider
+  hqc5 @ oqsprovider
+  p521_hqc5 @ oqsprovider
