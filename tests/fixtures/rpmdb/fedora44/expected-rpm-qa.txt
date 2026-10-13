@@ -1,0 +1,5 @@
+gnutls 3.8.13 1.fc44 x86_64
+gpg-pubkey 36f612dcf27f7d1a48a835e4dbfcf71c6d9f90a6 6786af3b (none)
+libgcrypt 1.12.2 1.fc44 x86_64
+openssl-libs 3.5.9 1.fc44 x86_64
+p11-kit 0.26.5 1.fc44 x86_64

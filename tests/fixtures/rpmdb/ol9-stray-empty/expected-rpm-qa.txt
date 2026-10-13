@@ -1,0 +1,3 @@
+gpg-pubkey 8d8b756f 61e772ef (none)
+libgcrypt 1.10.0 13.el9_8 x86_64
+openssl-libs 3.5.8 2.0.1.el9_8 x86_64
