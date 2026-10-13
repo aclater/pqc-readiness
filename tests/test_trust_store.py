@@ -503,6 +503,7 @@ def test_scan_trust_store_all_default_dirs_missing(monkeypatch, tmp_path) -> Non
         "scanned_count": 0,
         "max_certs": pr.TRUST_STORE_MAX_CERTS_DEFAULT,
         "truncated": False,
+        "certificates": [],
     }
 
 

@@ -9,7 +9,10 @@ import hashlib
 import logging
 import re
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
+
+from .. import _platform
 from .. import registry as _registry
 
 
@@ -151,6 +154,279 @@ def cert_algorithm_oids(der: bytes) -> list[str]:
     return [sig_oid, spki_oid]
 
 
+# ---------------------------------------------------------------------------
+# Full certificate parse (#108): identity, validity, key and CA status
+# ---------------------------------------------------------------------------
+
+# Attribute type OIDs rendered in RFC 4514 order (most specific first).
+_NAME_ATTRS: dict[str, str] = {
+    "2.5.4.3": "CN",
+    "2.5.4.5": "serialNumber",
+    "2.5.4.6": "C",
+    "2.5.4.7": "L",
+    "2.5.4.8": "ST",
+    "2.5.4.10": "O",
+    "2.5.4.11": "OU",
+    "1.2.840.113549.1.9.1": "emailAddress",
+    "0.9.2342.19200300.100.1.25": "DC",
+    "0.9.2342.19200300.100.1.1": "UID",
+}
+
+# DirectoryString / IA5 / BMP / Universal string tags.
+_STRING_TAGS = {
+    0x0C: "utf-8",
+    0x13: "ascii",
+    0x16: "ascii",
+    0x14: "latin-1",
+    0x1E: "utf-16-be",
+    0x1C: "utf-32-be",
+}
+
+# SubjectPublicKeyInfo algorithm OID -> (name, fixed key size in bits or None).
+# Sizes for RSA and EC are read from the key itself; PQC parameter sets
+# are named by OID (FIPS 203/204/205; RFC 9881 / RFC 9935 for X.509).
+_SPKI_ALGORITHMS: dict[str, tuple[str, int | None]] = {
+    "1.2.840.113549.1.1.1": ("RSA", None),
+    "1.2.840.113549.1.1.10": ("RSASSA-PSS", None),
+    "1.2.840.10045.2.1": ("EC", None),
+    "1.2.840.10040.4.1": ("DSA", None),
+    "1.3.101.110": ("X25519", 255),
+    "1.3.101.111": ("X448", 448),
+    "1.3.101.112": ("Ed25519", 255),
+    "1.3.101.113": ("Ed448", 448),
+    "2.16.840.1.101.3.4.3.17": ("ML-DSA-44", None),
+    "2.16.840.1.101.3.4.3.18": ("ML-DSA-65", None),
+    "2.16.840.1.101.3.4.3.19": ("ML-DSA-87", None),
+    "2.16.840.1.101.3.4.3.20": ("SLH-DSA-SHA2-128s", None),
+    "2.16.840.1.101.3.4.3.21": ("SLH-DSA-SHA2-128f", None),
+    "2.16.840.1.101.3.4.3.22": ("SLH-DSA-SHA2-192s", None),
+    "2.16.840.1.101.3.4.3.23": ("SLH-DSA-SHA2-192f", None),
+    "2.16.840.1.101.3.4.3.24": ("SLH-DSA-SHA2-256s", None),
+    "2.16.840.1.101.3.4.3.25": ("SLH-DSA-SHA2-256f", None),
+    "2.16.840.1.101.3.4.3.26": ("SLH-DSA-SHAKE-128s", None),
+    "2.16.840.1.101.3.4.3.27": ("SLH-DSA-SHAKE-128f", None),
+    "2.16.840.1.101.3.4.3.28": ("SLH-DSA-SHAKE-192s", None),
+    "2.16.840.1.101.3.4.3.29": ("SLH-DSA-SHAKE-192f", None),
+    "2.16.840.1.101.3.4.3.30": ("SLH-DSA-SHAKE-256s", None),
+    "2.16.840.1.101.3.4.3.31": ("SLH-DSA-SHAKE-256f", None),
+    "2.16.840.1.101.3.4.4.1": ("ML-KEM-512", None),
+    "2.16.840.1.101.3.4.4.2": ("ML-KEM-768", None),
+    "2.16.840.1.101.3.4.4.3": ("ML-KEM-1024", None),
+}
+
+_EC_CURVES: dict[str, tuple[str, int]] = {
+    "1.2.840.10045.3.1.7": ("P-256", 256),
+    "1.3.132.0.34": ("P-384", 384),
+    "1.3.132.0.35": ("P-521", 521),
+    "1.3.132.0.10": ("secp256k1", 256),
+    "1.3.36.3.3.2.8.1.1.7": ("brainpoolP256r1", 256),
+    "1.3.36.3.3.2.8.1.1.11": ("brainpoolP384r1", 384),
+    "1.3.36.3.3.2.8.1.1.13": ("brainpoolP512r1", 512),
+}
+
+_OID_BASIC_CONSTRAINTS = "2.5.29.19"
+_OID_KEY_USAGE = "2.5.29.15"
+
+
+def _der_string(tag: int, value: bytes) -> str:
+    enc = _STRING_TAGS.get(tag)
+    if enc is None:
+        return value.hex()
+    return value.decode(enc, "replace")
+
+
+def _rfc4514_escape(v: str) -> str:
+    out = []
+    for i, ch in enumerate(v):
+        if (
+            ch in ',+"\\<>;='
+            or (ch == "#" and i == 0)
+            or (ch == " " and i in (0, len(v) - 1))
+        ):
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _der_name(buf: bytes, start: int, stop: int) -> str:
+    """Render an X.501 Name as an RFC 4514 string (last RDN first)."""
+    rdns: list[str] = []
+    pos = start
+    while pos < stop:
+        tag, sstart, sstop = _der_tlv(buf, pos, stop)
+        if tag != 0x31:
+            raise DERError("RDN is not a SET")
+        parts: list[str] = []
+        apos = sstart
+        while apos < sstop:
+            tag, astart, astop = _der_tlv(buf, apos, sstop)
+            if tag != 0x30:
+                raise DERError("AttributeTypeAndValue is not a SEQUENCE")
+            otag, ostart, ostop = _der_tlv(buf, astart, astop)
+            if otag != 0x06:
+                raise DERError("attribute type is not an OID")
+            oid = _der_oid(buf[ostart:ostop])
+            vtag, vstart, vstop = _der_tlv(buf, ostop, astop)
+            parts.append(
+                f"{_NAME_ATTRS.get(oid, oid)}={_rfc4514_escape(_der_string(vtag, buf[vstart:vstop]))}"
+            )
+            apos = astop
+        rdns.append("+".join(parts))
+        pos = sstop
+    return ",".join(reversed(rdns))
+
+
+def _der_time(tag: int, value: bytes) -> str:
+    """UTCTime / GeneralizedTime (Z form, as RFC 5280 requires) -> ISO 8601 UTC."""
+    text = value.decode("ascii", "replace")
+    if not text.endswith("Z"):
+        raise DERError("certificate time is not in UTC (Z) form")
+    if tag == 0x17:  # UTCTime YYMMDDHHMMSSZ, RFC 5280 4.1.2.5.1
+        yy = int(text[:2])
+        text = ("19" if yy >= 50 else "20") + text
+    elif tag != 0x18:
+        raise DERError("validity time has an unknown tag")
+    try:
+        dt = datetime.strptime(text[:14], "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError as e:
+        raise DERError(f"bad certificate time {text!r}") from e
+    return dt.isoformat()
+
+
+def _der_int_bits(value: bytes) -> int:
+    return int.from_bytes(value, "big").bit_length()
+
+
+def _spki_key(buf: bytes, start: int, stop: int) -> tuple[str, str, int | None]:
+    """(algorithm OID, algorithm name, key size in bits or None) from a
+    SubjectPublicKeyInfo body.  Only public key data is read."""
+    tag, astart, astop = _der_tlv(buf, start, stop)
+    if tag != 0x30:
+        raise DERError("SPKI algorithm is not a SEQUENCE")
+    otag, ostart, ostop = _der_tlv(buf, astart, astop)
+    oid = _der_oid(buf[ostart:ostop])
+    name, size = _SPKI_ALGORITHMS.get(oid, (oid, None))
+    if oid == "1.2.840.10045.2.1" and ostop < astop:  # named curve parameter
+        ptag, pstart, pstop = _der_tlv(buf, ostop, astop)
+        if ptag == 0x06:
+            curve = _der_oid(buf[pstart:pstop])
+            cname, size = _EC_CURVES.get(curve, (curve, None))
+            name = f"EC {cname}"
+    elif name in ("RSA", "RSASSA-PSS"):
+        btag, bstart, bstop = _der_tlv(buf, astop, stop)  # subjectPublicKey BIT STRING
+        if btag == 0x03 and bstart < bstop:
+            rtag, rstart, rstop = _der_tlv(buf, bstart + 1, bstop)  # RSAPublicKey
+            if rtag == 0x30:
+                mtag, mstart, mstop = _der_tlv(buf, rstart, rstop)
+                if mtag == 0x02:
+                    size = _der_int_bits(buf[mstart:mstop])
+    return oid, name, size
+
+
+def _extensions(buf: bytes, start: int, stop: int) -> dict[str, bytes]:
+    """Map extension OID -> extnValue contents from an Extensions SEQUENCE."""
+    out: dict[str, bytes] = {}
+    tag, pos, end = _der_tlv(buf, start, stop)
+    if tag != 0x30:
+        raise DERError("Extensions is not a SEQUENCE")
+    while pos < end:
+        tag, estart, estop = _der_tlv(buf, pos, end)
+        otag, ostart, ostop = _der_tlv(buf, estart, estop)
+        oid = _der_oid(buf[ostart:ostop])
+        npos = ostop
+        ntag, nstart, nstop = _der_tlv(buf, npos, estop)
+        if ntag == 0x01:  # critical BOOLEAN
+            ntag, nstart, nstop = _der_tlv(buf, nstop, estop)
+        if ntag == 0x04:
+            out[oid] = buf[nstart:nstop]
+        pos = estop
+    return out
+
+
+def _is_ca(exts: dict[str, bytes]) -> bool:
+    """basicConstraints cA=TRUE (RFC 5280 4.2.1.9)."""
+    bc = exts.get(_OID_BASIC_CONSTRAINTS)
+    if not bc:
+        return False
+    tag, start, stop = _der_tlv(bc, 0, len(bc))
+    if tag != 0x30 or start >= stop:
+        return False
+    btag, bstart, bstop = _der_tlv(bc, start, stop)
+    return btag == 0x01 and bstop > bstart and bc[bstart] != 0
+
+
+def parse_certificate(der: bytes) -> dict[str, Any]:
+    """Parse an X.509 certificate's public fields in-process.
+
+    Returns the #138 per-certificate contract (`sha256`, `serial`,
+    `subject`, `issuer`, `not_before`, `not_after`, `category`) plus
+    `signature_algorithm_oid`, `key_algorithm`, `key_algorithm_oid`,
+    `key_size`, `is_ca`, `self_signed` and `role` (`ca` / `leaf`).  Raises DERError on malformed
+    input; never reads past the buffer."""
+    tag, cstart, cstop = _der_tlv(der, 0, len(der))
+    if tag != 0x30:
+        raise DERError("Certificate is not a SEQUENCE")
+    tag, pos, tstop = _der_tlv(der, cstart, cstop)
+    if tag != 0x30:
+        raise DERError("tbsCertificate is not a SEQUENCE")
+    if pos < tstop and der[pos] == 0xA0:  # [0] EXPLICIT version
+        pos = _der_tlv(der, pos, tstop)[2]
+    stag, sstart, sstop = _der_tlv(der, pos, tstop)
+    if stag != 0x02:
+        raise DERError("serialNumber is not an INTEGER")
+    serial = der[sstart:sstop].hex()
+    sig_oid, pos = _der_algorithm_oid(der, sstop, tstop)
+    itag, istart, istop = _der_tlv(der, pos, tstop)
+    if itag != 0x30:
+        raise DERError("issuer is not a SEQUENCE")
+    issuer = _der_name(der, istart, istop)
+    vtag, vstart, vstop = _der_tlv(der, istop, tstop)
+    if vtag != 0x30:
+        raise DERError("validity is not a SEQUENCE")
+    t1, b1, e1 = _der_tlv(der, vstart, vstop)
+    t2, b2, e2 = _der_tlv(der, e1, vstop)
+    not_before = _der_time(t1, der[b1:e1])
+    not_after = _der_time(t2, der[b2:e2])
+    jtag, jstart, jstop = _der_tlv(der, vstop, tstop)
+    if jtag != 0x30:
+        raise DERError("subject is not a SEQUENCE")
+    subject = _der_name(der, jstart, jstop)
+    ktag, kstart, kstop = _der_tlv(der, jstop, tstop)
+    if ktag != 0x30:
+        raise DERError("subjectPublicKeyInfo is not a SEQUENCE")
+    key_oid, key_name, key_size = _spki_key(der, kstart, kstop)
+    exts: dict[str, bytes] = {}
+    pos = kstop
+    while pos < tstop:  # [1] issuerUID, [2] subjectUID, [3] extensions
+        etag, estart, estop = _der_tlv(der, pos, tstop)
+        if etag == 0xA3:
+            exts = _extensions(der, estart, estop)
+        pos = estop
+    is_ca = _is_ca(exts)
+    self_signed = subject == issuer
+    return {
+        "sha256": hashlib.sha256(der).hexdigest(),
+        "serial": serial,
+        "subject": subject,
+        "issuer": issuer,
+        "not_before": not_before,
+        "not_after": not_after,
+        "category": categorise_cert_oids([sig_oid, key_oid]),
+        "signature_algorithm_oid": sig_oid,
+        "key_algorithm": key_name,
+        "key_algorithm_oid": key_oid,
+        "key_size": key_size,
+        "is_ca": is_ca,
+        "self_signed": self_signed,
+        # v1 trust anchors carry no basicConstraints; a self-signed cert
+        # without the extension is treated as a CA, as path validation does.
+        "role": "ca"
+        if is_ca or (self_signed and _OID_BASIC_CONSTRAINTS not in exts)
+        else "leaf",
+    }
+
+
 # Default ceiling on certificates classified by scan_trust_store.  Parsing
 # is in-process and cheap (well under 1 ms per cert), so the cap now only
 # bounds work on pathological stores (test PKIs with 10k+ certs); stock
@@ -245,8 +521,11 @@ def scan_trust_store(
     if max_certs < 1:
         raise ValueError(f"max_certs must be >= 1, got {max_certs}")
     target_dirs = dirs if dirs is not None else TRUST_STORE_DIRS
+    # Under --host-mount the trust store is the *host's*: read it through
+    # host_path, not the scanner image's own /etc (#108).
+    local_dirs = [str(_platform.host_path(d)) for d in target_dirs]
     unique: dict[str, bytes] = {}
-    for path in _trust_store_candidates(target_dirs):
+    for path in _trust_store_candidates(local_dirs):
         for der in _certs_in_file(path):
             unique.setdefault(hashlib.sha256(der).hexdigest(), der)
     to_scan = list(unique.values())[:max_certs]
@@ -258,12 +537,17 @@ def scan_trust_store(
         "hybrid_composite": 0,
         "pure_pqc": 0,
     }
+    certificates: list[dict[str, Any]] = []
     for der in to_scan:
         try:
             oids = cert_algorithm_oids(der)
         except DERError as e:
             log.debug("scan_trust_store: skipping malformed certificate: %s", e)
             continue
+        try:
+            certificates.append(trust_store_certificate(parse_certificate(der)))
+        except DERError as e:  # classifiable but e.g. a non-UTC time
+            log.debug("scan_trust_store: certificate not fully parsed: %s", e)
         total += 1
         if any(PQC_OID_RE.fullmatch(o) for o in oids):
             pqc_certs += 1
@@ -272,7 +556,9 @@ def scan_trust_store(
         cert_categories[categorise_cert_oids(oids)] += 1
     return {
         "available": True,
-        "scanned_dirs": [d for d in target_dirs if Path(d).is_dir()],
+        "scanned_dirs": [
+            d for d, ld in zip(target_dirs, local_dirs) if Path(ld).is_dir()
+        ],
         "total_certs": total,
         "pqc_certs": pqc_certs,
         "hybrid_certs": hybrid_certs,
@@ -281,7 +567,27 @@ def scan_trust_store(
         "scanned_count": len(to_scan),
         "max_certs": max_certs,
         "truncated": len(unique) > max_certs,
+        "certificates": certificates,
     }
+
+
+def trust_store_certificate(cert: dict[str, Any]) -> dict[str, Any]:
+    """Project a parse_certificate() result onto the per-certificate
+    contract the CycloneDX 1.7 emitter consumes (#138), plus the key and
+    role fields that make the JSON useful on its own."""
+    keys = (
+        "sha256",
+        "serial",
+        "subject",
+        "issuer",
+        "not_before",
+        "not_after",
+        "category",
+        "role",
+        "key_algorithm",
+        "key_size",
+    )
+    return {k: cert[k] for k in keys}
 
 
 @_registry.register_arguments(50)
