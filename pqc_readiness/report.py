@@ -72,6 +72,10 @@ class Report:
     # --scan-services (#111): listening sockets -> owning process -> the
     # crypto library it maps (or Go toolchain).  {} when not requested.
     service_crypto_linkage: dict[str, Any] = field(default_factory=dict)
+    # --scan-processes (#155): every process (servers and outbound-only
+    # clients) -> the crypto library / Go runtime it maps, grouped by
+    # executable and library version.  {} when not requested.
+    process_crypto_linkage: dict[str, Any] = field(default_factory=dict)
     # Per-detection `unavailable_in_container` flags for host-fs-dependent
     # probes (PCI accel, kernel crypto, ktls, FIPS, TPM, kernel info, OS
     # release, PKCS#11 modules).  Populated only when the report was

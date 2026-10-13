@@ -671,6 +671,42 @@ def _render_text_crypto_libraries(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_processes(r: _report.Report) -> list[str]:
+    """Processes -> crypto library (--scan-processes, #155).  Lists the
+    groups that cannot do PQC first; capable groups are summarised."""
+    pc = r.process_crypto_linkage
+    if not pc.get("available"):
+        return []
+    s = pc.get("summary") or {}
+    L: list[str] = [C.wrap(C.BOLD, "13. Processes using crypto")]
+    L.append(
+        f"   {s.get('processes_with_crypto', 0)} process(es) in "
+        f"{s.get('groups', 0)} group(s); not PQC-capable: "
+        f"{s.get('processes_not_pqc_capable', 0)} "
+        f"(outbound-only clients: {s.get('client_processes_not_pqc_capable', 0)})"
+    )
+    for g in pc.get("groups") or []:
+        if g.get("pqc_capable") is not False:
+            continue
+        libs = ", ".join(
+            f"{lib.get('family')} {lib.get('version') or '?'}"
+            for lib in g.get("crypto_libraries") or []
+        )
+        go = g.get("go")
+        if go:
+            libs = ", ".join(x for x in (libs, f"Go {go.get('go_version')}") if x)
+        roles = g.get("roles") or {}
+        role = "/".join(k for k in ("server", "client", "idle") if roles.get(k))
+        L.append(
+            f"   {C.wrap(C.RED, 'no PQC')}  {g.get('exe') or g.get('process')} "
+            f"x{g.get('process_count')} [{role}]  {libs}"
+        )
+    if pc.get("note"):
+        L.append(C.wrap(C.DIM, f"   {pc['note']}"))
+    L.append("")
+    return L
+
+
 def render_text_offline(r: _report.Report) -> str:
     """Text report for --root PATH (#152): only what the tree answers, plus
     an explicit list of sections that are not applicable."""
@@ -802,6 +838,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_cnsa_2_0(r))
     L.extend(_render_text_signing_keys(r))
     L.extend(_render_text_crypto_libraries(r))
+    L.extend(_render_text_processes(r))
     L.extend(_render_text_verdict(r))
     return "\n".join(L)
 
