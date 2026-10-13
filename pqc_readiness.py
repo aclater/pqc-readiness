@@ -61,7 +61,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Iterator
 
 # Module logger.  Silent by default (WARNING); --debug routes DEBUG to
 # stderr so field operators can tell "tool absent" from "tool present but
@@ -2509,7 +2509,21 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up an in-memory list of per-host reports into a fleet view.
+
+    Convenience wrapper over `_aggregate_iter` for tests and programmatic
+    callers that already hold the reports in memory.  `run_aggregator`
+    streams files through `_aggregate_iter` directly instead.
+    """
+    return _aggregate_iter(reports)
+
+
+def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """Roll up many per-host reports into a single fleet view.
+
+    Consumes `reports` one at a time and keeps only counters, so memory
+    is O(rollup size) rather than O(fleet size) — a 100K-host fleet does
+    not need every parsed report resident at once (#88).
 
     Accepts only reports with matching schema_version; other entries are
     counted as `skipped_schema_mismatch` and listed by file (caller
@@ -2525,10 +2539,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     """
     from collections import Counter
 
-    out: dict[str, Any] = {
-        "total_hosts": len(reports),
-        "schema_version": SCHEMA_VERSION,
-    }
+    total_hosts = 0
     by_arch: Counter[str] = Counter()
     by_os: Counter[str] = Counter()
     by_isa: Counter[str] = Counter()
@@ -2539,6 +2550,7 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
     detections_unavailable: Counter[str] = Counter()
     replace_required = 0
     for r in reports:
+        total_hosts += 1
         by_arch[r.get("arch", "?")] += 1
         kinfo = r.get("kernel_info") or {}
         by_os[kinfo.get("os_release_id") or "?"] += 1
@@ -2563,6 +2575,10 @@ def aggregate_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
                 detections_unavailable[det_key] += 1
         if r.get("replace_required"):
             replace_required += 1
+    out: dict[str, Any] = {
+        "total_hosts": total_hosts,
+        "schema_version": SCHEMA_VERSION,
+    }
     out["by_arch"] = dict(by_arch)
     out["by_os_release_id"] = dict(by_os)
     out["by_isa_tier"] = dict(by_isa)
@@ -2603,16 +2619,27 @@ def aggregate_to_csv(rollup: dict[str, Any]) -> str:
     return buf.getvalue()
 
 
-def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
-    """Read every *.json under DIR, validate schema, return (output, exit_code).
-    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view)."""
-    reports: list[dict[str, Any]] = []
-    skipped: list[dict[str, str]] = []
+def _iter_aggregator_reports(
+    dir_path: Path, skipped: list[dict[str, str]]
+) -> Iterator[dict[str, Any]]:
+    """Yield each valid report under DIR one at a time, parsing lazily.
+
+    Unreadable, non-object and schema-mismatched files are appended to
+    `skipped` (in sorted path order) instead of being yielded.  Only the
+    sorted path list is held in memory, never the parsed reports."""
     for fp in sorted(dir_path.glob("**/*.json")):
         try:
             data = json.loads(fp.read_text())
         except (OSError, json.JSONDecodeError) as e:
             skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
+            continue
+        if not isinstance(data, dict):
+            skipped.append(
+                {
+                    "file": str(fp),
+                    "reason": f"unreadable: expected a JSON object, got {type(data).__name__}",
+                }
+            )
             continue
         sv = data.get("schema_version")
         if sv != SCHEMA_VERSION:
@@ -2623,8 +2650,17 @@ def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
                 }
             )
             continue
-        reports.append(data)
-    rollup = aggregate_reports(reports)
+        yield data
+
+
+def run_aggregator(dir_path: Path, output: str = "json") -> tuple[str, int]:
+    """Read every *.json under DIR, validate schema, return (output, exit_code).
+    Output format: 'json' (rollup as JSON) or 'csv' (flat CSV view).
+
+    Files are parsed and reduced one at a time (#88), so peak memory does
+    not grow with fleet size."""
+    skipped: list[dict[str, str]] = []
+    rollup = _aggregate_iter(_iter_aggregator_reports(dir_path, skipped))
     rollup["skipped"] = skipped
     if output == "csv":
         return aggregate_to_csv(rollup), 0
