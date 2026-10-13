@@ -126,7 +126,11 @@ The `--recommend --json` document shape is in
 
 **Ansible.** `--ansible` wraps the JSON schema in
 `{ansible_facts: {pqc_readiness: …}}` and always exits 0 so a play
-never marks a host as failed on the verdict. Runnable playbooks
+never marks a host as failed on the verdict. Because of that,
+`--ansible` takes precedence over `--check` and `--fips-strict`: they
+can be combined with it, but their exit-code gates are ignored and a
+warning is printed on stderr. Gate in the play on the JSON instead
+(e.g. `pqc_readiness.cnsa_2_0.status`). Runnable playbooks
 (`set_fact`, fleet aggregation), the `become` / privilege model, and
 the fact shape downstream tasks rely on are in
 [docs/ansible.md](docs/ansible.md); the playbooks themselves live
@@ -191,7 +195,8 @@ Flags below are grouped by purpose.
 | 3 | Poor — software-only and too slow for production. |
 | 4 | `--check` threshold not met (tier below floor, or `cnsa-2.0` not compliant). |
 
-`--ansible` always exits 0; the verdict is in the JSON body.
+`--ansible` always exits 0 and overrides `--check` / `--fips-strict`
+(with a stderr warning); the verdict is in the JSON body.
 
 ## Distribution support
 
