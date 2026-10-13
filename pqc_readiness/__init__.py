@@ -236,6 +236,7 @@ from .render.spdx import (  # noqa: F401
     render_spdx,
 )
 from .render.prom import render_prometheus  # noqa: F401
+from .render.ndjson import render_ndjson  # noqa: F401
 from .cli import (  # noqa: F401
     EXIT_OUTPUT_WRITE_FAILED,
     ansible_ignored_flag_warnings,
@@ -247,6 +248,7 @@ from .cli import (  # noqa: F401
 )
 from . import detect, render  # noqa: F401
 from .render import json_report  # noqa: F401  (registers --json)
+from . import inventory_metadata  # noqa: F401  (registers --inventory-metadata)
 
 __all__ = [
     "ACCEL_PCI_HINTS",

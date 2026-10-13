@@ -92,3 +92,6 @@ class Report:
     verdict_reason: str = ""
     verdict_caveat: str = ""
     exit_code: int = 0
+    # Operator-supplied facts from --inventory-metadata FILE (OMB M-23-02
+    # items the host can't know); None when the flag isn't given (#144).
+    inventory_metadata: dict[str, Any] | None = None

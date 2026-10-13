@@ -80,6 +80,7 @@ nothing was found.
 | `verdict_reason` | One-line explanation for the verdict. |
 | `verdict_caveat` | `""` when `--bench` measured the PQC primitives; otherwise an explanation that the verdict reflects CPU instruction set and memory only. |
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](../README.md#exit-codes) table in the README. |
+| `inventory_metadata` | Operator-supplied inventory facts from `--inventory-metadata FILE` (OMB M-23-02 items the host can't know), validated and normalised; `null` when the flag isn't given. See [`inventory_metadata`](#inventory_metadata). |
 
 ## Nested fields
 
@@ -402,6 +403,32 @@ Each `suites[]` entry:
 
 Each rate key appears only when the matching `per_algo` entry has a measured rate.
 
+### `inventory_metadata`
+
+`null` unless `--inventory-metadata FILE` is given. Every key is optional;
+the file is rejected (exit 2, before any probing) if it contains unknown
+keys or invalid values. Values are echoed as supplied, so the file must
+hold **identifiers only**: OMB M-23-02 footnote 13 forbids names that
+reveal a system's function or location.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `fisma_system_id` | string | FISMA system identifier (M-23-02 item 1). |
+| `fips199_categorization` | string | `Low`, `Moderate` or `High` (item 2); input is case-insensitive. |
+| `hva_id` | string | High Value Asset identifier, if the system is an HVA (item 3). |
+| `hosting` | object | Hosting model (item 7): `{model, provider?}`. |
+| `hosting.model` | string | `on-premises`, `commercial-csp`, `government-csp` or `hybrid`. |
+| `hosting.provider` | string | Provider name(s); required for every model except `on-premises`. |
+| `data_lifecycle` | object | Data lifecycle (item 8): `{records_categories?, time_to_live_years?}`. |
+| `data_lifecycle.records_categories` | list of string | Records-management categories of the data. |
+| `data_lifecycle.time_to_live_years` | number | How long the data and metadata need protection. |
+| `notes` | string | Free text (item 9). |
+
+The same facts appear in `--cbom` as `inventory:*` properties on the host
+component. With `--cbom-profile federal-draft` the CBOM also reports, per
+item, whether it was `provided`, `collected`, `partial` or
+`not-provided`; see [docs/inventory-methodology.md](inventory-methodology.md).
+
 ## `--ansible` variant
 
 `--ansible` returns a single top-level key `ansible_facts`, whose value
@@ -503,6 +530,53 @@ from the scanner's are not merged.
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
+
+## `--ndjson` events
+
+`--ndjson` writes newline-delimited JSON for SIEMs (#146): one compact
+JSON object per line, shaped after [OCSF](https://schema.ocsf.io) 1.9.0.
+Every event validates against the OCSF 1.9.0 JSON Schema for its class
+(base class, no profiles), which CI checks. The first line is one
+**Device Inventory Info** event (class 5001) for the host. Each following
+line is one **Compliance Finding** event (class 2003) per matched rule:
+the same rules, in the same order, as `--sarif`. OCSF has no
+crypto-inventory class, so scanner-specific detail goes under
+`unmapped.pqc_readiness`. Integration recipes are in
+[docs/siem-ndjson.md](siem-ndjson.md).
+
+Fields common to both event types:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `class_uid` / `class_name` | int / string | `5001` Device Inventory Info, or `2003` Compliance Finding. |
+| `category_uid` / `category_name` | int / string | `5` Discovery, or `2` Findings. |
+| `activity_id` / `activity_name` | int / string | `1`: `Log` for 5001, `Create` for 2003. Each run is a snapshot; deduplicate on `finding_info.uid`. |
+| `type_uid` / `type_name` | int / string | `class_uid × 100 + activity_id`: `500101` or `200301`. |
+| `severity_id` / `severity` | int / string | 5001 is always `1` Informational. For 2003, the rule's `security-severity` on the CVSS v3.1 bands: `2` Low (< 4.0), `3` Medium (< 7.0), `4` High. |
+| `time` | int | `generated_at` in milliseconds since the Unix epoch (OCSF `timestamp_t`). |
+| `message` | string | 5001: `PQC readiness: <verdict>`. 2003: the finding message. |
+| `metadata` | object | `version` (OCSF version, `1.9.0`); `uid` (this event: hash of the finding identity and `generated_at`); `log_name` (`pqc_readiness`); `original_time` (`generated_at` as emitted); `product` = `{name, vendor_name, version, url_string}`. |
+| `device` | object | `hostname`; `type_id`/`type` (`0` Unknown, because the scanner does not classify the host); `os` = `{name, type_id, type}`, with `type_id` `200` Linux when `/etc/os-release` was read. |
+
+Compliance Finding (2003) only:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `status_id` / `status` | int / string | `1` New. Lifecycle is left to the SIEM. |
+| `finding_info` | object | `uid`: stable identity of host + rule, identical to the `--sarif-anchor` fingerprint. `title` / `desc`: the rule's short and full description. `types`: `["Post-Quantum Cryptography Readiness"]`. `src_url`: the rule help page. `analytic` = `{uid, name, type_id, type}`, the rule ID, with `type_id` `1` Rule. |
+| `compliance` | object | `control` (rule ID), `standards` (`["pqc-readiness"]`), `status` / `status_id` (`Fail` / `3`). |
+
+`unmapped.pqc_readiness`, the scanner-specific detail:
+
+| Field | Event | Meaning |
+|---|---|---|
+| `schema_version`, `verdict`, `exit_code`, `isa_tier`, `replace_required` | 5001 | As in the `--json` report. |
+| `cnsa_2_0_status` | 5001 | `cnsa_2_0.status`. |
+| `openssl_version`, `openssl_pqc_native` | 5001 | `openssl.version`, `openssl.pqc_native`. |
+| `tls_hybrid_groups`, `tls_pure_pqc_groups` | 5001 | `openssl.tls_groups.hybrid` / `.pure_pqc`. |
+| `findings_count` | 5001 | Number of 2003 events that follow. |
+| `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
+| `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
 
 ## Schema alignment with CycloneDX 1.6
 

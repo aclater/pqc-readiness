@@ -258,6 +258,7 @@ example Ansible playbooks already use the zipapp.
 | `--cbom` | CycloneDX 1.7 CBOM (`--cbom-version 1.6` for 1.6) | Cryptographic inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
+| `--ndjson` | OCSF 1.9.0 events, one JSON object per line ([field reference](docs/json-output.md#--ndjson-events), [SIEM recipes](docs/siem-ndjson.md)) | SIEM / log pipelines |
 | `--prometheus` | Prometheus text format | node_exporter textfile collector, fleet dashboards ([docs/prometheus.md](docs/prometheus.md)) |
 | `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
 | `--recommend` | Policy-aware recommendation | Algorithm selection per host |
@@ -307,11 +308,12 @@ property is a term in the canonical SPDX 3.0.1 context, and every
 reference resolves within the document.
 
 **SARIF.** `--sarif` emits [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
-findings under stable rule IDs (`pqc-001-…` through `pqc-006-…`),
+findings under stable rule IDs (`pqc-001-…` through `pqc-007-…`),
 each with `helpUri`, severity (`warning` / `error`), and short / full
 descriptions. Findings cover OpenSSL pre-3.5, kernel-FIPS / PQC
 provider conflicts, missing hybrid TLS groups, and HSMs without PQC
 firmware. Validates against the official SARIF 2.1.0 schema.
+For code-scanning platforms, add `--sarif-anchor` ([recipe](docs/sarif-code-scanning.md)).
 
 **Recommendations.** `--recommend` produces a host-specific PQC
 algorithm recommendation under one of four policies (`cnsa-2.0`,
@@ -365,11 +367,14 @@ Flags below are grouped by purpose.
 
 | Flag | Purpose |
 | --- | --- |
-| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ansible` | See [Output formats](#output-formats). |
+| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ndjson` / `--ansible` | See [Output formats](#output-formats). |
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
+| `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
+| `--cbom-profile {none,federal-draft}` | Regime annotations for `--cbom` (default `none`, unchanged output). `federal-draft` adds OMB M-23-02 / M-26-15 / EO 14412 fields: key-establishment vs signature, quantum-vulnerable flag and deadline per asset, the classical groups a host offers, a TLS 1.3 status, and M-23-02 item coverage. Draft until CISA/NIST publish the minimum CBOM elements (~March 2027). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
 | `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). The file is replaced atomically (temp file in the same directory, then rename), so a reader such as node_exporter or the fleet aggregator never sees a partial report. Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
+| `--inventory-metadata FILE` | JSON file of operator-supplied facts the host can't know (FISMA system ID, FIPS 199 level, HVA ID, hosting model and provider, data lifecycle, notes; OMB M-23-02 items 1–3 and 7–9). Validated before probing (exit 2 on error); carried into `--json` as `inventory_metadata` and into `--cbom` as `inventory:*` host properties. Identifiers only: see [docs/json-output.md](docs/json-output.md#inventory_metadata). |
 | `--quiet` | Print only the verdict line. |
 | `--no-color` | Disable ANSI colour. Auto-disabled when stdout is not a TTY. |
 
