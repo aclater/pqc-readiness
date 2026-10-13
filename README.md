@@ -110,13 +110,26 @@ three formats rpm uses:
 - **Berkeley DB:** EL8 and openSUSE Leap 15.6 cloud images (#134).
 - **ndb:** SLES 15, Leap 16 and Tumbleweed (#134).
 
-On the Berkeley DB and ndb databases copied from UBI 8, Rocky 8,
-AlmaLinux 8, SLES 15 SP6/SP7, Leap 16 and Tumbleweed images, a full
-inventory reads in 2–8 ms and matches `rpm -qa` exactly; `rpm -qa` takes
-47–68 ms inside those images. `rpm` is used only when a database can't be
-read directly, and is then pointed at the host with `--root` under
-`--host-mount`. So a container no longer depends on its own `rpm` being
-able to read the host's format. The database format is detected from the
+Measured inside booted cloud-image VMs (median of 7 alternating runs,
+fresh process each), a full inventory read in-process against `rpm -qa`:
+
+| Host | Format | `rpm -qa` | In-process |
+|---|---|---|---|
+| AlmaLinux 8.10 (440 pkgs) | Berkeley DB | 218 ms | 63 ms |
+| Rocky Linux 8.10 (461 pkgs) | Berkeley DB | 212 ms | 54 ms |
+| Oracle Linux 8.10 (373 pkgs) | Berkeley DB | 124 ms | 31 ms |
+| openSUSE Leap 16.0 (378 pkgs) | ndb | 127 ms | 17 ms |
+| openSUSE Tumbleweed (372 pkgs) | ndb | 78 ms | 10 ms |
+
+Every in-process inventory matched `rpm -qa` exactly. Single-package
+lookups (the NSS version in every default scan) are different: Berkeley
+DB and ndb have no index the scanner reads, so a direct lookup walks the
+whole database (10–60 ms), while `rpm -q` uses rpm's own index (~4 ms).
+On those formats `rpm -q` is used first, pointed at the host with
+`--root` under `--host-mount`, and the in-process read is the fallback
+when `rpm` is missing or fails. A full inventory never needs the `rpm`
+binary, so a container no longer depends on its own `rpm` being able to
+read the host's format. The database format is detected from the
 file contents, never assumed from the distro version, because hosts
 upgraded in place can keep an older format.
 
@@ -294,7 +307,7 @@ Flags below are grouped by purpose.
 | `--seconds N` | Override per-operation benchmark duration. Larger values reduce variance at the cost of run time. |
 | `--scan-trust-store` | Walk system trust-store directories and classify every certificate (bundles included) as PQC, hybrid composite, or classical by reading its algorithm OIDs directly; no `openssl` binary needed. |
 | `--trust-store-max-certs N` | Cap on unique certificates classified by `--scan-trust-store` (default 500). When the cap is hit, `trust_store.truncated` is `true` and the text, CBOM, and SARIF outputs say how many certificates were not inspected. |
-| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
+| `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process for the inventory, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
 | `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 
 ### Recommendation engine

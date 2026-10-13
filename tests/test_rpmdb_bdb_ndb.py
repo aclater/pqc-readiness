@@ -209,9 +209,11 @@ def test_detect_nss_reads_bdb_and_ndb_in_process(
     host, monkeypatch, tmp_path, make_host, tool, version
 ) -> None:
     make_host(host(tmp_path))
-    # certutil would describe the scanner image; under --host-mount the
-    # host database wins and no subprocess may run.
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # No usable rpm binary: the host database is read in-process and no
+    # subprocess may run (certutil would describe the scanner image).
+    monkeypatch.setattr(
+        pr.shutil, "which", lambda name: None if name == "rpm" else f"/usr/bin/{name}"
+    )
     out = pr.detect_nss()
     assert out["tool"] == tool
     assert out["version"] == version
@@ -219,8 +221,11 @@ def test_detect_nss_reads_bdb_and_ndb_in_process(
 
 
 @pytest.mark.parametrize("make_host", [_el8_host, _suse_host])
-def test_named_lookup_on_bdb_and_ndb_is_in_process(host, tmp_path, make_host) -> None:
+def test_named_lookup_on_bdb_and_ndb_without_rpm_is_in_process(
+    host, monkeypatch, tmp_path, make_host
+) -> None:
     make_host(host(tmp_path))
+    monkeypatch.setattr(pr.shutil, "which", lambda name: None)
     out = pr.query_rpm_named(("libgpg-error", "libgpg-error0"))
     assert out["source"].startswith("rpmdb-")
     assert [p["name"] for p in out["packages"]] in (["libgpg-error"], ["libgpg-error0"])
@@ -387,3 +392,38 @@ def test_nss_tool_label_matches_packages_source(monkeypatch, source, label) -> N
         lambda names: {"available": True, "source": source, "packages": [{"name": "nss", "version": "3.112.0"}]},
     )
     assert pr._nss_from_rpmdb()["tool"] == label
+
+
+@pytest.mark.parametrize("make_host", [_el8_host, _suse_host])
+def test_named_lookup_on_bdb_and_ndb_prefers_rpm_q(host, monkeypatch, tmp_path, make_host) -> None:
+    # BDB / ndb have no index we read: a direct named lookup walks the whole
+    # database (10-60 ms measured on EL8 / SUSE VMs) while `rpm -q` uses
+    # rpm's index (~4 ms).  With rpm available, one `rpm -q` runs, pointed
+    # at the host.
+    make_host(host(tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None):  # noqa: ARG001
+        calls.append(cmd)
+        return 0, "nss 3.124.0 1.el8 x86_64\n"
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    out = pr.query_rpm_named(("nss",))
+    assert out["source"] == "rpm-cli"
+    assert [p["version"] for p in out["packages"]] == ["3.124.0"]
+    (cmd,) = calls
+    assert cmd[:3] == ["rpm", "--root", str(tmp_path)]
+    assert "-q" in cmd and "-qa" not in cmd
+
+
+@pytest.mark.parametrize("make_host", [_el8_host, _suse_host])
+def test_named_lookup_falls_back_to_direct_read_when_rpm_q_fails(
+    host, monkeypatch, tmp_path, make_host
+) -> None:
+    make_host(host(tmp_path))
+    monkeypatch.setattr(pr, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages index"))
+    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    out = pr.query_rpm_named(("libgpg-error", "libgpg-error0"))
+    assert out["source"].startswith("rpmdb-")
+    assert len(out["packages"]) == 1

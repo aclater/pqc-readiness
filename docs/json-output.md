@@ -197,7 +197,7 @@ Each list item describes one detected device or HSM client configuration:
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `available` | bool | An NSS version was found. When false only `reason` follows. |
-| `tool` | string | `certutil --version`, `rpmdb (sqlite)` (package `nss` / `mozilla-nss` read from the rpm database in-process) or `rpm -qa` (looked up with `rpm -q` through the CLI). |
+| `tool` | string | `certutil --version`; `rpmdb (sqlite)`, `rpmdb (bdb)` or `rpmdb (ndb)` (package `nss` / `mozilla-nss` read from the rpm database in-process: the sqlite `Name` index, or a full read of Berkeley DB / ndb when `rpm` is unavailable); or `rpm -q` (looked up through the rpm CLI, the first choice on Berkeley DB / ndb because it uses rpm's own index). |
 | `version` | string | `major.minor.patch`, the raw string if unparseable, or `unknown`. With several installs (i686 + x86_64) the highest. |
 | `pqc_capable` | bool | Version ≥ 3.108. |
 | `note` | string | Present for rpm-sourced versions (distro package version, not necessarily upstream), and under `--host-mount` when only the image's `certutil` was available. |

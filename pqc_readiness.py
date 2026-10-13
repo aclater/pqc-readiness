@@ -3315,15 +3315,22 @@ def query_rpm_named(names: tuple[str, ...]) -> dict[str, Any]:
     """Look up specific packages without reading the whole inventory.
 
     Reuses the full inventory when this process already read it
-    (--scan-packages); otherwise uses the sqlite Name index, or a
-    prefiltered in-process read of Berkeley DB / ndb databases, with
-    `rpm -q` only when the database cannot be read directly.  Same result shape
-    as query_rpm_packages(), restricted to `names`."""
+    (--scan-packages); otherwise uses the sqlite Name index.  Berkeley DB
+    and ndb have no index we read, so a direct lookup walks the whole
+    database (10-60 ms on real EL8 / SUSE VMs) while `rpm -q` uses rpm's
+    own index (~4 ms); there `rpm -q` comes first and the direct read is
+    the fallback when the binary is missing or fails (#134).  Same result
+    shape as query_rpm_packages(), restricted to `names`."""
     if _query_rpm_packages_cached.cache_info().currsize:
         return query_rpm_named_from_inventory(names)
     db = locate_rpmdb()
     if db is None:
         return _query_rpm_named_cli(db, names)
+    if db[2] in ("bdb", "ndb"):
+        cli = _query_rpm_named_cli(db, names)
+        if cli.get("available"):
+            return cli
+        log.debug("rpmdb: rpm -q unavailable (%s); reading %s directly", cli.get("reason"), db[2])
     try:
         return _direct_result(db, _read_rpmdb_direct(db, names))
     except RpmdbError as e:
