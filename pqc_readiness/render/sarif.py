@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -186,6 +187,83 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         help_uri=f"{SARIF_HELP_BASE}/pqc-008-classical-package-signing-keys.md",
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Code-scanning mode (--sarif-anchor, #145)
+# ---------------------------------------------------------------------------
+# Code-scanning platforms need more than SARIF 2.1.0 itself requires.
+# GitHub's SARIF reference lists, as required for upload:
+# - result.locations[] with physicalLocation.artifactLocation.uri;
+# - result.partialFingerprints, to tell new from recurring results across
+#   runs;
+# - optionally runAutomationDetails.id, parsed as "category/run-id"
+#   (category = everything before the last "/");
+# - optionally rule properties.security-severity, a string score from
+#   0.0 up to 10.0.
+# https://docs.github.com/en/code-security/code-scanning/integrating-with-code-scanning/sarif-support-for-code-scanning
+#
+# Host findings have no source file, so --sarif-anchor names one: the
+# fleet-repo pattern keeps a file per host (e.g. hosts/{hostname}.md).
+# Everything in this section only applies when the flag is given, so
+# default --sarif output is byte-identical to earlier releases.
+
+# Scores follow the CVSS v3.1 qualitative bands GitHub uses to label
+# security-severity (low 0.1-3.9, medium 4.0-6.9, high 7.0-8.9, critical
+# 9.0-10.0;
+# https://www.first.org/cvss/v3.1/specification-document#Qualitative-Severity-Rating-Scale).
+# These are readiness findings, not exploitable vulnerabilities, so none
+# is critical.  The table is kept apart from RULE_SPECS so score and
+# rule-text changes don't edit the same lines.
+SECURITY_SEVERITY: dict[str, str] = {
+    # FIPS posture differs from what operators believe: high.
+    "pqc-002-fips-pqc-conflict": "7.5",
+    "pqc-007-fips-without-algorithm-fence": "7.5",
+    # No native PQC in the TLS library: medium.
+    "pqc-001-openssl-pre-3.5": "5.3",
+    # Appliance may not support PQC; unverified dependency: medium.
+    "pqc-006-no-network-hsm-pqc-firmware": "4.3",
+    # Hardware cannot run PQC in software at production speed: medium.
+    "pqc-003-no-pqc-isa-support": "4.0",
+    # Future trust-store rotation work: low.
+    "pqc-004-classical-only-trust-store": "3.1",
+    # Package-signing trust anchors need rotating to PQC keys; the fix is
+    # upstream's, the host only has to trust the new key: low.
+    "pqc-008-classical-package-signing-keys": "3.1",
+    # Performance concern, not a security weakness: low.
+    "pqc-005-slh-dsa-in-tls-context": "2.0",
+}
+
+# partialFingerprints key.  SARIF lets producers name their own
+# fingerprint keys; the "/v1" suffix allows a future change of identity
+# rules without colliding with old values.
+FINGERPRINT_KEY = "pqcReadinessHostRule/v1"
+
+# Set from --sarif-anchor by the flag's action; reset on every parser
+# build so one main() call never leaks into the next (same pattern as
+# --cbom-version in render/cbom.py).
+_anchor: str | None = None
+
+
+def finding_fingerprint(hostname: str, rule_id: str) -> str:
+    """Stable identity for one host + rule: the same condition on the
+    same host keeps one alert across runs; it closes when the condition
+    clears."""
+    return hashlib.sha256(f"{hostname}\0{rule_id}".encode()).hexdigest()[:32]
+
+
+def anchor_path(template: str, hostname: str) -> str:
+    """Expand {hostname} in the --sarif-anchor template.  Path separators
+    in a hostname (never legal, but defensive) are neutralised so a host
+    can't point its findings at another directory."""
+    return template.replace("{hostname}", hostname.replace("/", "_"))
+
+
+def automation_id(r: _report.Report) -> str:
+    """category/run-id: one category per host, so results uploaded for
+    different hosts never close each other's alerts."""
+    host = r.hostname.replace("/", "_")
+    return f"pqc-readiness/{host}/{r.generated_at}"
 
 
 def _sarif_host_properties(r: _report.Report) -> dict[str, Any]:
@@ -386,8 +464,10 @@ def build_findings(r: _report.Report) -> list[Finding]:
     return findings
 
 
-def _sarif_rule_descriptor(spec: RuleSpec) -> dict[str, Any]:
-    return {
+def _sarif_rule_descriptor(
+    spec: RuleSpec, code_scanning: bool = False
+) -> dict[str, Any]:
+    descriptor: dict[str, Any] = {
         "id": spec.id,
         "name": spec.id,
         "shortDescription": {"text": spec.short_description},
@@ -395,29 +475,60 @@ def _sarif_rule_descriptor(spec: RuleSpec) -> dict[str, Any]:
         "helpUri": spec.help_uri,
         "defaultConfiguration": {"level": spec.default_level},
     }
+    if code_scanning and spec.id in SECURITY_SEVERITY:
+        descriptor["properties"] = {
+            "security-severity": SECURITY_SEVERITY[spec.id],
+            "tags": ["security", "post-quantum-cryptography"],
+        }
+    return descriptor
 
 
-def _sarif_result(finding: Finding, rule_index: int) -> dict[str, Any]:
-    return {
+def _sarif_result(
+    finding: Finding,
+    rule_index: int,
+    hostname: str = "",
+    anchor: str | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
         "ruleId": finding.rule_id,
         "ruleIndex": rule_index,
         "level": finding.level,
         "message": {"text": finding.message},
         "properties": finding.properties,
     }
+    if anchor is not None:
+        result["locations"] = [
+            {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": anchor},
+                    "region": {"startLine": 1},
+                }
+            }
+        ]
+        result["partialFingerprints"] = {
+            FINGERPRINT_KEY: finding_fingerprint(hostname, finding.rule_id)
+        }
+    return result
 
 
-def render_sarif(r: _report.Report) -> str:
+def render_sarif(r: _report.Report, anchor: str | None = None) -> str:
     """Render the report as a SARIF 2.1.0 log document.
 
     Every rule from RULE_SPECS is emitted in the run's tool-driver
     descriptor — tooling can render rule metadata even when no result
-    references the rule.  Only matched rules become results."""
-    rules = [_sarif_rule_descriptor(s) for s in RULE_SPECS]
+    references the rule.  Only matched rules become results.
+
+    With ``anchor`` (--sarif-anchor) the log is shaped for code-scanning
+    upload: results get a location and fingerprint, rules a
+    security-severity, and the run an automationDetails.id per host.
+    Without it the output is unchanged from earlier releases."""
+    code_scanning = anchor is not None
+    location = anchor_path(anchor, r.hostname) if anchor is not None else None
+    rules = [_sarif_rule_descriptor(s, code_scanning) for s in RULE_SPECS]
     rule_index_by_id = {s.id: i for i, s in enumerate(RULE_SPECS)}
     findings = build_findings(r)
     results = [
-        _sarif_result(f, rule_index_by_id[f.rule_id])
+        _sarif_result(f, rule_index_by_id[f.rule_id], r.hostname, location)
         for f in findings
         if f.rule_id in rule_index_by_id
     ]
@@ -439,6 +550,8 @@ def render_sarif(r: _report.Report) -> str:
             }
         ],
     }
+    if code_scanning:
+        log["runs"][0]["automationDetails"] = {"id": automation_id(r)}
     return json.dumps(log, indent=2)
 
 
@@ -452,6 +565,42 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
-_registry.register_output(
-    _registry.OutputFormat("sarif", 30, lambda r: render_sarif(r))
-)
+class _SarifAnchorAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        global _anchor
+        if not str(values).strip():
+            parser.error("--sarif-anchor: path must not be empty")
+        _anchor = str(values)
+        setattr(namespace, self.dest, values)
+
+
+# Slot 18: inside the output-format block, after --sarif, before
+# --cbom-version (19).
+@_registry.register_arguments(18)
+def add_anchor_argument(ap: argparse.ArgumentParser) -> None:
+    """--sarif-anchor."""
+    global _anchor
+    _anchor = None
+    ap.add_argument(
+        "--sarif-anchor",
+        metavar="PATH",
+        action=_SarifAnchorAction,
+        help=(
+            "shape --sarif for code-scanning upload: attach every result to "
+            "PATH (relative to the repo root; {hostname} is substituted) and "
+            "add fingerprints, per-host run category and security-severity"
+        ),
+    )
+
+
+def _render_selected(r: _report.Report) -> str:
+    return render_sarif(r, _anchor)
+
+
+_registry.register_output(_registry.OutputFormat("sarif", 30, _render_selected))

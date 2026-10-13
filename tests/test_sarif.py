@@ -383,3 +383,106 @@ def test_sarif_result_rule_index_matches_driver_rules() -> None:
     for result in log["runs"][0]["results"]:
         idx = result["ruleIndex"]
         assert rules[idx]["id"] == result["ruleId"]
+
+
+# ---------------------------------------------------------------------------
+# Code-scanning mode: --sarif-anchor (#145)
+# ---------------------------------------------------------------------------
+
+_ANCHOR = "hosts/{hostname}.md"
+
+
+def _anchored(r: pr.Report, anchor: str = _ANCHOR) -> dict[str, Any]:
+    return json.loads(pr.render.sarif.render_sarif(r, anchor))
+
+
+def test_default_sarif_has_no_code_scanning_fields() -> None:
+    # The flag is opt-in: without it, earlier releases' output is unchanged.
+    log = json.loads(pr.render_sarif(_full_trigger_report()))
+    run = log["runs"][0]
+    assert "automationDetails" not in run
+    assert all("properties" not in rule for rule in run["tool"]["driver"]["rules"])
+    for res in run["results"]:
+        assert "locations" not in res
+        assert "partialFingerprints" not in res
+
+
+def test_anchored_sarif_validates_and_locates_every_result() -> None:
+    r = _full_trigger_report()
+    log = _anchored(r)
+    _validate(log)
+    results = log["runs"][0]["results"]
+    assert results
+    for res in results:
+        (loc,) = res["locations"]
+        assert loc["physicalLocation"]["artifactLocation"]["uri"] == (
+            f"hosts/{r.hostname}.md"
+        )
+        assert loc["physicalLocation"]["region"]["startLine"] == 1
+
+
+def test_fingerprints_are_stable_and_distinguish_host_and_rule() -> None:
+    sarif = pr.render.sarif
+    key = sarif.FINGERPRINT_KEY
+    r = _full_trigger_report()
+    first = {
+        x["ruleId"]: x["partialFingerprints"][key]
+        for x in _anchored(r)["runs"][0]["results"]
+    }
+    second = {
+        x["ruleId"]: x["partialFingerprints"][key]
+        for x in _anchored(r)["runs"][0]["results"]
+    }
+    assert first == second  # same host + rule -> same identity across runs
+    assert len(set(first.values())) == len(first)  # unique per rule
+    other = sarif.finding_fingerprint("another-host", next(iter(first)))
+    assert other not in first.values()  # unique per host
+
+
+def test_automation_id_gives_each_host_its_own_category() -> None:
+    r = _full_trigger_report()
+    run_id = _anchored(r)["runs"][0]["automationDetails"]["id"]
+    # GitHub reads id as category/run-id; category is everything up to the
+    # last "/", so it must be per host and must not contain the timestamp.
+    category, _, run = run_id.rpartition("/")
+    assert category == f"pqc-readiness/{r.hostname}"
+    assert run == r.generated_at
+
+
+def test_every_rule_has_a_security_severity_in_range() -> None:
+    sarif = pr.render.sarif
+    assert set(sarif.SECURITY_SEVERITY) == {s.id for s in pr.RULE_SPECS}
+    rules = _anchored(_full_trigger_report())["runs"][0]["tool"]["driver"]["rules"]
+    for rule in rules:
+        score = float(rule["properties"]["security-severity"])
+        assert 0.0 < score <= 10.0, rule["id"]
+        assert score < 9.0, "readiness findings are never critical"
+        assert "security" in rule["properties"]["tags"]
+
+
+def test_hostname_with_separator_cannot_escape_the_anchor_directory() -> None:
+    sarif = pr.render.sarif
+    assert sarif.anchor_path("hosts/{hostname}.md", "../../etc") == "hosts/.._.._etc.md"
+
+
+def test_cli_sarif_anchor_reaches_renderer_and_does_not_leak(
+    monkeypatch, capsys
+) -> None:
+    from pqc_readiness import cli
+
+    monkeypatch.setattr(cli, "collect_report", lambda args: _full_trigger_report())
+    cli.main(["--sarif", "--sarif-anchor", _ANCHOR])
+    anchored = json.loads(capsys.readouterr().out)
+    assert "automationDetails" in anchored["runs"][0]
+    cli.main(["--sarif"])  # a later run without the flag is plain again
+    plain = json.loads(capsys.readouterr().out)
+    assert "automationDetails" not in plain["runs"][0]
+
+
+def test_cli_rejects_empty_sarif_anchor(capsys) -> None:
+    from pqc_readiness import cli
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--sarif", "--sarif-anchor", " "])
+    assert exc.value.code == 2
+    assert "must not be empty" in capsys.readouterr().err

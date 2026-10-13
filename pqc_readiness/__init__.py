@@ -68,6 +68,7 @@ from .detect.runtime import (  # noqa: F401
     detect_runtime_environment,
     parse_cgroup_for_container,
 )
+from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,
     PKG_MANAGER_ORDER,
@@ -173,8 +174,10 @@ from .detect.certs import (  # noqa: F401
     TRUST_STORE_MAX_FILE_BYTES,
     categorise_cert_oids,
     cert_algorithm_oids,
+    parse_certificate,
     scan_trust_store,
 )
+from .detect.certs_discovery import scan_crypto_material  # noqa: F401
 from .verdict import (  # noqa: F401
     CNSA_2_0_REQUIREMENTS,
     evaluate_cnsa_2_0,
@@ -240,6 +243,7 @@ from .render.spdx import (  # noqa: F401
     render_spdx,
 )
 from .render.prom import render_prometheus  # noqa: F401
+from .render.ndjson import render_ndjson  # noqa: F401
 from .cli import (  # noqa: F401
     EXIT_OUTPUT_WRITE_FAILED,
     ansible_ignored_flag_warnings,
@@ -411,7 +415,10 @@ __all__ = [
     "run_classical_baseline",
     "run_pqc_bench",
     "run_tls_handshake_bench",
+    "parse_certificate",
+    "scan_crypto_material",
     "scan_packages",
+    "scan_services",
     "scan_trust_store",
     "set_host_prefix",
 ]
