@@ -221,6 +221,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-007-fips-without-algorithm-fence": "7.5",
     # No native PQC in the TLS library: medium.
     "pqc-001-openssl-pre-3.5": "5.3",
+    # PQC-capable library held back by system policy; a config change fixes
+    # it, so just below pqc-001 (#104).
+    "pqc-008-crypto-policy-blocks-pqc": "5.0",
     # Appliance may not support PQC; unverified dependency: medium.
     "pqc-006-no-network-hsm-pqc-firmware": "4.3",
     # Hardware cannot run PQC in software at production speed: medium.
