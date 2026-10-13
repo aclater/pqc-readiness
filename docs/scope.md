@@ -35,8 +35,8 @@ are separate categories with separate tools, described below.
 DPUs, TPMs, on-package offload engines), OS crypto plumbing, installed
 library versions and the algorithms they expose.
 
-**Typical output formats:** structured JSON inventory, CycloneDX 1.6
-cryptographic-assets CBOM, Ansible facts, fleet rollups (CSV / JSON).
+**Typical output formats:** structured JSON inventory, CycloneDX
+cryptographic-assets CBOM (1.7, or 1.6), Ansible facts, fleet rollups (CSV / JSON).
 
 **How this project's output composes:** this is the category
 `pqc-readiness` occupies. Per-host JSON aggregates into a fleet rollup

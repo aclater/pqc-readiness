@@ -14,7 +14,7 @@ Supported platforms:
 Usage:
     pqc-readiness                           human-readable report
     pqc-readiness --json                    machine-readable (stable schema)
-    pqc-readiness --cbom                    CycloneDX 1.6 CBOM JSON (NIST IR 8547)
+    pqc-readiness --cbom                    CycloneDX 1.7 CBOM JSON (--cbom-version 1.6)
     pqc-readiness --spdx                    SPDX 3.0 JSON-LD (Security profile)
     pqc-readiness --sarif                   SARIF 2.1.0 findings (OASIS)
     pqc-readiness --markdown                markdown report (for tickets)

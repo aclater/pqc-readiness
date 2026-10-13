@@ -6,7 +6,7 @@ Host-level Post-Quantum Cryptography readiness assessment.
 NIST PQC primitives (ML-KEM, ML-DSA, SLH-DSA) at production speed in
 software, or whether it requires a dedicated cryptographic accelerator.
 Output is a stable JSON schema designed for fleet inventory aggregation,
-with first-class support for CycloneDX 1.6 CBOM, SPDX 3.0, and SARIF
+with first-class support for CycloneDX 1.7 CBOM (1.6 on request), SPDX 3.0, and SARIF
 2.1.0 so results drop into existing security pipelines.
 
 The tool is intended for field architects and customer infrastructure
@@ -255,7 +255,7 @@ example Ansible playbooks already use the zipapp.
 | (default) | Coloured text report | Operator console |
 | `--markdown` | Markdown | Pasting into tickets |
 | `--json` | Stable JSON schema | Fleet aggregation, automation |
-| `--cbom` | CycloneDX 1.6 CBOM | NIST IR 8547 inventory pipelines |
+| `--cbom` | CycloneDX 1.7 CBOM (`--cbom-version 1.6` for 1.6) | Cryptographic inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
 | `--prometheus` | Prometheus text format | node_exporter textfile collector, fleet dashboards ([docs/prometheus.md](docs/prometheus.md)) |
@@ -273,16 +273,30 @@ field reference, the `--ansible` wrapper shape, and the
 [docs/json-output.md](docs/json-output.md). For schema interoperation
 with CycloneDX, see [docs/schema-alignment.md](docs/schema-alignment.md).
 
-**CBOM.** `--cbom` emits a [CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/)
-Cryptographic Bill of Materials. Each detected source — ISA features,
-accelerators, OpenSSL primitives, OpenSSH KEX, IPsec, PKCS#11 modules,
-trust-store summary — becomes a `cryptographic-asset` component with
-`assetType`, `algorithmProperties` where applicable, and a
-`detectedBy: pqc-readiness@<version>` provenance property. Validates
-against the official CycloneDX 1.6 JSON schema. NIST IR 8547
-([final](https://csrc.nist.gov/pubs/ir/8547/final)) references
-CycloneDX 1.6 as the standard exchange format for cryptographic
-inventory.
+**CBOM.** `--cbom` emits a [CycloneDX 1.7](https://cyclonedx.org/docs/1.7/json/)
+Cryptographic Bill of Materials; `--cbom-version 1.6` emits
+[CycloneDX 1.6](https://cyclonedx.org/docs/1.6/json/) exactly as earlier
+releases did. Each detected source — ISA features, accelerators, OpenSSL
+primitives, OpenSSH KEX, IPsec, PKCS#11 modules, trust-store summary —
+becomes a `cryptographic-asset` component with `assetType`,
+`algorithmProperties` where applicable, and a
+`detectedBy: pqc-readiness@<version>` provenance property. 1.7 output
+adds:
+
+- `algorithmFamily` from the CycloneDX 1.7 algorithm registry (ML-KEM,
+  ML-DSA, SLH-DSA, LMS, XMSS). Families the registry doesn't define yet
+  (HQC, FN-DSA, FrodoKEM, Classic McEliece, BIKE) are reported in a
+  `pqc-readiness:algorithmFamily` property marked
+  `not-in-cyclonedx-1.7-registry`. Hybrid groups such as
+  X25519MLKEM768 have no single family.
+- TLS and SSH `protocol` components that link the key-exchange groups
+  they can negotiate through `relatedCryptographicAssets`.
+- `certificate` assets keyed by SHA-256 fingerprint once the
+  per-certificate inventory (#108) is available.
+
+Both versions validate against the official schemas bundled under
+`tests/fixtures/cyclonedx/`. NIST IR 8547, the US transition guidance,
+is still an [initial public draft](https://csrc.nist.gov/pubs/ir/8547/ipd).
 
 **SPDX.** `--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
 JSON-LD document with `core` + `software` + `security` profile
@@ -351,6 +365,7 @@ Flags below are grouped by purpose.
 | Flag | Purpose |
 | --- | --- |
 | `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ansible` | See [Output formats](#output-formats). |
+| `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
 | `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). The file is replaced atomically (temp file in the same directory, then rename), so a reader such as node_exporter or the fleet aggregator never sees a partial report. Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
@@ -479,6 +494,27 @@ ready-to-deploy image is shipped at
 `make container-ubi8`); the existing `--host-mount` DaemonSet pattern
 is identical to the UBI 10 image. CI runs the full test suite inside the
 UBI 8 image on every PR and push to `main` (`ci-ubi8.yml`).
+
+**SLES 15 / openSUSE Leap 15 specifics.** SLES 15 and openSUSE Leap 15
+ship Python 3.6 as `/usr/bin/python3`; the openSUSE Leap 15.6 cloud
+image has nothing newer. On such a host the `pqc-readiness` wrapper
+exits 127 and prints SUSE-specific guidance. The fix is a one-time
+install of a newer interpreter alongside the system one. The wrapper
+finds `python3.11` on its own, and the system `python3` is left
+untouched:
+
+```bash
+sudo zypper --gpg-auto-import-keys ref   # refresh repo metadata (and import repo keys) first
+sudo zypper -n in python311              # provides /usr/bin/python3.11
+./pqc-readiness --json
+```
+
+These exact steps were tested on a booted openSUSE Leap 15.6 cloud image
+(`python311` gives Python 3.11.15). The scanner then ran normally and
+read the Berkeley DB rpm database in-process. openSUSE Leap 16.0 and Tumbleweed already ship Python 3.13 as
+`python3` (checked by booting their cloud images). The wrapper picks its install hint from `ID` / `ID_LIKE`
+in `/etc/os-release`. SUSE, RHEL-family and Debian/Ubuntu hosts each get
+their own hint ([#127](https://github.com/aclater/pqc-readiness/issues/127)).
 
 Out of scope for this tool: Windows / WSL, BSD, musl-specific behaviour
 beyond Alpine. macOS support is best-effort and limited to the paths
