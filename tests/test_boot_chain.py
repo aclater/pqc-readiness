@@ -206,9 +206,10 @@ def test_truncated_pkcs7_is_not_an_exception() -> None:
 
 
 def _modules_tree(root: Path, sig: str, config: str) -> None:
-    (root / "boot").mkdir()
-    (root / f"boot/config-{RELEASE}").write_text(config)
-    mdir = root / f"lib/modules/{RELEASE}"
+    # The fixture is a --host-mount tree: only /usr/lib/modules is read.
+    mdir = root / f"usr/lib/modules/{RELEASE}"
+    mdir.mkdir(parents=True)
+    (mdir / "config").write_text(config)
     (mdir / "kernel/fs").mkdir(parents=True)
     (mdir / "kernel/fs/fake.ko.xz").write_bytes(lzma.compress(_module(sig)))
     (mdir / "modules.dep").write_text("kernel/fs/fake.ko.xz:\n")
@@ -231,8 +232,9 @@ def test_module_signing_reads_config_and_xz_module(host: Path) -> None:
 
 
 def test_module_signing_falls_back_to_config_key_type(host: Path) -> None:
-    (host / "boot").mkdir()
-    (host / f"boot/config-{RELEASE}").write_text(
+    mdir = host / f"usr/lib/modules/{RELEASE}"
+    mdir.mkdir(parents=True)
+    (mdir / "config").write_text(
         "CONFIG_MODULE_SIG=y\nCONFIG_MODULE_SIG_KEY_TYPE_MLDSA_87=y\n"
     )
     mod = pb.detect_module_signing()
@@ -431,3 +433,26 @@ def test_cli_flag_and_offline_refusal() -> None:
         "scan_boot_chain",
         "--scan-boot-chain",
     ) in pr.detect.runtime_offline._INCOMPATIBLE_FLAGS
+
+
+def test_host_mount_never_reads_the_containers_boot_or_lib_modules(
+    host: Path, monkeypatch
+) -> None:
+    # /boot and /lib/modules are not redirected by --host-mount, so reading
+    # them would describe the scanner image's kernel, not the host's.
+    seen: list[str] = []
+    real = pr._platform.host_path
+
+    def spy(p: str) -> Path:
+        seen.append(p)
+        return real(p)
+
+    monkeypatch.setattr(pr._platform, "host_path", spy)
+    pb.detect_module_signing()
+    assert not [p for p in seen if p.startswith(("/boot", "/lib/modules"))]
+    assert f"/usr/lib/modules/{RELEASE}/config" in seen
+
+
+def test_bare_metal_reads_boot_config(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
+    assert pb._kernel_dirs("6.0") == ["/lib/modules/6.0", "/usr/lib/modules/6.0"]

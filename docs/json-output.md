@@ -582,7 +582,7 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 
 ### `boot_chain`
 
-`{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount`, `/boot`, `/lib/modules` and `/usr/lib/modules` are read under the prefix along with `/sys` and `/proc`.
+`{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount` the kernel config and modules are read from the host's `/usr/lib/modules/<release>/` (reachable through the deployments' read-only `/usr` mount; Fedora / RHEL ship the config there), never from the container's `/boot` or `/lib/modules`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -613,7 +613,7 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `kernel_release` | string | Running kernel release (`/proc/sys/kernel/osrelease`). |
-| `kernel_config_source` | string \| null | Where the kernel config was read: `/boot/config-<release>`, `/lib/modules/<release>/config` or `/proc/config.gz`. |
+| `kernel_config_source` | string \| null | Where the kernel config was read: `/boot/config-<release>` (bare metal only), `/lib/modules/<release>/config`, `/usr/lib/modules/<release>/config` or `/proc/config.gz`. |
 | `module_sig` | bool \| null | `CONFIG_MODULE_SIG`. |
 | `module_sig_force` | bool \| null | `CONFIG_MODULE_SIG_FORCE`. |
 | `module_sig_hash` | string \| null | `CONFIG_MODULE_SIG_HASH`, e.g. `sha512`. |

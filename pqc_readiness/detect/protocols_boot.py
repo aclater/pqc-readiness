@@ -299,10 +299,21 @@ def kernel_release() -> str:
         return os.uname().release
 
 
+def _kernel_dirs(release: str) -> list[str]:
+    """Where the kernel's modules and config live.  Under --host-mount only
+    /usr/lib/modules is redirected to the host (usr-merged distributions,
+    reachable through the deployments' /usr mount); /boot and /lib/modules
+    would be the scanner container's own, so they are skipped there."""
+    if _platform.HOST_PREFIX:
+        return [f"/usr/lib/modules/{release}"]
+    return [f"/lib/modules/{release}", f"/usr/lib/modules/{release}"]
+
+
 def read_kernel_config(release: str) -> tuple[dict[str, str], str | None]:
-    """CONFIG_MODULE_SIG* / IMA* / EVM* settings from /boot/config-<release>
-    or /proc/config.gz, and which file they came from."""
-    candidates = [f"/boot/config-{release}", f"/lib/modules/{release}/config"]
+    """CONFIG_MODULE_SIG* / IMA* / EVM* settings from /boot/config-<release>,
+    <modules dir>/config or /proc/config.gz, and which file they came from."""
+    candidates = [] if _platform.HOST_PREFIX else [f"/boot/config-{release}"]
+    candidates += [f"{d}/config" for d in _kernel_dirs(release)]
     for c in candidates:
         try:
             text = _platform.host_path(c).read_text(errors="replace")
@@ -427,7 +438,7 @@ def parse_pkcs7_signer(der: bytes) -> dict[str, Any]:
 
 def _module_candidates(release: str) -> list[Path]:
     """Module files to sample, from modules.dep order (deterministic)."""
-    for base in (f"/lib/modules/{release}", f"/usr/lib/modules/{release}"):
+    for base in _kernel_dirs(release):
         root = _platform.host_path(base)
         try:
             dep = (root / "modules.dep").read_text(errors="replace")
