@@ -844,7 +844,7 @@ import pytest  # noqa: E402  (placed after the existing tests for diff locality)
     ("rocky-9.txt",      "rhel",   "rocky",     False),
     ("almalinux-8.txt",  "rhel",   "almalinux", False),
     ("ubuntu-2404.txt",  "debian", "ubuntu",    True),
-    ("ubuntu-2510.txt",  "debian", "ubuntu",    True),
+    ("ubuntu-2604.txt",  "debian", "ubuntu",    True),
     ("debian-12.txt",    "debian", "debian",    True),
     ("debian-13.txt",    "debian", "debian",    True),
     ("sles-15sp6.txt",   "suse",   "sles",      False),
