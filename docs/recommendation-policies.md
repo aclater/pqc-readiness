@@ -152,6 +152,40 @@ special-case a role.
   single-digit ops/s. SLH-DSA is not a CNSA 2.0 algorithm, so it is not
   offered under `cnsa-2.0`.
 
+### `firmware-signing`
+
+- **Bottleneck:** none at sign time. Firmware is signed at build time
+  and verified for the device's whole field life, so long-term
+  confidence in the primitive dominates and no ISA-tier or throughput
+  caveats are emitted.
+- **KEM:** `null` with `mode: "n/a"`, as for `signing-service`.
+- **Signature:**
+
+  | Policy | Signature | Reason |
+  |--------|-----------|--------|
+  | `cnsa-2.0` | `ML-DSA-87` | Mandated by CNSA 2.0 |
+  | `nist-civilian` | `SLH-DSA-SHA2-128s` | Hash-based, conservative for firmware |
+  | `eu-anssi-bsi` | `SLH-DSA-SHA2-128s` | Hash-based, conservative for firmware |
+  | `commercial` | `SLH-DSA-SHA2-128s` | Hash-based, most conservative choice |
+
+  SLH-DSA relies only on hash-function security (no lattice
+  assumptions). Its slow sign rate is irrelevant at build time and its
+  7856-byte signatures are negligible next to megabyte firmware images.
+  ML-DSA-65 is named in the reason as the alternative for
+  performance-sensitive build pipelines.
+- **CNSA 2.0 caveat:** SLH-DSA is not a CNSA 2.0 algorithm. CNSA 2.0's
+  hash-based option for software and firmware signing is the stateful
+  LMS / XMSS family (NIST SP 800-208), which the caveat points to; those
+  schemes need strict key-state management, typically inside an HSM.
+- **HSM:** when a PQC-capable accelerator is present a caveat recommends
+  keeping the signing key in it.
+
+### `generic`
+
+No workload profile, so there is nothing role-specific to optimise. It
+returns a stub record (`implemented: false`) carrying the policy basis.
+Pick one of the roles above for an algorithm recommendation.
+
 ## How a policy update should be made
 
 1. Edit `POLICY_PREFERENCES` in `pqc_readiness.py`. This is the only

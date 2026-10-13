@@ -4259,13 +4259,64 @@ def _recommend_signing_service(r: Report, policy: str) -> dict[str, Any]:
     )
 
 
+def _recommend_firmware_signing(r: Report, policy: str) -> dict[str, Any]:
+    accel_pqc = _accel_pqc_capable(r.accelerators)
+    caveats: list[str] = []
+
+    # Firmware is signed at build time and verified for the device's
+    # whole field life, so long-term confidence in the primitive matters
+    # and sign throughput does not: no ISA-tier caveats for this role.
+    if policy == "cnsa-2.0":
+        sig_chosen = "ML-DSA-87"
+        sig_reason = (
+            "ML-DSA-87 mandated by CNSA 2.0; firmware is signed at build "
+            "time, so sign cost is irrelevant to the choice"
+        )
+        caveats.append(
+            "CNSA 2.0 also specifies stateful hash-based signatures (LMS / "
+            "XMSS, NIST SP 800-208) for software and firmware signing.  "
+            "They suit long-lived firmware but require strict key-state "
+            "management, typically inside an HSM.  SLH-DSA is not a "
+            "CNSA 2.0 algorithm."
+        )
+    else:
+        sig_chosen = "SLH-DSA-SHA2-128s"
+        slh_sig = PQC_SIZES["SLH-DSA-SHA2-128s"]["sig"]
+        sig_reason = (
+            "SLH-DSA-SHA2-128s — hash-based, relying only on hash-function "
+            "security with no lattice assumptions: the most conservative "
+            "choice for long-lived firmware that must verify for its whole "
+            "field life.  Build-time signing makes its slow sign rate "
+            f"irrelevant, and {slh_sig}-byte signatures are negligible next "
+            "to firmware images.  ML-DSA-65 is an alternative for "
+            "performance-sensitive build pipelines."
+        )
+
+    if accel_pqc:
+        caveats.append(
+            "A PQC-capable accelerator is present; keep the firmware "
+            f"signing key in it and sign {sig_chosen} there so the key "
+            "never leaves the HSM."
+        )
+    _fips_caveat(policy, bool((r.fips or {}).get("kernel")), caveats)
+    return _recommendation_record(
+        r,
+        policy,
+        "firmware-signing",
+        _no_kem("Key exchange is not applicable for firmware signing"),
+        {"algorithm": sig_chosen, "reason": sig_reason},
+        caveats,
+    )
+
+
 def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
-    """Placeholder for roles not yet fully implemented.  Returns the
+    """Placeholder for roles without a recommender.  Returns the
     policy basis so the JSON shape is consistent across roles, but
     leaves the algorithm fields empty.
 
-    Roles with a dedicated recommender are listed in
-    _ROLE_RECOMMENDERS; anything else lands here."""
+    Every workload role has a dedicated recommender in
+    _ROLE_RECOMMENDERS.  'generic' has no workload profile to optimise
+    for, so it lands here."""
     pref = POLICY_PREFERENCES[policy]
     return {
         "role": role,
@@ -4290,6 +4341,7 @@ _ROLE_RECOMMENDERS: dict[str, Callable[[Report, str], dict[str, Any]]] = {
     "tls-server": _recommend_tls_server,
     "tls-client": _recommend_tls_client,
     "signing-service": _recommend_signing_service,
+    "firmware-signing": _recommend_firmware_signing,
 }
 
 
@@ -6339,9 +6391,8 @@ def main() -> int:
         default=None,
         help=(
             "workload role.  Drives both the recommendation engine "
-            "('tls-server', 'tls-client' and 'signing-service' are fully "
-            "implemented; other roles currently return a stub response) "
-            "and the memory-tier "
+            "(every workload role is implemented; 'generic' returns a "
+            "stub response) and the memory-tier "
             "threshold (per-role good thresholds: tls-server=16 GiB, "
             "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
             "2 GiB, generic=16 GiB).  When omitted, the report contains "

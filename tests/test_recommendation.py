@@ -438,9 +438,75 @@ def test_renderers_print_na_for_null_kem() -> None:
     assert "`None`" not in md
 
 
-@pytest.mark.parametrize(
-    "role", ["firmware-signing"]
-)
+# ---------------------------------------------------------------------------
+# firmware-signing role (#92)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_firmware_signing_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy, "firmware-signing")["recommendations"][policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "firmware-signing"
+    assert sub["kem"]["algorithm"] is None
+    assert sub["kem"]["mode"] == "n/a"
+    assert sub["hash"]["algorithm"] == _EXPECTED_TLS[policy][3]
+    if policy == "cnsa-2.0":
+        assert sub["signature"]["algorithm"] == "ML-DSA-87"
+    else:
+        assert sub["signature"]["algorithm"] == "SLH-DSA-SHA2-128s"
+        assert "long-lived" in sub["signature"]["reason"]
+        assert "ML-DSA-65" in sub["signature"]["reason"]
+    # Build-time signing: no ISA tier / throughput caveats for any host.
+    assert not any("ISA tier" in c for c in sub["caveats"])
+    assert not any("throughput" in c for c in sub["caveats"])
+
+
+def test_firmware_signing_cnsa_points_at_cnsa_hash_based_options() -> None:
+    """SLH-DSA is not a CNSA 2.0 algorithm; CNSA 2.0's hash-based option
+    for firmware is LMS/XMSS (SP 800-208)."""
+    sub = pr.recommend(_make_report(), "cnsa-2.0", "firmware-signing")[
+        "recommendations"
+    ]["cnsa-2.0"]
+    assert any("LMS" in c and "SP 800-208" in c for c in sub["caveats"])
+    assert sub["signature"]["algorithm"] == "ML-DSA-87"
+
+
+def test_firmware_signing_reason_cites_signature_size_from_pqc_sizes() -> None:
+    sub = pr.recommend(_make_report(), "commercial", "firmware-signing")[
+        "recommendations"
+    ]["commercial"]
+    assert f"{pr.PQC_SIZES['SLH-DSA-SHA2-128s']['sig']}-byte" in sub["signature"][
+        "reason"
+    ]
+
+
+def test_firmware_signing_notes_pqc_hsm() -> None:
+    sub = pr.recommend(
+        _make_report(accelerators=_PQC_ACCEL), "commercial", "firmware-signing"
+    )["recommendations"]["commercial"]
+    assert any("HSM" in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ("nist-civilian", "eu-anssi-bsi", "commercial"))
+def test_firmware_signing_differs_from_signing_service(policy: str) -> None:
+    r = _make_report()
+    fw = pr.recommend(r, policy, "firmware-signing")["recommendations"][policy]
+    svc = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert fw["signature"]["algorithm"] != svc["signature"]["algorithm"]
+
+
+@pytest.mark.parametrize("role", ["tls-server", "tls-client", "signing-service", "firmware-signing"])
+def test_workload_roles_are_implemented(role: str) -> None:
+    sub = pr.recommend(_make_report(), "commercial", role)["recommendations"][
+        "commercial"
+    ]
+    assert sub["implemented"] is True
+
+
+@pytest.mark.parametrize("role", ["generic"])
 def test_other_roles_return_stub(role: str) -> None:
     r = _make_report()
     rec = pr.recommend(r, policy="commercial", role=role)
