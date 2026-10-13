@@ -162,7 +162,9 @@ from .detect.protocols import (  # noqa: F401
     parse_ssh_version,
 )
 from .detect.protocols_boot import scan_boot_chain  # noqa: F401
+from .detect.protocols_dnssec import scan_dnssec  # noqa: F401
 from .detect.protocols_kerberos import scan_kerberos  # noqa: F401
+from .detect.protocols_tunnels import scan_tunnels  # noqa: F401
 from .detect.protocols_libraries import (  # noqa: F401
     LIBRARY_SPECS,
     scan_crypto_libraries,

@@ -101,6 +101,10 @@ class Report:
     # Kerberos enctypes and PKINIT (--scan-kerberos, #109); {} when not
     # requested.
     kerberos: dict[str, Any] = field(default_factory=dict)
+    # WireGuard PSK presence / OpenVPN key exchange (--scan-tunnels) and
+    # DNSSEC algorithms (--scan-dnssec), #113; {} when not requested.
+    tunnels: dict[str, Any] = field(default_factory=dict)
+    dnssec: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is

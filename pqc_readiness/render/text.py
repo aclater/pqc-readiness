@@ -10,7 +10,9 @@ from .. import report as _report
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import protocols_boot as _boot
+from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
+from ..detect import protocols_tunnels as _tunnels
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +740,62 @@ def _render_text_kerberos(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_tunnels(r: _report.Report) -> list[str]:
+    """WireGuard PSKs and OpenVPN key exchange (--scan-tunnels, #113)."""
+    t = r.tunnels
+    if not t:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "16. Tunnels")]
+    if not t.get("available"):
+        L += [f"   Unavailable: {t.get('reason')}", ""]
+        return L
+    wg = (t.get("wireguard") or {}).get("summary") or {}
+    if wg.get("configured") or wg.get("unreadable_configs"):
+        L.append(
+            f"   WireGuard: {wg.get('peers', 0)} peers, "
+            f"{wg.get('peers_without_psk', 0)} without a pre-shared key"
+        )
+        for path in wg.get("unreadable_configs") or []:
+            L.append(f"   Unreadable: {path} (needs root)")
+    for c in (t.get("openvpn") or {}).get("configs") or []:
+        if not c.get("readable"):
+            L.append(f"   OpenVPN {c['path']}: {c.get('reason')}")
+            continue
+        state = {True: "PQC", False: "classical", None: "n/a"}[
+            c.get("pqc_key_exchange")
+        ]
+        L.append(f"   OpenVPN {c['path']}: {c.get('key_exchange')} [{state}]")
+    msg = _tunnels.describe_wireguard(t)
+    for line in ([msg] if msg else []) + _tunnels.describe_openvpn(t):
+        L.append(C.wrap(C.YELLOW, f"   {line}."))
+    L.append("")
+    return L
+
+
+def _render_text_dnssec(r: _report.Report) -> list[str]:
+    """DNSSEC signing / validation algorithms (--scan-dnssec, #113)."""
+    dn = r.dnssec
+    if not dn:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "17. DNSSEC")]
+    if not dn.get("available"):
+        L += [f"   Unavailable: {dn.get('reason')}", ""]
+        return L
+    s = dn.get("summary") or {}
+    algs = ", ".join(a["name"] for a in s.get("signing_algorithms") or []) or "none"
+    L.append(f"   Signing algorithms: {algs}")
+    for name, v in (dn.get("validators") or {}).items():
+        L.append(f"   Validator {name}: {v}")
+    bind = dn.get("bind") or {}
+    if bind.get("dnssec_validation") is not None:
+        L.append(f"   BIND dnssec-validation: {bind['dnssec_validation']}")
+    level, msg = _dnssec.describe(dn)
+    if msg:
+        L.append(C.wrap(C.YELLOW, f"   {msg}."))
+    L.append("")
+    return L
+
+
 def _offline_na_sections(r: _report.Report) -> str:
     """Human-readable list of what an offline --root scan cannot answer."""
     return (
@@ -1017,6 +1075,8 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_processes(r))
     L.extend(_render_text_boot_chain(r))
     L.extend(_render_text_kerberos(r))
+    L.extend(_render_text_tunnels(r))
+    L.extend(_render_text_dnssec(r))
     L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_deployment_gap(r))
     L.extend(_render_text_verdict(r))
