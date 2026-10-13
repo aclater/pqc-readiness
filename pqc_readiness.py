@@ -2976,18 +2976,31 @@ def openssl_upgrade_path(
                     "Pre-bookworm Debian ships OpenSSL 1.1.x; upgrade to "
                     "Debian 12 + backports or newer."
                 )
-        elif id_ == "ubuntu":
+        elif id_ == "ubuntu" and major and major.isdigit():
+            # Advice names LTS releases only: interim releases reach EOL
+            # after nine months and would rot this string (#121).
+            # Verified against the archive: noble (24.04) carries only
+            # OpenSSL 3.0.x in main/updates with no 3.5 build anywhere;
+            # resolute (26.04 LTS) ships OpenSSL 3.5.x in main.
+            if int(major) >= 26:
+                return (
+                    "Ubuntu 26.04 LTS and later ship OpenSSL 3.5 in main, "
+                    "but this host reports an older OpenSSL; check for "
+                    "held, pinned or third-party OpenSSL packages "
+                    "(`apt-cache policy openssl libssl3t64`) and apply "
+                    "pending updates."
+                )
             if major == "24":
                 return (
-                    "Ubuntu 24.04 LTS main ships OpenSSL 3.0; OpenSSL 3.5 is "
-                    "available in universe — `apt install libssl3` from a "
-                    "newer channel — or upgrade to 25.10."
+                    "Ubuntu 24.04 LTS ships OpenSSL 3.0 and its archive "
+                    "carries no OpenSSL 3.5 build; PQC requires Ubuntu "
+                    "26.04 LTS or later, which ships OpenSSL 3.5 in main."
                 )
-            if major and int(major) < 24:
-                return (
-                    "Ubuntu pre-24.04 LTS predates OpenSSL 3.5; upgrade to "
-                    "24.04 LTS (universe) or 25.10."
-                )
+            return (
+                f"Ubuntu {os_release.get('version_id')} predates OpenSSL 3.5 "
+                "in the Ubuntu archive; PQC requires Ubuntu 26.04 LTS or "
+                "later, which ships OpenSSL 3.5 in main."
+            )
     elif family == "suse":
         return (
             "SLES 15 SP6 ships OpenSSL 3.0; OpenSSL 3.5 is available via "
