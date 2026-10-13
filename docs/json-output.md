@@ -79,6 +79,8 @@ nothing was found.
 | `pqc_deployment_gap` | Capability vs configuration verdict (#107): for TLS, SSH and IPsec, and for every listening service when `--scan-services` ran, whether PQC is `deployed`, `capable_not_configured`, `configured_not_capable`, `not_capable`, `unknown` or `not_present`, with JSON paths to the fields that decided it. Computed from the other fields; no probe of its own. See [`pqc_deployment_gap`](#pqc_deployment_gap). |
 | `boot_chain` | Boot chain trust anchors and their algorithms: UEFI Secure Boot state and the PK / KEK / db / dbx / MOK signature lists, kernel module signing, IMA / EVM, kernel lockdown and TPM 2.0 post-quantum support. Populated only when `--scan-boot-chain` is set (`{}` otherwise). Keys: `available`, `secure_boot`, `module_signing`, `ima_evm`, `lockdown`, `tpm`, `summary` (see [Nested fields](#boot_chain)). |
 | `kerberos` | Kerberos encryption types and PKINIT: the client / KDC enctype lists (`krb5.conf` with includes, `kdc.conf`), keytab entries (principal, kvno, enctype; never keys) and PKINIT settings. Populated only when `--scan-kerberos` is set (`{}` otherwise). Keys: `available`, `config_files`, `config`, `kdc`, `keytabs`, `summary` (see [Nested fields](#kerberos)). |
+| `tunnels` | WireGuard and OpenVPN post-quantum posture: WireGuard peers' pre-shared-key presence (never the key) from wg-quick, systemd-networkd, NetworkManager and, as root on a live host, `wg show`; OpenVPN control-channel key exchange from each config's `tls-groups` / `tls-version-max`. Populated only when `--scan-tunnels` is set (`{}` otherwise). Keys: `available`, `wireguard`, `openvpn` (see [Nested fields](#tunnels)). |
+| `dnssec` | DNSSEC signing algorithms of authoritative servers on the host (BIND `dnssec-policy` and key files, Knot, PowerDNS) and validation settings (Unbound, systemd-resolved, BIND `dnssec-validation`). Populated only when `--scan-dnssec` is set (`{}` otherwise). Keys: `available`, `bind`, `knot`, `powerdns`, `validators`, `summary` (see [Nested fields](#dnssec)). |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -802,6 +804,53 @@ Enctype `status`: `deprecated` (DES, 3DES, RC4: RFC 6649 / RFC 8429), `aes128` (
 | `anchors` | object \| null | `pkinit_anchors`. For a `FILE:` value `{path, exists, certificates, categories, key_algorithms}` (`exists: false` when the file is missing, as with Fedora's stock `ca-bundle.crt` path); otherwise `{value}` naming only the store type. |
 | `identity_configured` | bool | `pkinit_identity` / `pkinit_identities` is set: PKINIT is in use. Anchors alone don't count. |
 | `identity` | object \| null | For a `FILE:` identity, the same fields as `anchors` (certificates only; the key half is never read); for other stores `{store}` (e.g. `PKCS11`). |
+
+### `tunnels`
+
+`{}` unless `--scan-tunnels`. Read in-process from configuration files; on a live host as root, `wg show all preshared-keys` adds the running interfaces (only whether each peer's pre-shared-key column is `(none)` is kept; the value is never stored or emitted). WireGuard's handshake is Curve25519 (Noise_IK); its only post-quantum mitigation is the optional per-peer pre-shared key (WireGuard protocol documentation). OpenVPN's control channel is TLS: `tls-groups` is handed to OpenSSL only when configured, and hybrid ML-KEM groups are TLS 1.3 only. Works with `--root` (configs only).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False when no WireGuard or OpenVPN configuration was found. |
+| `reason` | string | Why `available` is false, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `wireguard` | object | `{configs, running, summary}` (below). |
+| `openvpn` | object | `{configs, version, summary}` (below). |
+
+`wireguard`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `configs` | list[object] | One per WireGuard config: `{path, source, readable, peers}`, or `{path, source, readable: false, reason}` when unreadable (wg-quick configs are root-only; an `/etc/wireguard` directory that can't be listed appears as one unreadable entry with the directory as `path`). `source` is `wg-quick` (`/etc/wireguard/*.conf`), `systemd-networkd` (`.netdev` with `Kind=wireguard`) or `networkmanager` (keyfile with `type=wireguard`). Each `peers` item is `{preshared_key}` (bool; a NetworkManager PSK held by an agent counts as present). |
+| `running` | object | `{queried, interfaces}` when `wg show` ran (`interfaces` maps each interface to `{peers, with_psk}`), otherwise `{queried: false, reason}` (not root, `wg` missing, or not a live host namespace). |
+| `summary` | object | `{configured, peers, peers_without_psk, unreadable_configs}`. `peers` / `peers_without_psk` are the larger of the config and running counts. Drives SARIF `pqc-032`; each unreadable wg-quick config or directory raises `pqc-018` (undetermined), as does each unreadable OpenVPN config. |
+
+`openvpn`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `configs` | list[object] | One per config under `/etc/openvpn` (`*.conf`, `server/`, `client/`, `*.ovpn`): `{path, readable: false, reason}` when unreadable (also for a directory that exists but can't be listed: Fedora ships `server/` and `client/` 0750), otherwise the fields below. |
+| `version` | string \| null | Installed OpenVPN version from the rpm database; null elsewhere. |
+| `summary` | object | `{configured, without_pqc, follows_openssl_default}`: config paths whose key exchange can't be PQC, and those that inherit OpenSSL's defaults. Drives SARIF `pqc-033`. |
+
+Each readable `openvpn.configs` item: `path`, `readable`, `role` (`client` / `server` / null), `tls_groups` (list or null when unset), `tls_version_min`, `tls_version_max`, `control_channel_psk` (`tls-crypt-v2` / `tls-crypt` / `tls-auth` / null: a pre-shared symmetric key wrapped around the handshake), `static_key_mode` (`secret`: no public-key exchange at all), `data_ciphers`, `key_exchange` (`configured`, `openssl-default` or `static-key`) and `pqc_key_exchange` (true / false; null when it follows OpenSSL's defaults, see `openssl` and `crypto_policy`, or in static-key mode). `tls-version-max` 1.2 or lower forces `pqc_key_exchange: false`.
+
+### `dnssec`
+
+`{}` unless `--scan-dnssec`. Read in-process from configuration and key file names. Algorithm numbers, names and status follow the IANA DNS Security Algorithm Numbers registry: `pqc` (ML-DSA-44, algorithm 18, registered from an Internet-Draft), `deprecated` (MUST NOT for signing: RSAMD5, DSA, RSASHA1 and their NSEC3 variants, ECC-GOST), `classical`, `unknown`. Works with `--root`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False when no BIND, Knot, PowerDNS, Unbound or systemd-resolved configuration exists. |
+| `reason` | string | Why `available` is false, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `bind` | object \| null | `{config_files, dnssec_validation, policies, signed_zones, key_directory, key_files}` from `/etc/named.conf` or `/etc/bind/named.conf` with `include`s. `policies` maps each `dnssec-policy` to its key algorithms (the built-in `default` policy is one ECDSAP256SHA256 CSK); `signed_zones` lists `{zone, policy}` for zones with a policy other than `none`; `key_files` are the `K<zone>+<alg>+<id>.key` files found in the key directory (algorithm from the file name). |
+| `knot` | object \| null | `{config_files, policy_algorithms, signing_zones}` from `/etc/knot/knot.conf`; `signing_zones` counts `dnssec-signing: on`. |
+| `powerdns` | object \| null | `{config_files, default_algorithms}`: `default-ksk-algorithm` / `default-zsk-algorithm` from `pdns.conf`. |
+| `validators` | object | `unbound: {validating, trust_anchor_configured}` (validator module or trust anchor configured) and `systemd_resolved: {dnssec}` (the effective `DNSSEC=` value after drop-ins; null when unset), each present only when its config exists. |
+| `summary` | object | `{signing_algorithms, signing_configured, signing_pqc, deprecated_signing, unreadable_configs}`: the distinct algorithms used to sign zones (BIND policies in use and key files, Knot when signing, PowerDNS defaults), and `{path, reason}` for each server config that exists but couldn't be read (`named.conf` is root:named 0640 on RHEL / Fedora). Drives SARIF `pqc-034`; each unreadable config raises `pqc-018` (undetermined). |
+
+Each algorithm record (in `policies`, `key_files`, `policy_algorithms`, `default_algorithms`, `signing_algorithms`) is `{number, name, status}`; BIND policy entries add `role` (`ksk` / `zsk` / `csk`), key files add `zone` and `directory`.
 
 ### `os_release`
 

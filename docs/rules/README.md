@@ -27,6 +27,9 @@ fails if a registered rule has no page.
 | [pqc-020-pqc-capable-not-configured](pqc-020-pqc-capable-not-configured.md) | warning | PQC-capable software (TLS, SSH, IPsec or a service) is configured to stay classical (note: only restates pqc-008 / pqc-010) |
 | [pqc-030-classical-boot-chain](pqc-030-classical-boot-chain.md) | note | Boot chain signing keys (Secure Boot, module signing, IMA) are all classical; TPM has no PQC |
 | [pqc-031-kerberos-weak-enctypes](pqc-031-kerberos-weak-enctypes.md) | warning | Kerberos allows deprecated enctypes (note: only 128-bit enctypes, or classical PKINIT) |
+| [pqc-032-wireguard-peer-without-psk](pqc-032-wireguard-peer-without-psk.md) | warning | WireGuard peers have no pre-shared key |
+| [pqc-033-openvpn-classical-key-exchange](pqc-033-openvpn-classical-key-exchange.md) | warning | An OpenVPN configuration rules out PQC key exchange |
+| [pqc-034-dnssec-classical-signing](pqc-034-dnssec-classical-signing.md) | note | DNSSEC zones are signed with classical algorithms only (warning: an algorithm IANA marks MUST NOT for signing) |
 
 Sources are cited with their status. **Draft** means the document is not
 final, for example NIST IR 8547, which is still an initial public draft.
