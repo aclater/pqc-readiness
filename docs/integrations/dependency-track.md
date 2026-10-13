@@ -39,8 +39,8 @@ milestone 5.x). Re-test when those ship.
 So Dependency-Track 5.2.0 is useful as a **list of the cryptographic
 assets each host exposes**, searchable by name across projects. It is
 not a full crypto inventory. Keep the scanner's own JSON or CBOM as the
-authoritative record. #175 tracks mirroring the key crypto facts into
-`properties`, so that they survive the upload.
+authoritative record. `--cbom-interop dependency-track` (below) mirrors
+the key crypto facts into `properties`, so that they survive the upload.
 
 ## What happens in 4.14.5
 
@@ -51,7 +51,7 @@ org.dependencytrack.model.Classifier.CRYPTOGRAPHIC_ASSET`. The project
 is created with **zero components**, and the token endpoint only reports
 `{"processing":false}`. 4.x cannot ingest a CBOM that contains
 cryptographic assets. #175 tracks an output profile without crypto
-assets for consumers like this.
+assets for consumers like this: `--cbom-interop sbom-only` (below).
 
 ## Uploading
 
@@ -89,9 +89,52 @@ Then check processing:
 
 `--cbom-version 1.6` behaves the same as 1.7 on both lines.
 
+## `--cbom-interop` (#175)
+
+Two opt-in output shapes make the CBOM useful in Dependency-Track despite
+the behaviour above. The default (`none`) output is unchanged.
+
+| Mode | What it emits | 5.2.0 | 4.14.5 |
+|---|---|---|---|
+| `none` (default) | Cryptographic assets only | Stored; crypto details dropped | **Rejected, 0 components** |
+| `dependency-track` | Cryptographic assets, with the key crypto details mirrored into `pqc-readiness:crypto:*` properties, plus library components with purls and a `dependencies` graph (`provides` links each library to its assets) | **Stored, mirrored details kept**, libraries and purls stored, dependency graph complete | **Rejected, 0 components** |
+| `sbom-only` | Library components with purls only | Stored (libraries only) | **Stored (libraries only)** |
+
+Measured on 2026-10-13 against `ghcr.io/dependencytrack/apiserver:5.2.0`
+(PostgreSQL 17) and `docker.io/dependencytrack/apiserver:4.14.5`, with a
+Fedora 44 host's CBOM (`--scan-packages --scan-trust-store
+--scan-crypto-material`), in both CycloneDX 1.7 and 1.6. In 5.2.0 the
+1.7 `dependency-track` BOM kept all 458 components (453 cryptographic
+assets, 5 libraries) and all 3,047 mirrored properties through a
+re-export, which 5.2.0 writes as CycloneDX 1.5 without
+`cryptoProperties`. The test suite pins this with a real 5.2.0 export
+(`tests/fixtures/dependency-track/`).
+
+Mirrored properties, when present on the asset: `assetType`, `primitive`,
+`algorithmFamily`, `parameterSetIdentifier`, `nistQuantumSecurityLevel`,
+`executionEnvironment`, `implementationPlatform`, `protocolType`,
+`relatedCryptoMaterialType`, `certificateSha256`, `subjectName`,
+`issuerName`, `notValidAfter`, `certificateState`, and `classification`
+(`pure-pqc` / `hybrid` / `classical`). `cryptoProperties` stays the
+authoritative field.
+
+Library components:
+
+- Stacks the scanner probed get a `pkg:generic` purl with the detected
+  version, for example `pkg:generic/openssl@3.5.9` (the loaded library's
+  version when it differs from the CLI's) and `pkg:generic/openssh@10.2p1`.
+- Crypto-bearing distribution packages found by `--scan-packages` get a
+  distro purl, for example
+  `pkg:rpm/fedora/python3@3.14.8?distro=fedora-44`.
+- Versions are upstream versions without the distro release, so treat
+  these purls as identification, not as input for exact-build
+  vulnerability matching.
+
 ## Recommendations
 
-- Use **5.x**. 4.x cannot ingest this CBOM.
+- Use **5.x** with `--cbom-interop dependency-track`.
+- On **4.x**, only `--cbom-interop sbom-only` ingests; it carries the
+  libraries but none of the cryptographic assets.
 - Use **one project per host** (`projectName` = FQDN), so assets can be
   compared across the fleet.
 - For per-algorithm detail, or a verdict, use the scanner's JSON or the
