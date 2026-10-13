@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
 import platform
 import socket
 import sys
+import tempfile
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +18,7 @@ from typing import Any
 
 from . import _platform as _platform
 from . import aggregate as _aggregate
+from . import algorithms as _algorithms
 from . import bench as _bench
 from .detect import certs as _certs
 from .detect import config as _config
@@ -96,12 +99,38 @@ def _emit(text: str, path: Path | None) -> bool:
         print(text)
         return True
     try:
-        path.write_text(text + "\n")
+        _write_atomically(path, text + "\n")
     except OSError as e:
         print(f"--output: cannot write {str(path)!r}: {e}", file=sys.stderr)
         return False
     log.debug("wrote report to %s", path)
     return True
+
+
+def _write_atomically(path: Path, data: str) -> None:
+    """Write via a temp file in the same directory, then rename over `path`.
+
+    Readers never see a half-written report: node_exporter's textfile
+    collector requires this for *.prom files (#140), and the fleet
+    aggregator benefits when a timer rewrites a JSON report it is reading.
+    The file gets the mode a plain create would (0666 & ~umask), or keeps
+    the existing file's mode, rather than mkstemp's 0600."""
+    try:
+        mode = path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        umask = os.umask(0)
+        os.umask(umask)
+        mode = 0o666 & ~umask
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _package_doc() -> str | None:
@@ -163,6 +192,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     family = os_release.get("family", "unknown")
     osinfo = _config.openssl_capability(os_release)
     ssh_info = _protocols.detect_ssh_pqc(family)
+    _algorithms.annotate_key_exchange(osinfo, ssh_info)
     ipsec_info = _protocols.detect_ipsec_pqc(family)
     nss_info = _protocols.detect_nss()
     crypto_policy = _config_policy.detect_crypto_policy()
@@ -271,6 +301,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         verdict_reason=why,
         verdict_caveat=caveat,
         exit_code=code,
+        inventory_metadata=getattr(args, "inventory_metadata", None),
     )
     return r
 

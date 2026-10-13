@@ -376,7 +376,15 @@ def test_render_spdx_same_canonical_inputs_as_cbom() -> None:
     cbom = json.loads(pr.render_cbom(r))
     spdx = json.loads(pr.render_spdx(r))
 
-    cbom_names = sorted(c["name"] for c in cbom["components"])
+    keys = {a.key for a in canonical}
+    cbom_names = sorted(c["name"] for c in cbom["components"] if c["bom-ref"] in keys)
+    # CycloneDX 1.7 adds components derived from the same canonical list
+    # (protocol groupings, certificates) — never new detection logic.
+    extras = [c for c in cbom["components"] if c["bom-ref"] not in keys]
+    assert all(
+        c["cryptoProperties"]["assetType"] in ("protocol", "certificate")
+        for c in extras
+    )
     spdx_asset_names = sorted(
         e.get("name", "")
         for e in spdx["@graph"]

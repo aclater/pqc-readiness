@@ -123,3 +123,31 @@ jobs:
             --workdir /src \
             "$IMAGE" \
             /bin/sh -c 'set -e; eval "$SETUP"; "$PY" -m pytest -p no:cacheprovider tests/ -q'
+
+  suse15-stock-guidance:
+    # #127: the matrix leg above installs python311 before testing, which
+    # hides what a stock SLES 15 / Leap 15 host sees.  This job runs the
+    # wrapper on the stock image first (no Python 3.9+) and asserts the
+    # SUSE-specific guidance, then runs exactly the advised commands and
+    # asserts the tool now starts.  Non-blocking like the matrix.
+    name: SLES 15 stock-image guidance
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Wrapper guidance on stock SLES 15, then advised fix
+        run: |
+          podman run --rm --user 0 -e PYTHONDONTWRITEBYTECODE=1 \
+            -v "$PWD:/src:ro" --workdir /src \
+            registry.suse.com/bci/bci-base:15.7 /bin/sh -c '
+              set -u
+              rc=0; ./pqc-readiness --version 2>/tmp/err || rc=$?
+              cat /tmp/err
+              [ "$rc" -eq 127 ] || { echo "expected exit 127, got $rc"; exit 1; }
+              grep -q "sudo zypper -n in python311" /tmp/err || { echo "missing SUSE hint"; exit 1; }
+              if grep -q "dnf module install" /tmp/err; then echo "EL8 hint shown on SUSE"; exit 1; fi
+              zypper --non-interactive --gpg-auto-import-keys ref
+              zypper --non-interactive in python311
+              ./pqc-readiness --version
+            '

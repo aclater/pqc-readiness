@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for the CycloneDX 1.6 CBOM renderer.
+"""Unit tests for the CycloneDX CBOM renderer (1.7 default, 1.6 kept).
 
 The renderer is a pure function over the Report dataclass, so we build
 a synthetic Report with one of every detection source populated, render
@@ -109,29 +109,46 @@ def _make_report() -> pr.Report:
     return r
 
 
-def _load_schema() -> dict[str, Any]:
-    return json.loads(BOM_SCHEMA_PATH.read_text())
+# Companion schemas each BOM schema $refs, per specVersion.  1.7 adds the
+# cryptography-defs registry and ships its own copy of the SPDX license
+# schema, so each version validates against the exact set it was
+# published with (tests/fixtures/cyclonedx/1.7/README.md).
+_SCHEMA_SETS: dict[str, tuple[Any, tuple[str, ...]]] = {
+    "1.6": (SCHEMA_DIR, ("spdx.schema.json",)),
+    "1.7": (
+        SCHEMA_DIR / "1.7",
+        ("spdx.schema.json", "cryptography-defs.schema.json", "jsf-0.82.schema.json"),
+    ),
+}
 
 
-def _validate_with_jsonschema(instance: dict[str, Any]) -> None:
-    """Validate `instance` against bundled CycloneDX 1.6 schema.  The
-    schema $refs `spdx.schema.json`, which lives next to the BOM schema
-    file; we wire a referencing.Registry so the resolver finds it
+def _load_schema(version: str = "1.6") -> dict[str, Any]:
+    base, _ = _SCHEMA_SETS[version]
+    return json.loads((base / f"bom-{version}.schema.json").read_text())
+
+
+def _validate_with_jsonschema(instance: dict[str, Any], version: str = "1.6") -> None:
+    """Validate `instance` against the bundled CycloneDX schema for
+    `version`.  The BOM schema $refs companion schemas that live next to
+    it; we wire a referencing.Registry so the resolver finds them
     without going to the network.
 
     Different jsonschema versions resolve `$ref` against different bases
     (some keep the relative URL verbatim, some resolve it against the
-    BOM schema's `$id`).  We register the SPDX schema under both keys
+    BOM schema's `$id`).  We register each companion under both keys
     so either resolver path finds it."""
     from urllib.parse import urljoin
 
     jsonschema = pytest.importorskip("jsonschema")
-    bom_schema = _load_schema()
-    spdx_schema = json.loads(SPDX_SCHEMA_PATH.read_text())
-    spdx_keys: list[str] = ["spdx.schema.json"]
+    base, companions = _SCHEMA_SETS[version]
+    bom_schema = _load_schema(version)
     bom_id = bom_schema.get("$id", "")
-    if bom_id:
-        spdx_keys.append(urljoin(bom_id, "spdx.schema.json"))
+    store: dict[str, Any] = {}
+    for name in companions:
+        schema = json.loads((base / name).read_text())
+        store[name] = schema
+        if bom_id:
+            store[urljoin(bom_id, name)] = schema
     try:
         from referencing import Registry, Resource
         from referencing.jsonschema import DRAFT7
@@ -140,35 +157,34 @@ def _validate_with_jsonschema(instance: dict[str, Any]) -> None:
         from jsonschema import RefResolver  # type: ignore[attr-defined]
 
         resolver = RefResolver.from_schema(
-            bom_schema,
-            store={**{k: spdx_schema for k in spdx_keys}, bom_id: bom_schema},
+            bom_schema, store={**store, bom_id: bom_schema}
         )
-        jsonschema.validate(
-            instance=instance,
-            schema=bom_schema,
-            resolver=resolver,
-        )
+        jsonschema.validate(instance=instance, schema=bom_schema, resolver=resolver)
         return
-    spdx_resource = Resource.from_contents(
-        spdx_schema,
-        default_specification=DRAFT7,
+    registry = Registry().with_resources(
+        [
+            (k, Resource.from_contents(v, default_specification=DRAFT7))
+            for k, v in store.items()
+        ]
     )
-    registry = Registry().with_resources([(k, spdx_resource) for k in spdx_keys])
     validator_cls = jsonschema.validators.validator_for(bom_schema)
     validator_cls(bom_schema, registry=registry).validate(instance)
 
 
-def test_render_cbom_validates_against_schema() -> None:
+@pytest.mark.parametrize("version", ["1.6", "1.7"])
+def test_render_cbom_validates_against_schema(version: str) -> None:
     r = _make_report()
-    bom = json.loads(pr.render_cbom(r))
-    _validate_with_jsonschema(bom)
+    bom = json.loads(pr.render_cbom(r, version))
+    _validate_with_jsonschema(bom, version)
 
 
-def test_render_cbom_top_level_shape() -> None:
+@pytest.mark.parametrize("version", ["1.6", "1.7"])
+def test_render_cbom_top_level_shape(version: str) -> None:
     r = _make_report()
-    bom = json.loads(pr.render_cbom(r))
+    bom = json.loads(pr.render_cbom(r, version))
     assert bom["bomFormat"] == "CycloneDX"
-    assert bom["specVersion"] == "1.6"
+    assert bom["specVersion"] == version
+    assert bom["$schema"] == f"http://cyclonedx.org/schema/bom-{version}.schema.json"
     assert bom["serialNumber"].startswith("urn:uuid:")
     assert bom["version"] == 1
     assert bom["metadata"]["timestamp"] == "2026-04-28T12:00:00+00:00"
@@ -270,19 +286,20 @@ def test_render_cbom_trust_store_summary_emitted() -> None:
     assert _has_property(ts, "trust_store:total_certs", "142")
 
 
-def test_render_cbom_empty_report_still_validates() -> None:
+@pytest.mark.parametrize("version", ["1.6", "1.7"])
+def test_render_cbom_empty_report_still_validates(version: str) -> None:
     """An empty Report must still produce a schema-valid CBOM (a BOM
-    with zero components is legal in 1.6) — guards against regressions
-    where the renderer crashes on missing optional fields."""
+    with zero components is legal) — guards against regressions where
+    the renderer crashes on missing optional fields."""
     r = pr.Report(
         generated_at="2026-04-28T12:00:00+00:00",
         hostname="bare",
         arch="aarch64",
     )
-    bom = json.loads(pr.render_cbom(r))
-    assert bom["specVersion"] == "1.6"
+    bom = json.loads(pr.render_cbom(r, version))
+    assert bom["specVersion"] == version
     assert bom["components"] == []
-    _validate_with_jsonschema(bom)
+    _validate_with_jsonschema(bom, version)
 
 
 def test_render_cbom_arch_mapping_to_implementation_platform() -> None:
@@ -309,3 +326,196 @@ def test_render_cbom_arch_mapping_to_implementation_platform() -> None:
             "implementationPlatform"
         ]
         assert plat == expected, f"{arch} → {plat} (expected {expected})"
+
+
+# ---------------------------------------------------------------------------
+# CycloneDX 1.7 (#138)
+# ---------------------------------------------------------------------------
+
+_ZERO_SERIAL = "urn:uuid:00000000-0000-0000-0000-000000000000"
+_CDX17 = SCHEMA_DIR / "1.7"
+
+
+def _bom(version: str, r: pr.Report | None = None) -> dict[str, Any]:
+    bom: dict[str, Any] = json.loads(pr.render_cbom(r or _make_report(), version))
+    return bom
+
+
+def _by_ref(bom: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {c["bom-ref"]: c for c in bom["components"]}
+
+
+def test_cbom_1_6_output_is_byte_identical_to_pre_1_7_release() -> None:
+    """--cbom-version 1.6 must not change: the golden file was rendered
+    from main before #138 with the same synthetic report."""
+    bom = _bom("1.6")
+    bom["serialNumber"] = _ZERO_SERIAL
+    golden = (SCHEMA_DIR / "cbom-1.6-golden.json").read_text()
+    assert json.dumps(bom, indent=2) + "\n" == golden
+
+
+def test_cbom_default_spec_version_is_1_7() -> None:
+    r = _make_report()
+    assert json.loads(pr.render_cbom(r))["specVersion"] == "1.7"
+
+
+def test_cbom_rejects_unknown_spec_version() -> None:
+    with pytest.raises(ValueError, match="unsupported CycloneDX version"):
+        pr.render_cbom(_make_report(), "1.5")
+
+
+def test_cbom_1_7_algorithm_families_come_from_the_registry() -> None:
+    families = set(
+        json.loads((_CDX17 / "cryptography-defs.schema.json").read_text())[
+            "definitions"
+        ]["algorithmFamiliesEnum"]["enum"]
+    )
+    comps = _by_ref(_bom("1.7"))
+    got = {
+        ref: c["cryptoProperties"]["algorithmProperties"].get("algorithmFamily")
+        for ref, c in comps.items()
+        if c["cryptoProperties"]["assetType"] == "algorithm"
+    }
+    assert got["openssl/kem/ML-KEM-768"] == "ML-KEM"
+    assert got["openssl/sig/ML-DSA-87"] == "ML-DSA"
+    assert got["openssl/sig/SLH-DSA-SHA2-128s"] == "SLH-DSA"
+    assert got["openssl/tls-pure-pqc/MLKEM768"] == "ML-KEM"
+    # Hybrids, ISA features and accelerators have no single family.
+    assert got["openssl/tls-hybrid/X25519MLKEM768"] is None
+    assert got["ssh/kex/hybrid/mlkem768x25519-sha256"] is None
+    assert got["isa/avx512ifma"] is None
+    assert {f for f in got.values() if f} <= families
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("ML-KEM-1024", ("ML-KEM", True)),
+        ("MLKEM1024", ("ML-KEM", True)),
+        ("ML-DSA-44", ("ML-DSA", True)),
+        ("SLH-DSA-SHAKE-256f", ("SLH-DSA", True)),
+        ("LMS", ("LMS", True)),
+        ("XMSS", ("XMSS", True)),
+        ("hqc128", ("HQC", False)),
+        ("FN-DSA-512", ("FN-DSA", False)),
+        ("falcon512", ("FN-DSA", False)),
+        ("frodo640aes", ("FrodoKEM", False)),
+        ("mceliece348864", ("Classic-McEliece", False)),
+        ("X25519MLKEM768", None),
+        ("SecP384r1MLKEM1024", None),
+        ("mlkem1024nistp384-sha384", None),
+        ("sntrup761x25519-sha512", None),
+        ("AVX-512 IFMA", None),
+    ],
+)
+def test_cdx17_algorithm_family_mapping(name: str, expected: Any) -> None:
+    from pqc_readiness.render import cbom
+
+    assert cbom._cdx17_algorithm_family(name) == expected
+
+
+def test_cbom_1_7_marks_families_missing_from_the_registry() -> None:
+    r = _make_report()
+    r.openssl["kem_algorithms"] = ["ML-KEM-768", "hqc128", "frodo640aes"]
+    bom = _bom("1.7", r)
+    _validate_with_jsonschema(bom, "1.7")
+    comp = _by_ref(bom)["openssl/kem/hqc128"]
+    assert "algorithmFamily" not in comp["cryptoProperties"]["algorithmProperties"]
+    props = {p["name"]: p["value"] for p in comp["properties"]}
+    assert props["pqc-readiness:algorithmFamily"] == "HQC"
+    assert (
+        props["pqc-readiness:algorithmFamily:registry"]
+        == "not-in-cyclonedx-1.7-registry"
+    )
+
+
+def test_cbom_1_7_protocol_components_link_their_algorithms() -> None:
+    bom = _bom("1.7")
+    comps = _by_ref(bom)
+    tls = comps["protocol/tls"]["cryptoProperties"]["protocolProperties"]
+    assert tls["type"] == "tls" and tls["version"] == "1.3"
+    assert {a["ref"] for a in tls["relatedCryptographicAssets"]} == {
+        "openssl/tls-hybrid/X25519MLKEM768",
+        "openssl/tls-pure-pqc/MLKEM768",
+    }
+    ssh = comps["protocol/ssh"]["cryptoProperties"]["protocolProperties"]
+    assert ssh["type"] == "ssh"
+    # Every link resolves to a component in the same BOM.
+    for proto in (tls, ssh):
+        for link in proto["relatedCryptographicAssets"]:
+            assert link["ref"] in comps and link["type"] == "algorithm"
+    # 1.6 has no protocol grouping components.
+    assert "protocol/tls" not in _by_ref(_bom("1.6"))
+
+
+def test_cbom_1_7_bom_refs_are_unique() -> None:
+    refs = [c["bom-ref"] for c in _bom("1.7")["components"]]
+    assert len(refs) == len(set(refs))
+
+
+def test_cbom_1_7_certificate_contract_for_per_cert_inventory() -> None:
+    """Contract for #108: trust_store.certificates entries become 1.7
+    certificate assets keyed by SHA-256 fingerprint."""
+    r = _make_report()
+    sha = "ab" * 32
+    r.trust_store["certificates"] = [
+        {
+            "sha256": sha.upper(),
+            "serial": "0a1b2c",
+            "subject": "CN=Example Root",
+            "issuer": "CN=Example Root",
+            "not_before": "2020-01-01T00:00:00+00:00",
+            "not_after": "2099-01-01T00:00:00+00:00",
+            "category": "classical",
+        },
+        {"sha256": "not-a-fingerprint"},  # skipped: no valid join key
+    ]
+    bom = _bom("1.7", r)
+    _validate_with_jsonschema(bom, "1.7")
+    certs = [
+        c
+        for c in bom["components"]
+        if c["cryptoProperties"]["assetType"] == "certificate"
+    ]
+    assert len(certs) == 1
+    cert = certs[0]
+    assert cert["bom-ref"] == f"cert/sha256:{sha}"
+    props = cert["cryptoProperties"]["certificateProperties"]
+    assert props["fingerprint"] == {"alg": "SHA-256", "content": sha}
+    assert props["serialNumber"] == "0a1b2c"
+    assert props["certificateState"] == [{"state": "active"}]
+    # 1.6 output ignores the list.
+    assert all(
+        c["cryptoProperties"]["assetType"] != "certificate"
+        for c in _bom("1.6", r)["components"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("not_before", "not_after", "state"),
+    [
+        ("2099-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00", "pre-activation"),
+        ("2000-01-01T00:00:00Z", "2001-01-01T00:00:00Z", "deactivated"),
+        ("2000-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00", "active"),
+        ("garbage", "2001-01-01T00:00:00Z", None),
+        ("2000-01-01T00:00:00", "2001-01-01T00:00:00", None),  # naive: unknown zone
+    ],
+)
+def test_cdx17_certificate_state(not_before: str, not_after: str, state: Any) -> None:
+    from pqc_readiness.render import cbom
+
+    assert cbom._cdx17_certificate_state(not_before, not_after) == state
+
+
+def test_cli_cbom_version_selection_does_not_leak_between_runs(
+    monkeypatch, capsys
+) -> None:
+    """--cbom-version is recorded by an argparse action; a later main()
+    without the flag must fall back to the 1.7 default."""
+    from pqc_readiness import cli
+
+    monkeypatch.setattr(cli, "collect_report", lambda args: _make_report())
+    cli.main(["--cbom", "--cbom-version", "1.6"])
+    assert json.loads(capsys.readouterr().out)["specVersion"] == "1.6"
+    cli.main(["--cbom"])
+    assert json.loads(capsys.readouterr().out)["specVersion"] == "1.7"
