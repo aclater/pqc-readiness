@@ -992,15 +992,24 @@ def detect_ktls_annotated() -> dict[str, Any]:
     return out
 
 
-def detect_fips_mode_from_providers_text(text: str) -> bool:
-    """Parse `openssl list -providers -verbose` output as records and
-    return True iff a provider named exactly 'fips' has 'status: active'.
+# `openssl list -providers -verbose` is constant for the process lifetime
+# and serves both FIPS detection and the provider list in
+# openssl_capability(); one cached call replaces two subprocesses (#117).
+@functools.lru_cache(maxsize=None)
+def _openssl_providers_verbose_text() -> tuple[int, str]:
+    """Return cached (rc, text) from `openssl list -providers -verbose`.
+    Tests requiring a fresh subprocess call must invoke .cache_clear()."""
+    return _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
+
+
+def parse_openssl_provider_records(text: str) -> dict[str, dict[str, str]]:
+    """Parse `openssl list -providers -verbose` output into
+    {provider_name: {field: value}}.
 
     Provider records are introduced by a 2-space-indented line containing
     just the provider name; field lines under that record are indented
-    4+ spaces and look like `    status: active`.  A FIPS provider that
-    is loaded but inactive (status anything other than 'active') must NOT
-    register as enabled — earlier regex-based detection conflated the two.
+    exactly 4 spaces and look like `    status: active`.  Deeper-indented
+    lines (the `gettable provider parameters` listing) are ignored.
     """
     records: dict[str, dict[str, str]] = {}
     current: str | None = None
@@ -1015,7 +1024,16 @@ def detect_fips_mode_from_providers_text(text: str) -> bool:
         f = re.match(r"^    (\S+):\s*(.*)$", line)
         if f:
             records[current][f.group(1).strip()] = f.group(2).strip()
-    fips = records.get("fips") or {}
+    return records
+
+
+def detect_fips_mode_from_providers_text(text: str) -> bool:
+    """Return True iff `openssl list -providers -verbose` output lists a
+    provider named exactly 'fips' with 'status: active'.  A FIPS provider
+    that is loaded but inactive (status anything other than 'active') must
+    NOT register as enabled — earlier regex-based detection conflated the
+    two."""
+    fips = parse_openssl_provider_records(text).get("fips") or {}
     return fips.get("status", "").lower() == "active"
 
 
@@ -1028,7 +1046,7 @@ def detect_fips_mode() -> dict[str, Any]:
     except OSError as e:
         log.debug("detect_fips_mode: cannot read /proc/sys/crypto/fips_enabled: %s", e)
     if shutil.which("openssl"):
-        rc, out = _run(["openssl", "list", "-providers", "-verbose"], timeout=5)
+        rc, out = _openssl_providers_verbose_text()
         if rc == 0:
             info["openssl_provider"] = detect_fips_mode_from_providers_text(out)
     note = host_fs_unavailable_note(
@@ -2964,13 +2982,9 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     out["tls_pqc_groups"] = sorted(
         set(classified["pure_pqc"]) | set(classified["hybrid"])
     )
-    rc, providers = _run(["openssl", "list", "-providers"], timeout=5)
+    rc, providers = _openssl_providers_verbose_text()
     out["providers"] = (
-        sorted(
-            {m.group(1) for m in re.finditer(r"^\s*(\w+)\s*$", providers, re.MULTILINE)}
-        )
-        if rc == 0
-        else []
+        sorted(parse_openssl_provider_records(providers)) if rc == 0 else []
     )
     out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
     return out

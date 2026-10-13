@@ -130,3 +130,57 @@ def test_verdict_reports_skip_reason() -> None:
     slh = [v for k, v in verdicts.items() if k.startswith("SLH-DSA")]
     assert slh and all(v["tier"] == "unknown" for v in slh)
     assert all(v["reason"] == pr.BENCH_SKIPPED_NOT_PROVIDED for v in slh)
+
+
+# ---------------------------------------------------------------------------
+# One `openssl list -providers -verbose` call serves FIPS detection and the
+# provider list (#117 follow-up: the plain `-providers` call was redundant).
+# ---------------------------------------------------------------------------
+
+MULTI_PROVIDERS = """Providers:
+  base
+    name: OpenSSL Base Provider
+    status: active
+  default
+    name: OpenSSL Default Provider
+    version: 3.5.5
+    status: active
+    build info: 3.5.5
+    gettable provider parameters:
+      name: pointer to a UTF8 encoded string (arbitrary size)
+      status: integer (arbitrary size)
+  fips
+    name: OpenSSL FIPS Provider
+    status: active
+"""
+
+
+def test_provider_records_ignore_parameter_listing() -> None:
+    recs = pr.parse_openssl_provider_records(MULTI_PROVIDERS)
+    assert sorted(recs) == ["base", "default", "fips"]
+    assert recs["default"]["status"] == "active"
+    # Deeper-indented gettable-parameter lines must not overwrite fields.
+    assert recs["default"]["name"] == "OpenSSL Default Provider"
+
+
+def test_providers_listed_once_for_fips_and_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
+        calls.append(cmd)
+        if cmd[:3] == ["openssl", "list", "-providers"]:
+            return 0, MULTI_PROVIDERS
+        if cmd[:2] == ["openssl", "version"]:
+            return 0, VERSION_35
+        return 0, ""
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    cap = pr.openssl_capability()
+    fips = pr.detect_fips_mode()
+    assert cap["providers"] == ["base", "default", "fips"]
+    assert fips["openssl_provider"] is True
+    provider_calls = [c for c in calls if c[:3] == ["openssl", "list", "-providers"]]
+    assert provider_calls == [["openssl", "list", "-providers", "-verbose"]]
