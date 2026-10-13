@@ -255,7 +255,7 @@ example Ansible playbooks already use the zipapp.
 | (default) | Coloured text report | Operator console |
 | `--markdown` | Markdown | Pasting into tickets |
 | `--json` | Stable JSON schema | Fleet aggregation, automation |
-| `--cbom` | CycloneDX 1.6 CBOM | NIST IR 8547 inventory pipelines |
+| `--cbom` | CycloneDX 1.6 CBOM | Cryptographic-inventory (CBOM) pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
 | `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
@@ -278,10 +278,9 @@ accelerators, OpenSSL primitives, OpenSSH KEX, IPsec, PKCS#11 modules,
 trust-store summary — becomes a `cryptographic-asset` component with
 `assetType`, `algorithmProperties` where applicable, and a
 `detectedBy: pqc-readiness@<version>` provenance property. Validates
-against the official CycloneDX 1.6 JSON schema. NIST IR 8547
-([final](https://csrc.nist.gov/pubs/ir/8547/final)) references
-CycloneDX 1.6 as the standard exchange format for cryptographic
-inventory.
+against the official CycloneDX 1.6 JSON schema. (NIST IR 8547 is
+still an [initial public draft](https://csrc.nist.gov/pubs/ir/8547/ipd);
+it sets transition timelines and does not define an inventory format.)
 
 **SPDX.** `--spdx` emits an [SPDX 3.0.1](https://spdx.github.io/spdx-spec/v3.0.1/)
 JSON-LD document with `core` + `software` + `security` profile
