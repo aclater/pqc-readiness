@@ -63,6 +63,7 @@ class Report:
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)
     trust_store: dict[str, Any] = field(default_factory=dict)
+    crypto_material: dict[str, Any] = field(default_factory=dict)
     runtime_environment: dict[str, Any] = field(default_factory=dict)
     # --scan-services (#111): listening sockets -> owning process -> the
     # crypto library it maps (or Go toolchain).  {} when not requested.

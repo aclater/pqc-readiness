@@ -21,6 +21,7 @@ from . import aggregate as _aggregate
 from . import algorithms as _algorithms
 from . import bench as _bench
 from .detect import certs as _certs
+from .detect import certs_discovery as _certs_discovery
 from .detect import config as _config
 from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
@@ -209,6 +210,12 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     trust_store_info: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
         trust_store_info = _certs.scan_trust_store(max_certs=args.trust_store_max_certs)
+    crypto_material_info: dict[str, Any] = {}
+    if getattr(args, "scan_crypto_material", False):
+        crypto_material_info = _certs_discovery.scan_crypto_material(
+            paths=args.crypto_material_path,
+            max_files=args.crypto_material_max_files,
+        )
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
         packages_info = _packages.scan_packages(os_release)
@@ -289,6 +296,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         fips_pqc_conflict=fips_conflict,
         cnsa_2_0=cnsa_2_0,
         trust_store=trust_store_info,
+        crypto_material=crypto_material_info,
         runtime_environment=runtime_env,
         service_crypto_linkage=services_info,
         host_fs_detections_unavailable=host_fs_detections_unavailable,

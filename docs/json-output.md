@@ -65,6 +65,7 @@ nothing was found.
 | `fips_pqc_conflict` | `{in_conflict, explanation}`: `in_conflict` is true when kernel FIPS mode is on but PQC algorithms are exposed only through the non-FIPS default provider. See [`fips_pqc_conflict`](#fips_pqc_conflict). |
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
 | `trust_store` | Trust-store summary. Populated only when `--scan-trust-store` is set (`{}` otherwise). Certificates are classified from the signature-algorithm and SubjectPublicKeyInfo OIDs in their DER encoding (independent of the installed OpenSSL), every certificate in multi-certificate bundle files is inspected, and counts are per **unique certificate** (SHA-256 of the DER; a `TRUSTED CERTIFICATE` block counts as its embedded certificate). Keys: `available`, `scanned_dirs`, `total_certs` (unique certificates whose DER parsed), `pqc_certs` (signature or key algorithm is ML-DSA / SLH-DSA), `hybrid_certs` (pre-standard hybrid OIDs), `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found` (unique certificates found across all `*.pem` / `*.crt` files after symlink de-duplication), `scanned_count` (certificates classified, ≤ `max_certs`), `max_certs` (cap in effect, default 500, set by `--trust-store-max-certs`), and `truncated` (true when `total_found > max_certs`; certificates are taken in sorted file order, then file order, so a capped scan is deterministic). Earlier releases counted *files*, read only the first certificate in each, and missed PQC certificates on OpenSSL ≥ 3.5 (#116); the field shapes are unchanged, but the count semantics changed in schema `1.3`, so counts from older reports are not comparable (the fleet aggregator already refuses to mix versions). |
+| `crypto_material` | Filesystem discovery of certificates, private keys and Java keystores (#108). Populated only when `--scan-crypto-material` is set (`{}` otherwise); see [`crypto_material`](#crypto_material). Private keys are reported as metadata only — their content is never read into the report. |
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
 | `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
@@ -234,6 +235,36 @@ Each list item describes one detected device or HSM client configuration:
 ### `trust_store`
 
 `{}` unless `--scan-trust-store`. When the scan ran: `available`, `scanned_dirs`, `total_certs`, `pqc_certs`, `hybrid_certs`, `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found`, `scanned_count`, `max_certs`, `truncated`, as described in the [top-level table](#top-level-keys).
+
+`certificates` lists every classified certificate (≤ `max_certs`), one object per unique certificate. It is the per-certificate contract the CycloneDX 1.7 emitter projects into `certificate` assets (#138):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `sha256` | string | SHA-256 of the certificate DER, lowercase hex. The join key (CycloneDX 1.7 `fingerprint`). |
+| `serial` | string | Serial number as hex of the DER INTEGER content. |
+| `subject` / `issuer` | string | RFC 4514 names, most specific RDN first. |
+| `not_before` / `not_after` | string | Validity window, ISO 8601 UTC. |
+| `category` | string | `classical`, `hybrid_composite` or `pure_pqc`, from the signature and key algorithm OIDs. |
+| `role` | string | `ca` (basicConstraints cA=TRUE, or a self-signed certificate without basicConstraints, i.e. a v1 root) or `leaf`. |
+| `key_algorithm` | string | Subject public key algorithm: `RSA`, `RSASSA-PSS`, `EC <curve>` (e.g. `EC P-256`), `DSA`, `Ed25519`, `Ed448`, `X25519`, `X448`, `ML-DSA-44/65/87`, `SLH-DSA-*`, `ML-KEM-512/768/1024`, or the dotted OID when unknown. |
+| `key_size` | int \| null | Key size in bits for RSA (modulus) and EC/EdDSA/X25519 curves; null for PQC parameter sets, whose strength is in the name. |
+
+### `crypto_material`
+
+`{}` unless `--scan-crypto-material`. Walks `--crypto-material-path` (repeatable; default: common service locations such as `/etc/pki`, `/etc/ssl`, `/etc/httpd`, `/etc/nginx`, `/etc/letsencrypt`, `/etc/kubernetes/pki`, `/usr/lib/jvm`) under `--host-mount` when set. Symlinked directories are not followed; symlinked files resolve inside the host tree and are de-duplicated. SSH host keys are left to the sshd detection (#105).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | Always true when the scan ran. |
+| `scanned_paths` | list[string] | Requested paths that exist on the host. |
+| `files_examined` | int | Candidate files (by suffix: certificates, keys, keystores) examined. |
+| `max_files` | int | Cap in effect (`--crypto-material-max-files`, default 5000). |
+| `truncated` | bool | The cap stopped the walk; files are visited in sorted order so a capped scan is deterministic. |
+| `malformed_certificates` | int | Certificate blocks that failed to parse (logged under `--debug`). |
+| `summary` | object | Counts: `certificates`, `leaf_certificates`, `ca_certificates`, `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc`), `expired`, `valid_past_2030_classical` (classical certificates still valid after 2030-12-31), `private_keys`, `private_keys_world_readable`, `keystores`. |
+| `certificates` | list[object] | One object per unique certificate, with every key of [`trust_store.certificates`](#trust_store) plus `expiry_bucket` (`expired`, `lt_30d`, `lt_90d`, `lt_1y`, `gt_1y`), `valid_past_2030` / `valid_past_2035` (still valid after the NIST IR 8547 draft's deprecation / disallow years and OMB M-26-15's 2030-12-31 key-establishment date), and `paths` (host paths where it was found). |
+| `private_keys` | list[object] | One object per private-key file. **Metadata only**: `path`, `sha256` (of the whole file), `key_type` from the PEM header label (`RSA`, `EC`, `DSA`, `PKCS#8`, `PKCS#8 (encrypted)`, `OpenSSH`), `encrypted`, `mode` (octal permission bits), `group_readable`, `world_readable`, and `public_half` — `{certificate_sha256, key_algorithm, key_size, source}` taken from a certificate in the same file (`source`: `certificate in the same file`) or a certificate whose file has the same stem (`certificate with the same file stem (heuristic)`). Any certificate qualifies — `openssl req -x509` marks self-signed service certificates CA:TRUE — with a single leaf preferred; null when there is none or the match is ambiguous. |
+| `keystores` | list[object] | One object per Java keystore: `path`, `size_bytes`, `sha256`, `store_type` (`jks`, `jceks`, `pkcs12`, `unknown`), `listed` (its certificates were read), `method` (`in-process` for JKS — trusted-certificate entries and the public chains of key entries are stored unencrypted; `keytool (default cacerts password)` for a JDK `cacerts` in PKCS#12), `private_key_entries` (JKS), `certificates_found`, and `reason` when not listed (e.g. `password-protected; not opened`). |
 
 ### `runtime_environment`
 
