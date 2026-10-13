@@ -736,6 +736,49 @@ from the scanner's are not merged.
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
+| `observations` | object | Present only with `--observations FILE`: endpoint observations joined to the hosts and listening services in the reports (#149). See [`--aggregate` observations join](#--aggregate-observations-join). |
+
+### `--aggregate` observations join
+
+`--aggregate DIR --observations FILE` adds an `observations` object. The
+record format and the matching rules are in
+[endpoint-observations.md](endpoint-observations.md).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `observation_schema_version` | string | Observation schema this scanner validates against (`1.0`). |
+| `file_format` | string | `envelope` (one JSON object) or `jsonl` (one record per line). |
+| `total` | int | Records read, valid or not. |
+| `valid` | int | Records that passed validation and were joined. |
+| `invalid` | list[object] | Rejected records, each `{record, reason}`: `record` is the 1-based position in the envelope list, or the line number in JSON Lines. |
+| `max_age_days` | number | `--observations-max-age-days` in effect (default 7). |
+| `stale` | int | Matched records made more than `max_age_days` before or after their host's report. |
+| `by_status` | object | Record count per `status` (see `matches[]`). |
+| `by_observed_class` | object | Record count per observed class: `pure_pqc`, `hybrid`, `classical`, `unknown`. |
+| `states` | list[object] | One entry per combination seen on endpoints attributed to a host (`matched` or `no_service_scan`): `{capable, configured, observed, endpoints}`. `capable` and `configured` are `yes`, `no` or `unknown`; `observed` is the class. This is the input to the three-state verdict (#107). |
+| `per_host` | object | Keyed by `hostname`: `{endpoints, by_observed_class, capable_but_observed_classical, configured_but_observed_classical, stale}` over that host's attributed endpoints. |
+| `matches` | list[object] | One entry per valid record, in file order (fields below). |
+
+`matches[]` entries:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `record` | int | Position of the record in the file (as in `invalid`). |
+| `id` | string \| null | The record's own `id`. |
+| `protocol` / `port` / `fqdn` / `ip` / `sni` | | Copied from the record. |
+| `observed_group` | string \| null | `negotiated_group` normalised: codepoints and spelling variants mapped to the IANA name (e.g. `0x11EC` → `X25519MLKEM768`); for IKEv2, initial and additional key exchanges joined with `+`. |
+| `observed_class` | string | `pure_pqc`, `hybrid`, `classical` or `unknown`. |
+| `source_category` | string | The record's `source.category`. |
+| `status` | string | `matched` (host and listener found), `no_service_scan` (host found; its report has no `service_crypto_linkage`), `unmatched_listener` (host found; nothing reachable listening on that transport and port), `ambiguous` (more than one host fits; see `candidates`), `unmatched_host`. |
+| `match_basis` | string \| null | Key that identified the host: `fqdn`, `sni`, `ip`, `short-name`, `certificate`, or one of the first four with `+certificate` when the fingerprint broke a tie. |
+| `host` | string \| null | Matched report's `hostname`. |
+| `candidates` | list[string] | `ambiguous` only: hostnames of the hosts that fit. |
+| `listener` | object \| null | The matched listener: `protocol`, `address`, `port`, `bind_scope`, `network_namespace`, `process`, `systemd_unit`, `crypto_families`, `library_pqc_capable`, `go_default_hybrid` (a Go binary whose default offers hybrid ML-KEM), `matching_listeners` (how many listeners fit; the first in the host namespace is used). |
+| `capable` | bool \| null | TLS, QUIC, DTLS: the listener's library version ships hybrid ML-KEM, or its Go default offers it. SSH: the host's OpenSSH lists an ML-KEM kex. IKEv2: the IPsec stack supports ML-KEM. |
+| `configured` | bool \| null | TLS, QUIC, DTLS: the system crypto policy, else OpenSSL's default groups, allow a PQC group; Go listeners use their own default. SSH: the policy's server key-exchange setting. IKEv2: a configured connection offers ML-KEM, else the policy. Host defaults, not per-service settings. |
+| `certificate_on_host` | bool \| null | When the record has `certificate_sha256` and a host matched: whether that certificate was found on the host. |
+| `stale` | bool \| null | The record is older or newer than the host's report by more than `max_age_days`; null when no host matched. |
+| `note` | string \| null | E.g. the listener is in another network namespace, reachable only through port mapping. |
 
 ## `--ndjson` events
 
