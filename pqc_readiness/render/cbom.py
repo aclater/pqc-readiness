@@ -1218,8 +1218,12 @@ def render_cbom(
     if r.cpu_model:
         host_props.append({"name": "host:cpu_model", "value": r.cpu_model})
     host_props += _inventory_host_props(r.inventory_metadata)
+    if r.scan_mode:
+        # Offline --root scan (#152): the subject is a filesystem tree.
+        host_props.append({"name": "scan:mode", "value": str(r.scan_mode.get("mode"))})
+        host_props.append({"name": "scan:root", "value": str(r.scan_mode.get("root"))})
     host_component: dict[str, Any] = {
-        "type": "device",
+        "type": "operating-system" if r.scan_mode else "device",
         "bom-ref": host_bom_ref,
         "name": r.hostname or "unknown-host",
     }

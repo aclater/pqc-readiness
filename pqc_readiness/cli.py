@@ -32,6 +32,7 @@ from .detect import protocols as _protocols
 from .detect import protocols_libraries as _libraries
 from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
+from .detect import runtime_offline as _runtime_offline
 from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
 from .render import text as _text
@@ -163,6 +164,8 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     Side-effect free apart from the probes themselves: --host-mount must
     already be applied (set_host_prefix) and output/colour handling is
     the caller's job."""
+    if _platform.OFFLINE_ROOT:
+        return _runtime_offline.collect_offline_report(args)
     arch = platform.machine().lower()
     flags = _hardware.cpu_flags(arch)
     total_gb, avail_gb = _hardware.memory_info()
@@ -445,6 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
 
+    _runtime_offline.apply_root(ap, args)
     if args.host_mount:
         _platform.set_host_prefix(args.host_mount)
     _text.C.configure(_use_color(args, out_path))

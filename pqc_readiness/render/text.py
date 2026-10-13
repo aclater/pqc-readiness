@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from typing import Any
 
 from .. import report as _report
@@ -556,6 +557,43 @@ def _render_text_signing_keys(r: _report.Report) -> list[str]:
     return L
 
 
+def _offline_na_sections(r: _report.Report) -> str:
+    """Human-readable list of what an offline --root scan cannot answer."""
+    return (
+        "CPU / ISA tier, memory, accelerators / HSMs / TPM, kernel, /proc/crypto, "
+        "kTLS, FIPS mode, running services, OpenSSL / SSH / IPsec capability "
+        "probes, CNSA 2.0 evaluation, benchmarks and the readiness tier"
+    )
+
+
+def _render_text_offline_openssl(r: _report.Report) -> list[str]:
+    """OpenSSL as packaged in the tree (no binary is run, #152)."""
+    o = r.openssl
+    pkg = o.get("package") or {}
+    native = o.get("pqc_native_expected")
+    L = [C.wrap(C.BOLD, "OpenSSL in the tree")]
+    if pkg:
+        L.append(f"   Package:       {pkg.get('name')} {pkg.get('version')}")
+    else:
+        L.append("   Package:       no OpenSSL library package found in the tree")
+    L.append(
+        "   PQC-capable version (>=3.5): "
+        + ("unknown" if native is None else ("yes" if native else "no"))
+    )
+    cfg = o.get("config") or {}
+    if cfg.get("available"):
+        pqc = "yes" if cfg.get("pqc_key_exchange_by_default") else "no"
+        L.append(
+            f"   Config:        {cfg.get('path')} (default groups from "
+            f"{cfg.get('default_groups_source')})"
+        )
+        L.append(f"   PQC kex by default: {pqc}")
+    elif cfg:
+        L.append(f"   Config:        {cfg.get('reason', 'not found')}")
+    L.append("")
+    return L
+
+
 def _render_text_crypto_libraries(r: _report.Report) -> list[str]:
     """Crypto libraries besides OpenSSL / NSS (--scan-crypto-libraries, #110)."""
     cl = r.crypto_libraries
@@ -583,10 +621,122 @@ def _render_text_crypto_libraries(r: _report.Report) -> list[str]:
     return L
 
 
+def render_text_offline(r: _report.Report) -> str:
+    """Text report for --root PATH (#152): only what the tree answers, plus
+    an explicit list of sections that are not applicable."""
+    bar = "=" * 76
+    mode = r.scan_mode or {}
+    L: list[str] = [
+        C.wrap(C.BOLD, bar),
+        C.wrap(C.BOLD, "  Post-Quantum Cryptography Readiness Report (offline tree)"),
+        C.wrap(C.BOLD, bar),
+        f"  Tree:          {mode.get('root', '?')}",
+        f"  OS / arch:     {r.os}, {r.arch}",
+    ]
+    if r.hostname:
+        L.append(f"  Hostname:      {r.hostname}  (from the tree's /etc/hostname)")
+    L.append(f"  Generated:     {r.generated_at}")
+    L.append(C.wrap(C.DIM, f"  Not applicable offline: {_offline_na_sections(r)}."))
+    L.append("")
+    plumbing = _render_text_crypto_policy(r) + _render_text_ssh_ipsec_nss(r)
+    if plumbing:
+        L.append(C.wrap(C.BOLD, "Crypto configuration in the tree"))
+        L.extend(plumbing)
+        L.append("")
+    L.extend(_render_text_offline_openssl(r))
+    L.extend(_render_text_trust_store(r))
+    L.extend(_render_text_signing_keys(r))
+    L.extend(_render_text_verdict(r))
+    # Reused live sections carry live numbering ("9.", "11."); offline
+    # headings are unnumbered.
+    return "\n".join(re.sub(r"^((?:\x1b\[[0-9;]*m)?)\d+\. ", r"\1", line) for line in L)
+
+
+def render_markdown_offline(r: _report.Report) -> str:
+    """Markdown report for --root PATH (#152)."""
+    mode = r.scan_mode or {}
+    o = r.openssl
+    pkg = o.get("package") or {}
+    native = o.get("pqc_native_expected")
+    L = [
+        f"# PQC Readiness — offline tree `{mode.get('root', '?')}`",
+        "",
+        f"_Generated {r.generated_at}_",
+        "",
+        f"**Verdict:** {r.verdict}",
+        "",
+        f"> {r.verdict_reason}",
+        "",
+        "## Tree",
+        f"- OS / arch: `{r.os}` / `{r.arch}`",
+    ]
+    if r.hostname:
+        L.append(f"- Hostname (from /etc/hostname): `{r.hostname}`")
+    L.append(f"- **Not applicable offline:** {_offline_na_sections(r)}")
+    L.append("")
+    L.append("## OpenSSL in the tree")
+    L.append(
+        f"- Package: `{pkg.get('name')} {pkg.get('version')}`"
+        if pkg
+        else "- Package: _no OpenSSL library package found_"
+    )
+    L.append(
+        "- PQC-capable version (>=3.5): "
+        + ("unknown" if native is None else ("yes" if native else "**no**"))
+    )
+    cfg = o.get("config") or {}
+    if cfg.get("available"):
+        L.append(
+            f"- Config: `{cfg.get('path')}`; PQC key exchange by default: "
+            f"{'yes' if cfg.get('pqc_key_exchange_by_default') else '**no**'}"
+        )
+    L.append("")
+    cp = r.crypto_policy
+    if cp.get("available"):
+        en = cp.get("pqc_enabled") or {}
+        L.append("## System crypto policy")
+        L.append(f"- Active: `{cp.get('active')}`")
+        L.append(
+            "- PQC allowed: "
+            + ", ".join(
+                f"{label} {'unknown' if en.get(k) is None else ('yes' if en.get(k) else '**no**')}"
+                for k, label in (
+                    ("tls_key_exchange", "TLS key exchange"),
+                    ("tls_signatures", "TLS signatures"),
+                    ("ssh_key_exchange_server", "SSH key exchange"),
+                    ("ike_key_exchange", "IKE"),
+                )
+            )
+        )
+        L.append("")
+    ts = r.trust_store
+    if ts.get("available"):
+        cats = ts.get("cert_categories") or {}
+        L.append("## Trust store")
+        L.append(
+            f"- Certificates: {ts.get('total_certs')} "
+            f"(classical {cats.get('classical', 0)}, hybrid/composite "
+            f"{cats.get('hybrid_composite', 0)}, pure PQC {cats.get('pure_pqc', 0)})"
+        )
+        L.append("")
+    sk = r.signing_keys
+    if sk.get("available"):
+        L.append("## Package-signing keys")
+        sm = sk.get("summary") or {}
+        L.append(
+            f"- Trusted keys: {sm.get('total', 0)} (classical {sm.get('classical', 0)}, "
+            f"hybrid {sm.get('hybrid', 0)}, pure PQC {sm.get('pure_pqc', 0)})"
+        )
+        L.append("")
+    return "\n".join(L)
+
+
 def render_text(r: _report.Report) -> str:
     """Render the full report as plain text (color-aware via the module-
     level C). Composes per-section helpers in numbered order; each helper
     returns the lines it owns, including the trailing blank-line spacer."""
+    if r.scan_mode:
+        return render_text_offline(r)
     L: list[str] = []
     L.extend(_render_text_header(r))
     L.extend(_render_text_isa(r))
@@ -607,6 +757,8 @@ def render_text(r: _report.Report) -> str:
 
 
 def render_markdown(r: _report.Report) -> str:
+    if r.scan_mode:
+        return render_markdown_offline(r)
     L: list[str] = []
     L.append(f"# PQC Readiness — {r.hostname}")
     L.append("")

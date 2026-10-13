@@ -115,6 +115,11 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "parse_openpgp_keys": ("`signing_keys`",),
     "parse_spki_pem": ("`signing_keys`",),
     "parse_os_release": ("`os_release`",),
+    "not_applicable": ("Nested fields",),
+    "offline_openssl": ("`openssl`",),
+    "offline_ipsec": ("`ipsec_pqc`",),
+    "scan_mode_record": ("`scan_mode`",),
+    "_scan_prefixed_packages": ("`packages`",),
     "_detect_os_impl": ("`os_release`",),
     "run_benchmarks": ("`benchmark`",),
     "run_pqc_bench": ("`benchmark`",),
@@ -184,6 +189,7 @@ PATH_SECTIONS: dict[str, str] = {
     "benchmark_tls_handshake": "`benchmark_tls_handshake`",
     "per_algo": "`per_algo`",
     "production_estimate": "`production_estimate`",
+    "scan_mode": "`scan_mode`",
 }
 
 
