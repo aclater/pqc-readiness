@@ -511,9 +511,13 @@ def _iter_bdb_hash_values(fd: int, size: int) -> Iterator[bytes]:
             if pg[25] != _BDB_PAGE_OVERFLOW:
                 raise RpmdbError(f"page {pgno} is not an overflow page")
             used = struct.unpack_from(bo + "H", pg, 22)[0]
-            if used == 0 or used + _BDB_PAGE_HEADER > pagesize or len(out) + used > total:
+            if (
+                used == 0
+                or used + _BDB_PAGE_HEADER > pagesize
+                or len(out) + used > total
+            ):
                 raise RpmdbError(f"bad overflow length on page {pgno}")
-            out += pg[_BDB_PAGE_HEADER:_BDB_PAGE_HEADER + used]
+            out += pg[_BDB_PAGE_HEADER : _BDB_PAGE_HEADER + used]
             pgno = struct.unpack_from(bo + "I", pg, 16)[0]
         return bytes(out)
 
@@ -522,7 +526,7 @@ def _iter_bdb_hash_values(fd: int, size: int) -> Iterator[bytes]:
             raise RpmdbError("hash item outside its page")
         kind = pg[off]
         if kind == _BDB_ITEM_KEYDATA:
-            return pg[off + 1:off + length]
+            return pg[off + 1 : off + length]
         if kind == _BDB_ITEM_OFFPAGE and length == 12:
             pgno, total = struct.unpack_from(bo + "II", pg, off + 4)
             return overflow(pgno, total)
@@ -591,12 +595,14 @@ def _iter_ndb_blobs(fd: int, size: int) -> Iterator[bytes]:
         need = -(-(_NDB_BLOBHEAD + blen + _NDB_BLOBTAIL) // _NDB_BLK)
         if bmagic != b"BlbS" or bidx != pkgidx or blkcnt != need:
             raise RpmdbError(f"bad ndb blob for package index {pkgidx}")
-        adl, tlen, tmagic = struct.unpack_from("<I I 4s", region, len(region) - _NDB_BLOBTAIL)
+        adl, tlen, tmagic = struct.unpack_from(
+            "<I I 4s", region, len(region) - _NDB_BLOBTAIL
+        )
         if tmagic != b"BlbE" or tlen != blen:
             raise RpmdbError(f"bad ndb blob trailer for package index {pkgidx}")
         if zlib is not None and zlib.adler32(region[:-_NDB_BLOBTAIL]) != adl:
             raise RpmdbError(f"ndb blob checksum mismatch for package index {pkgidx}")
-        yield region[_NDB_BLOBHEAD:_NDB_BLOBHEAD + blen]
+        yield region[_NDB_BLOBHEAD : _NDB_BLOBHEAD + blen]
 
 
 _RPMDB_FILE_BY_BACKEND: dict[str, str] = {
@@ -651,7 +657,11 @@ def _read_rpmdb_direct(
     backend = db[2]
     db_file = db[1] / _RPMDB_FILE_BY_BACKEND[backend]
     if backend == "sqlite":
-        return read_rpmdb_sqlite(db_file) if names is None else read_rpmdb_sqlite_named(db_file, names)
+        return (
+            read_rpmdb_sqlite(db_file)
+            if names is None
+            else read_rpmdb_sqlite_named(db_file, names)
+        )
     return read_rpmdb_blobs(backend, db_file, names)
 
 
@@ -669,7 +679,11 @@ def parse_rpm_qa_nvra(text: str) -> list[dict[str, Any]]:
             if line.strip():
                 log.debug("rpm -qa: ignoring non-package line %r", line)
             continue
-        pkg: dict[str, Any] = {"name": parts[0], "version": parts[1], "release": parts[2]}
+        pkg: dict[str, Any] = {
+            "name": parts[0],
+            "version": parts[1],
+            "release": parts[2],
+        }
         if parts[3] != "(none)":
             pkg["arch"] = parts[3]
         out.append(pkg)
@@ -727,7 +741,9 @@ def _query_rpm_packages_cached(host_prefix: str) -> dict[str, Any]:
     return _query_rpm_cli(db)
 
 
-def _direct_result(db: tuple[str, Path, str], pkgs: list[dict[str, Any]]) -> dict[str, Any]:
+def _direct_result(
+    db: tuple[str, Path, str], pkgs: list[dict[str, Any]]
+) -> dict[str, Any]:
     return {
         "available": True,
         "source": f"rpmdb-{db[2]}",
@@ -756,7 +772,10 @@ def _query_rpm_named_cli(
     way as _query_rpm_cli.  rpm exits non-zero for each name that is not
     installed, so its exit code alone does not mean failure."""
     if _platform.HOST_PREFIX and db is None:
-        return {"available": False, "reason": f"no rpm database found under {_platform.HOST_PREFIX}"}
+        return {
+            "available": False,
+            "reason": f"no rpm database found under {_platform.HOST_PREFIX}",
+        }
     if not shutil.which("rpm"):
         return {"available": False, "reason": "rpm not on PATH"}
     argv = ["rpm", "-q", "--queryformat", _RPM_NVRA_QUERYFORMAT, *names]
@@ -794,7 +813,11 @@ def query_rpm_named(names: tuple[str, ...]) -> dict[str, Any]:
         cli = _query_rpm_named_cli(db, names)
         if cli.get("available"):
             return cli
-        log.debug("rpmdb: rpm -q unavailable (%s); reading %s directly", cli.get("reason"), db[2])
+        log.debug(
+            "rpmdb: rpm -q unavailable (%s); reading %s directly",
+            cli.get("reason"),
+            db[2],
+        )
     try:
         return _direct_result(db, _read_rpmdb_direct(db, names))
     except RpmdbError as e:

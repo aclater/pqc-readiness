@@ -12,6 +12,7 @@ failure rather than as a global golden-output diff. Helpers are
 imported by name; the suite never reaches them through `getattr` or
 reflection.
 """
+
 from __future__ import annotations
 
 import pqc_readiness as pr
@@ -139,7 +140,11 @@ def test_openssl_tls_groups_unexposed_when_no_pqc() -> None:
 def test_openssl_tls_groups_split_hybrid_pure_classical() -> None:
     out = "\n".join(
         _render_text_openssl_tls_groups(
-            {"hybrid": ["X25519MLKEM768"], "pure_pqc": ["MLKEM768"], "classical": ["X25519"]}
+            {
+                "hybrid": ["X25519MLKEM768"],
+                "pure_pqc": ["MLKEM768"],
+                "classical": ["X25519"],
+            }
         )
     )
     assert "TLS PQC groups (hybrid):" in out

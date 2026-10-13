@@ -69,7 +69,9 @@ def test_output_with_aggregate(tmp_path: Path) -> None:
     fleet.mkdir()
     (fleet / "h.json").write_text(json.dumps({"schema_version": pr.SCHEMA_VERSION}))
     dest = tmp_path / "rollup.csv"
-    proc = _run("--aggregate", str(fleet), "--aggregate-format", "csv", "--output", str(dest))
+    proc = _run(
+        "--aggregate", str(fleet), "--aggregate-format", "csv", "--output", str(dest)
+    )
     assert proc.returncode == 0
     assert proc.stdout == ""
     assert dest.read_text().startswith("group,key,count")

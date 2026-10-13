@@ -507,9 +507,7 @@ def _recommend_signing_service(r: _report.Report, policy: str) -> dict[str, Any]
                 "Size the signing fleet for it or add a PQC-capable HSM."
             )
         else:
-            sig_reason = (
-                "ML-DSA-65 — balanced default for request-rate signing"
-            )
+            sig_reason = "ML-DSA-65 — balanced default for request-rate signing"
         slh_sig = _algorithms.PQC_SIZES["SLH-DSA-SHA2-128s"]["sig"]
         caveats.append(
             "For low-volume signing (releases, documents), SLH-DSA-SHA2-128s "

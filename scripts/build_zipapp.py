@@ -9,6 +9,7 @@ same tree produce byte-identical archives.
 
     python3 scripts/build_zipapp.py [--output PATH]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,7 +40,9 @@ def build(output: Path) -> None:
         fh.write(SHEBANG)
         with zipfile.ZipFile(fh, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             entries = [("__main__.py", MAIN.encode())]
-            entries += [(p.relative_to(ROOT).as_posix(), p.read_bytes()) for p in sources]
+            entries += [
+                (p.relative_to(ROOT).as_posix(), p.read_bytes()) for p in sources
+            ]
             for name, data in entries:
                 info = zipfile.ZipInfo(name, date_time=FIXED_DATE)
                 info.compress_type = zipfile.ZIP_DEFLATED
@@ -51,7 +54,9 @@ def build(output: Path) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--output", type=Path, default=ROOT / "dist" / "pqc-readiness.pyz")
     build(ap.parse_args().output)
     return 0

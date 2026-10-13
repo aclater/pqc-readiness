@@ -52,7 +52,8 @@ def detect_fips_mode() -> dict[str, Any]:
     info: dict[str, Any] = {"kernel": False, "openssl_provider": False}
     try:
         info["kernel"] = (
-            _platform.host_path("/proc/sys/crypto/fips_enabled").read_text().strip() == "1"
+            _platform.host_path("/proc/sys/crypto/fips_enabled").read_text().strip()
+            == "1"
         )
     except OSError as e:
         log.debug("detect_fips_mode: cannot read /proc/sys/crypto/fips_enabled: %s", e)
@@ -522,7 +523,9 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
         if rc == 0
         else []
     )
-    rc, groups = _platform._run(["openssl", "list", "-tls-groups", "-tls1_3"], timeout=5)
+    rc, groups = _platform._run(
+        ["openssl", "list", "-tls-groups", "-tls1_3"], timeout=5
+    )
     if rc != 0:
         rc, groups = _platform._run(["openssl", "list", "-tls-groups"], timeout=5)
     all_group_names = parse_openssl_tls_groups(groups) if rc == 0 else []

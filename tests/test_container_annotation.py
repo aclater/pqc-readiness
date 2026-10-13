@@ -14,6 +14,7 @@ existed in a docstring.  These tests cover:
   - `build_host_fs_detections_unavailable` map population
   - aggregator preservation of the flag for fleet rollups
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -64,6 +65,7 @@ def bare_metal(monkeypatch: pytest.MonkeyPatch) -> None:
 # host_fs_unavailable_note — the central helper
 # ---------------------------------------------------------------------------
 
+
 def test_host_fs_unavailable_note_returns_none_on_bare_metal(
     bare_metal: None,
 ) -> None:
@@ -81,9 +83,7 @@ def test_host_fs_unavailable_note_returns_none_with_host_mount(
 def test_host_fs_unavailable_note_emits_flag_in_container(
     container_no_host_mount: None,
 ) -> None:
-    note = pr.host_fs_unavailable_note(
-        "PCI accelerator detection", "lspci output"
-    )
+    note = pr.host_fs_unavailable_note("PCI accelerator detection", "lspci output")
     assert note is not None
     assert note["unavailable_in_container"] is True
     assert "PCI accelerator detection" in note["reason"]
@@ -95,8 +95,10 @@ def test_host_fs_unavailable_note_emits_flag_in_container(
 # detect_pci_accelerators — canonical example called out in issue #38
 # ---------------------------------------------------------------------------
 
+
 def test_detect_pci_accelerators_emits_flag_in_container(
-    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+    container_no_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per issue #38: `detect_pci_accelerators` is the canonical probe
     that depends on lspci output and /dev hints.  Inside a container
@@ -111,10 +113,13 @@ def test_detect_pci_accelerators_emits_flag_in_container(
 
 
 def test_detect_pci_accelerators_no_flag_on_bare_metal(
-    bare_metal: None, monkeypatch: pytest.MonkeyPatch,
+    bare_metal: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        pr.detect.hardware, "detect_accelerators", lambda: [{"kind": "tpm", "name": "Test"}]
+        pr.detect.hardware,
+        "detect_accelerators",
+        lambda: [{"kind": "tpm", "name": "Test"}],
     )
     out = pr.detect_pci_accelerators()
     assert out["items"] == [{"kind": "tpm", "name": "Test"}]
@@ -123,7 +128,8 @@ def test_detect_pci_accelerators_no_flag_on_bare_metal(
 
 
 def test_detect_pci_accelerators_no_flag_with_host_mount(
-    container_with_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+    container_with_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When --host-mount is in effect the lspci output reflects the host
     (operator runs `chroot /host lspci`-equivalent paths via
@@ -137,8 +143,10 @@ def test_detect_pci_accelerators_no_flag_with_host_mount(
 # detect_kernel_crypto_hw_annotated / detect_ktls_annotated — issue #70
 # ---------------------------------------------------------------------------
 
+
 def test_kernel_crypto_hw_annotated_emits_flag_in_container(
-    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+    container_no_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """/proc/crypto inside a container without --host-mount is the
     container's view; an empty driver list must not be mistaken for
@@ -152,16 +160,21 @@ def test_kernel_crypto_hw_annotated_emits_flag_in_container(
 
 @pytest.mark.parametrize("env", ["bare_metal", "container_with_host_mount"])
 def test_kernel_crypto_hw_annotated_no_flag_when_trustworthy(
-    env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request.getfixturevalue(env)
-    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    monkeypatch.setattr(
+        pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"]
+    )
     out = pr.detect_kernel_crypto_hw_annotated()
     assert out == {"items": ["aesni_intel"]}
 
 
 def test_ktls_annotated_emits_flag_in_container(
-    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+    container_no_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: False)
     out = pr.detect_ktls_annotated()
@@ -172,7 +185,9 @@ def test_ktls_annotated_emits_flag_in_container(
 
 @pytest.mark.parametrize("env", ["bare_metal", "container_with_host_mount"])
 def test_ktls_annotated_no_flag_when_trustworthy(
-    env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+    env: str,
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request.getfixturevalue(env)
     monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: True)
@@ -180,7 +195,8 @@ def test_ktls_annotated_no_flag_when_trustworthy(
 
 
 def test_annotated_notes_match_report_level_map(
-    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+    container_no_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The per-detection note and the Report-level
     host_fs_detections_unavailable entry come from the same catalogue
@@ -211,7 +227,9 @@ def test_main_report_populates_kernel_flags_in_container(
     import json
     import sys
 
-    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    monkeypatch.setattr(
+        pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"]
+    )
     monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: True)
     monkeypatch.setattr(sys, "argv", ["pqc_readiness.py", "--json"])
     pr.main()
@@ -227,8 +245,11 @@ def test_main_report_populates_kernel_flags_in_container(
 # Inline annotation on dict-returning probes — detect_os
 # ---------------------------------------------------------------------------
 
+
 def test_detect_os_annotates_inline_in_container(
-    container_no_host_mount: None, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+    container_no_host_mount: None,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Inside a container without --host-mount, /etc/os-release is the
     container image's OS, not the host's.  detect_os() must annotate so
@@ -249,8 +270,11 @@ def test_detect_os_annotates_inline_in_container(
         pr.detect.osinfo,
         "_detect_os_impl",
         lambda: {
-            "family": "rhel", "id": "ubi9", "version_id": "9.6",
-            "version_codename": None, "pretty_name": "Red Hat UBI 9.6",
+            "family": "rhel",
+            "id": "ubi9",
+            "version_id": "9.6",
+            "version_codename": None,
+            "pretty_name": "Red Hat UBI 9.6",
             "package_manager": None,
         },
     )
@@ -261,7 +285,8 @@ def test_detect_os_annotates_inline_in_container(
 
 
 def test_detect_os_no_flag_on_bare_metal(
-    bare_metal: None, monkeypatch: pytest.MonkeyPatch,
+    bare_metal: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         pr.detect.osinfo,
@@ -275,6 +300,7 @@ def test_detect_os_no_flag_on_bare_metal(
 # ---------------------------------------------------------------------------
 # build_host_fs_detections_unavailable — Report-level map
 # ---------------------------------------------------------------------------
+
 
 def test_build_host_fs_detections_unavailable_empty_on_bare_metal(
     bare_metal: None,
@@ -294,8 +320,16 @@ def test_build_host_fs_detections_unavailable_populated_in_container(
     out = pr.build_host_fs_detections_unavailable()
     # Every catalogued probe should be present.
     expected = {
-        "accelerators", "kernel_crypto_hw", "ktls", "fips", "tpm_pqc",
-        "kernel_info", "os_release", "pkcs11_modules", "packages", "nss",
+        "accelerators",
+        "kernel_crypto_hw",
+        "ktls",
+        "fips",
+        "tpm_pqc",
+        "kernel_info",
+        "os_release",
+        "pkcs11_modules",
+        "packages",
+        "nss",
     }
     assert set(out) == expected
     for key, note in out.items():
@@ -307,6 +341,7 @@ def test_build_host_fs_detections_unavailable_populated_in_container(
 # Aggregator preserves the flag — required by issue #38 acceptance
 # ---------------------------------------------------------------------------
 
+
 def test_aggregator_counts_host_fs_detections_unavailable() -> None:
     """Issue #38 acceptance: 'fleet rollups can report X hosts had
     detection Y unavailable in container'.  Two of three reports flag
@@ -315,37 +350,40 @@ def test_aggregator_counts_host_fs_detections_unavailable() -> None:
     reports = [
         {
             "schema_version": pr.SCHEMA_VERSION,
-            "arch": "x86_64", "isa_tier": "good", "verdict": "GOOD",
-            "cpu_model": "Test", "kernel_info": {"os_release_id": "rhel"},
+            "arch": "x86_64",
+            "isa_tier": "good",
+            "verdict": "GOOD",
+            "cpu_model": "Test",
+            "kernel_info": {"os_release_id": "rhel"},
             "runtime_environment": {"environment": "container"},
             "accelerators": [],
             "host_fs_detections_unavailable": {
-                "accelerators": {
-                    "unavailable_in_container": True, "reason": "..."
-                },
-                "tpm_pqc": {
-                    "unavailable_in_container": True, "reason": "..."
-                },
+                "accelerators": {"unavailable_in_container": True, "reason": "..."},
+                "tpm_pqc": {"unavailable_in_container": True, "reason": "..."},
             },
             "replace_required": False,
         },
         {
             "schema_version": pr.SCHEMA_VERSION,
-            "arch": "x86_64", "isa_tier": "good", "verdict": "GOOD",
-            "cpu_model": "Test", "kernel_info": {"os_release_id": "rhel"},
+            "arch": "x86_64",
+            "isa_tier": "good",
+            "verdict": "GOOD",
+            "cpu_model": "Test",
+            "kernel_info": {"os_release_id": "rhel"},
             "runtime_environment": {"environment": "container"},
             "accelerators": [],
             "host_fs_detections_unavailable": {
-                "accelerators": {
-                    "unavailable_in_container": True, "reason": "..."
-                },
+                "accelerators": {"unavailable_in_container": True, "reason": "..."},
             },
             "replace_required": False,
         },
         {
             "schema_version": pr.SCHEMA_VERSION,
-            "arch": "x86_64", "isa_tier": "good", "verdict": "GOOD",
-            "cpu_model": "Test", "kernel_info": {"os_release_id": "rhel"},
+            "arch": "x86_64",
+            "isa_tier": "good",
+            "verdict": "GOOD",
+            "cpu_model": "Test",
+            "kernel_info": {"os_release_id": "rhel"},
             "runtime_environment": {"environment": "host"},
             "accelerators": [],
             "host_fs_detections_unavailable": {},
@@ -363,10 +401,14 @@ def test_aggregator_handles_missing_field_gracefully() -> None:
     reports = [
         {
             "schema_version": pr.SCHEMA_VERSION,
-            "arch": "x86_64", "isa_tier": "good", "verdict": "GOOD",
-            "cpu_model": "Test", "kernel_info": {"os_release_id": "rhel"},
+            "arch": "x86_64",
+            "isa_tier": "good",
+            "verdict": "GOOD",
+            "cpu_model": "Test",
+            "kernel_info": {"os_release_id": "rhel"},
             "runtime_environment": {"environment": "host"},
-            "accelerators": [], "replace_required": False,
+            "accelerators": [],
+            "replace_required": False,
         },
     ]
     out = pr.aggregate_reports(reports)
@@ -375,7 +417,8 @@ def test_aggregator_handles_missing_field_gracefully() -> None:
 
 def test_aggregator_csv_includes_unavailable_group() -> None:
     rollup = {
-        "total_hosts": 1, "replace_required_count": 0,
+        "total_hosts": 1,
+        "replace_required_count": 0,
         "host_fs_detections_unavailable_host_count": {"accelerators": 1},
     }
     csv_text = pr.aggregate_to_csv(rollup)

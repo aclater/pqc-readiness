@@ -4,6 +4,7 @@
 "Not run / not measured" is always JSON `null` for the fields that
 used to mix `{}` (benchmark, benchmark_tls_handshake) and `""`
 (memory_bandwidth_method), so consumers test one sentinel."""
+
 from __future__ import annotations
 
 import json

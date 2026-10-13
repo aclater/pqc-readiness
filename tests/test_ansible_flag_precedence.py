@@ -6,6 +6,7 @@ its verdict, which means the --check and --fips-strict exit-code gates
 cannot take effect under it.  The combination stays legal, but the
 script now warns on stderr instead of silently ignoring the gate.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -50,7 +51,9 @@ def test_end_to_end_warns_on_stderr_and_keeps_stdout_json() -> None:
         check=False,
     )
     assert proc.returncode == 0
-    assert "warning: --check excellent is ignored when --ansible is active" in proc.stderr
+    assert (
+        "warning: --check excellent is ignored when --ansible is active" in proc.stderr
+    )
     assert "pqc_readiness" in json.loads(proc.stdout)["ansible_facts"]
 
 

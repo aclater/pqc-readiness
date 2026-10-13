@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Unit tests for the pure parsing functions in pqc_readiness."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,14 +13,14 @@ import pqc_readiness as pr
 # parse_speed_row — OpenSSL PQC speed output
 # ---------------------------------------------------------------------------
 
+
 def _read(p: Path) -> str:
     return p.read_text()
 
 
 def test_parse_speed_row_ml_kem_768() -> None:
     text = _read(FIXTURES / "openssl-speed" / "ml-kem-768.txt")
-    rates = pr.parse_speed_row(text, "ML-KEM-768",
-                               ("keygen/s", "encaps/s", "decaps/s"))
+    rates = pr.parse_speed_row(text, "ML-KEM-768", ("keygen/s", "encaps/s", "decaps/s"))
     assert rates is not None
     assert rates["keygen/s"] > 1000
     assert rates["encaps/s"] > 1000
@@ -28,8 +29,7 @@ def test_parse_speed_row_ml_kem_768() -> None:
 
 def test_parse_speed_row_ml_dsa_65() -> None:
     text = _read(FIXTURES / "openssl-speed" / "ml-dsa-65.txt")
-    rates = pr.parse_speed_row(text, "ML-DSA-65",
-                               ("keygen/s", "sign/s", "verify/s"))
+    rates = pr.parse_speed_row(text, "ML-DSA-65", ("keygen/s", "sign/s", "verify/s"))
     assert rates is not None
     assert rates["sign/s"] > 100
     assert rates["verify/s"] > 1000
@@ -37,8 +37,9 @@ def test_parse_speed_row_ml_dsa_65() -> None:
 
 def test_parse_speed_row_slh_dsa() -> None:
     text = _read(FIXTURES / "openssl-speed" / "slh-dsa-sha2-128s.txt")
-    rates = pr.parse_speed_row(text, "SLH-DSA-SHA2-128s",
-                               ("keygen/s", "sign/s", "verify/s"))
+    rates = pr.parse_speed_row(
+        text, "SLH-DSA-SHA2-128s", ("keygen/s", "sign/s", "verify/s")
+    )
     assert rates is not None
     # SLH-DSA-128s is intentionally slow; verify the parser still pulls
     # the integer-or-float rate row instead of bailing on integer values.
@@ -48,31 +49,37 @@ def test_parse_speed_row_slh_dsa() -> None:
 def test_parse_speed_row_handles_integer_rates() -> None:
     """Regression: previous regex \\d+\\.\\d+ missed integer-only ops/sec
     columns that appear in some OpenSSL builds for very slow algorithms."""
-    text = ("                  keygen     signs    verify keygens/s    sign/s  verify/s\n"
-            "        ALGO 1.000000s 0.500000s 0.001000s        1         2      1000\n")
+    text = (
+        "                  keygen     signs    verify keygens/s    sign/s  verify/s\n"
+        "        ALGO 1.000000s 0.500000s 0.001000s        1         2      1000\n"
+    )
     rates = pr.parse_speed_row(text, "ALGO", ("keygen/s", "sign/s", "verify/s"))
     assert rates == {"keygen/s": 1.0, "sign/s": 2.0, "verify/s": 1000.0}
 
 
 def test_parse_speed_row_handles_prefix_lines() -> None:
     """Some OpenSSL builds prefix the row with parameter strings."""
-    text = ("                              keygen    encaps    decaps keygens/s  encaps/s  decaps/s\n"
-            "[someparam=foo]   ML-KEM-768 0.000027s 0.000017s 0.000026s   37542.4   59259.0   38383.0\n")
-    rates = pr.parse_speed_row(text, "ML-KEM-768",
-                               ("keygen/s", "encaps/s", "decaps/s"))
+    text = (
+        "                              keygen    encaps    decaps keygens/s  encaps/s  decaps/s\n"
+        "[someparam=foo]   ML-KEM-768 0.000027s 0.000017s 0.000026s   37542.4   59259.0   38383.0\n"
+    )
+    rates = pr.parse_speed_row(text, "ML-KEM-768", ("keygen/s", "encaps/s", "decaps/s"))
     assert rates is not None
     assert rates["decaps/s"] == 38383.0
 
 
 def test_parse_speed_row_missing_algo_returns_none() -> None:
     text = "no relevant content here"
-    assert pr.parse_speed_row(text, "ML-KEM-768",
-                              ("keygen/s", "encaps/s", "decaps/s")) is None
+    assert (
+        pr.parse_speed_row(text, "ML-KEM-768", ("keygen/s", "encaps/s", "decaps/s"))
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------
 # parse_classical_speed — RSA / EdDSA / ECDH baseline
 # ---------------------------------------------------------------------------
+
 
 def test_parse_classical_speed_finds_rsa_eddsa_ecdh() -> None:
     text = _read(FIXTURES / "openssl-speed" / "classical.txt")
@@ -115,6 +122,7 @@ def test_parse_classical_speed_keeps_rsa_kem_and_signature_blocks() -> None:
 # detect_fips_mode_from_providers_text — record-based provider parser
 # ---------------------------------------------------------------------------
 
+
 def test_fips_provider_not_loaded() -> None:
     text = _read(FIXTURES / "openssl-providers.txt")
     assert pr.detect_fips_mode_from_providers_text(text) is False
@@ -151,6 +159,7 @@ def test_fips_provider_loaded_but_inactive() -> None:
 # parse_lszcrypt — IBM Z Crypto Express enumeration
 # ---------------------------------------------------------------------------
 
+
 def test_parse_lszcrypt_cex8_mixed_finds_ep11() -> None:
     text = _read(FIXTURES / "lszcrypt" / "cex8-mixed.txt")
     adapters = pr.parse_lszcrypt(text)
@@ -178,6 +187,7 @@ def test_parse_lszcrypt_cex5_only_no_pqc() -> None:
 # has_dedicated_pqc_silicon — explicit allowlist behavior
 # ---------------------------------------------------------------------------
 
+
 def test_has_dedicated_pqc_silicon_rejects_generic_hsm() -> None:
     """Regression: previous implementation returned True for any kind=='hsm'.
     Generic Marvell/Thales/Utimaco HSMs without confirmed PQC firmware MUST
@@ -188,18 +198,21 @@ def test_has_dedicated_pqc_silicon_rejects_generic_hsm() -> None:
 
 def test_has_dedicated_pqc_silicon_accepts_cex8_ep11() -> None:
     """IBM CEX8 in EP11 mode is the only generally-available PQC silicon today."""
-    accels = [{
-        "kind": "hsm",
-        "name": "IBM Crypto Express 8 (EP11)",
-        "detail": "card=01 mode=EP11 status=online",
-        "pqc_capable": True,
-    }]
+    accels = [
+        {
+            "kind": "hsm",
+            "name": "IBM Crypto Express 8 (EP11)",
+            "detail": "card=01 mode=EP11 status=online",
+            "pqc_capable": True,
+        }
+    ]
     assert pr.has_dedicated_pqc_silicon("s390x", {"msa8", "msa9"}, accels) is True
 
 
 # ---------------------------------------------------------------------------
 # Section 2: detection coverage parsers
 # ---------------------------------------------------------------------------
+
 
 def test_parse_ssh_kex_finds_pqc() -> None:
     text = _read(FIXTURES / "ssh-kex-rhel10.txt")
@@ -222,6 +235,7 @@ def test_parse_ssh_kex_no_pqc() -> None:
 # ---------------------------------------------------------------------------
 # parse_redhat_release
 # ---------------------------------------------------------------------------
+
 
 def test_parse_redhat_release_rhel() -> None:
     out = pr.parse_redhat_release("Red Hat Enterprise Linux release 9.4 (Plow)")
@@ -247,6 +261,7 @@ def test_parse_redhat_release_centos_no_minor() -> None:
 # ---------------------------------------------------------------------------
 # parse_proc_crypto_pqc
 # ---------------------------------------------------------------------------
+
 
 def test_parse_proc_crypto_pqc_finds_kyber() -> None:
     text = (
@@ -280,6 +295,7 @@ def test_parse_proc_crypto_pqc_no_pqc() -> None:
 # parse_nss_version
 # ---------------------------------------------------------------------------
 
+
 def test_parse_nss_version_pqc_capable() -> None:
     assert pr.parse_nss_version("3.108.0") == (3, 108, 0)
 
@@ -295,6 +311,7 @@ def test_parse_nss_version_unparseable() -> None:
 # ---------------------------------------------------------------------------
 # fips_pqc_conflict_check
 # ---------------------------------------------------------------------------
+
 
 def test_fips_pqc_conflict_no_fips() -> None:
     fips = {"kernel": False, "openssl_provider": False}
@@ -324,6 +341,7 @@ def test_fips_pqc_conflict_real_conflict() -> None:
 # parse_lszcrypt edge case: malformed line
 # ---------------------------------------------------------------------------
 
+
 def test_parse_lszcrypt_skips_malformed_lines() -> None:
     text = "garbage line\n00 CEX9X CCA-Coproc online 0\n"
     # CEX9 + suffix X is not in the allowed mode set; pattern won't match (only C/P/A)
@@ -334,7 +352,10 @@ def test_parse_lszcrypt_skips_malformed_lines() -> None:
 # Section 3: ISA detection / tier across reference CPUs
 # ---------------------------------------------------------------------------
 
-def _isa_for(arch: str, fixture: str) -> tuple[set[str], dict[str, dict[str, str]], int, str]:
+
+def _isa_for(
+    arch: str, fixture: str
+) -> tuple[set[str], dict[str, dict[str, str]], int, str]:
     text = (FIXTURES / "cpuinfo" / fixture).read_text()
     flags = pr.parse_cpuinfo_flags(text)
     feats, score = pr.detect_isa(arch, flags)
@@ -425,17 +446,17 @@ def test_isa_tier_return_values_are_subset_of_check_choices() -> None:
     cases: list[tuple[str, int, set[str]]] = [
         # x86_64
         ("x86_64", 20, {"avx512f", "avx512vbmi", "avx512ifma"}),  # excellent
-        ("x86_64", 8, {"avx2", "aes", "pclmulqdq"}),              # good
-        ("x86_64", 4, {"avx2"}),                                  # marginal
-        ("x86_64", 0, set()),                                     # poor
+        ("x86_64", 8, {"avx2", "aes", "pclmulqdq"}),  # good
+        ("x86_64", 4, {"avx2"}),  # marginal
+        ("x86_64", 0, set()),  # poor
         # aarch64
-        ("aarch64", 10, {"sha3", "aes", "sve2"}),                 # excellent
-        ("aarch64", 4, {"sha3", "aes"}),                          # good
-        ("aarch64", 0, set()),                                    # marginal
+        ("aarch64", 10, {"sha3", "aes", "sve2"}),  # excellent
+        ("aarch64", 4, {"sha3", "aes"}),  # good
+        ("aarch64", 0, set()),  # marginal
         # s390x
-        ("s390x", 0, {"msa", "msa8", "msa9"}),                    # excellent
-        ("s390x", 0, {"msa"}),                                    # marginal
-        ("s390x", 0, set()),                                      # poor
+        ("s390x", 0, {"msa", "msa8", "msa9"}),  # excellent
+        ("s390x", 0, {"msa"}),  # marginal
+        ("s390x", 0, set()),  # poor
     ]
     for arch, score, flags in cases:
         tier, _ = pr.isa_tier(arch, score, flags)
@@ -451,8 +472,7 @@ def test_memory_tier_return_values_are_subset_of_check_choices() -> None:
     for gb in (128.0, 32.0, 8.0, 1.0):
         tier, _ = pr.memory_tier(gb)
         assert tier in _TIER_CHECK_CHOICES, (
-            f"memory_tier({gb}) returned {tier!r}, which `--check` "
-            "does not accept"
+            f"memory_tier({gb}) returned {tier!r}, which `--check` does not accept"
         )
 
 
@@ -460,6 +480,7 @@ def test_memory_tier_return_values_are_subset_of_check_choices() -> None:
 # Section 3: per-algorithm verdict notes + memory-bandwidth gating +
 # overall-verdict caveat for missing benchmark
 # ---------------------------------------------------------------------------
+
 
 def test_per_algo_verdict_emits_slh_dsa_note() -> None:
     bench = {"available": True, "pqc": {"SLH-DSA-SHA2-128s": {"sign/s": 6.0}}}
@@ -486,7 +507,10 @@ def test_per_algo_verdict_no_downgrade_when_bandwidth_unmeasured() -> None:
 
 
 def test_per_algo_verdict_includes_ml_dsa_verify_threshold() -> None:
-    bench = {"available": True, "pqc": {"ML-DSA-65": {"sign/s": 1700, "verify/s": 9000}}}
+    bench = {
+        "available": True,
+        "pqc": {"ML-DSA-65": {"sign/s": 1700, "verify/s": 9000}},
+    }
     out = pr.per_algo_verdict(bench, cores=8)
     assert "ML-DSA-65/verify" in out
     assert out["ML-DSA-65/verify"]["tier"] == "excellent"
@@ -495,9 +519,11 @@ def test_per_algo_verdict_includes_ml_dsa_verify_threshold() -> None:
 def test_overall_verdict_no_caveat_when_bench_present() -> None:
     palg = {
         "ML-KEM-768": {"tier": "excellent"},
-        "ML-DSA-65":  {"tier": "excellent"},
+        "ML-DSA-65": {"tier": "excellent"},
     }
-    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    verdict, why, code, caveat = pr.overall_verdict(
+        "excellent", "excellent", False, palg
+    )
     assert code == 0
     assert caveat == ""
 
@@ -505,7 +531,9 @@ def test_overall_verdict_no_caveat_when_bench_present() -> None:
 def test_overall_verdict_adds_caveat_when_bench_unavailable() -> None:
     """No benchmark data must NOT drag a high-ISA / high-mem host to POOR."""
     palg: dict[str, dict[str, str]] = {}
-    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    verdict, why, code, caveat = pr.overall_verdict(
+        "excellent", "excellent", False, palg
+    )
     assert code == 0
     assert "no PQC microbenchmark" in caveat
 
@@ -513,9 +541,11 @@ def test_overall_verdict_adds_caveat_when_bench_unavailable() -> None:
 def test_overall_verdict_caveat_with_unknown_only_per_algo() -> None:
     palg = {
         "ML-KEM-768": {"tier": "unknown"},
-        "ML-DSA-65":  {"tier": "unknown"},
+        "ML-DSA-65": {"tier": "unknown"},
     }
-    verdict, why, code, caveat = pr.overall_verdict("excellent", "excellent", False, palg)
+    verdict, why, code, caveat = pr.overall_verdict(
+        "excellent", "excellent", False, palg
+    )
     assert code == 0
     assert caveat != ""
 
@@ -523,6 +553,7 @@ def test_overall_verdict_caveat_with_unknown_only_per_algo() -> None:
 # ---------------------------------------------------------------------------
 # Section 4: container / package / aggregator parsers
 # ---------------------------------------------------------------------------
+
 
 def test_parse_cgroup_for_container_kubepods() -> None:
     cg = "12:cpu,cpuacct:/kubepods.slice/kubepods-pod1234.slice/cri-containerd-abcd.scope\n"
@@ -574,12 +605,12 @@ def test_classify_bundled_crypto_rhel_from_rpm_fixture() -> None:
 
 def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
     pkgs = [
-        {"name": "openssl",                  "version": "3.5.5"},
-        {"name": "java-21-openjdk",          "version": "21.0.5"},
+        {"name": "openssl", "version": "3.5.5"},
+        {"name": "java-21-openjdk", "version": "21.0.5"},
         {"name": "java-21-openjdk-headless", "version": "21.0.5"},
-        {"name": "nodejs",                   "version": "22.10.0"},
-        {"name": "python3",                  "version": "3.13.5"},
-        {"name": "nss",                      "version": "3.122.1"},
+        {"name": "nodejs", "version": "22.10.0"},
+        {"name": "python3", "version": "3.13.5"},
+        {"name": "nss", "version": "3.122.1"},
     ]
     out = pr.classify_bundled_crypto(pkgs, family="rhel")
     names = sorted(p["package"] for p in out)
@@ -595,24 +626,39 @@ def test_classify_bundled_crypto_rhel_finds_jdk_and_node_dedupes() -> None:
 
 def test_aggregate_reports_basic_counts() -> None:
     reports = [
-        {"schema_version": "1.0", "arch": "x86_64", "isa_tier": "excellent",
-         "verdict": "EXCELLENT - software PQC at production speed",
-         "cpu_model": "AMD EPYC", "kernel_info": {"os_release_id": "rhel"},
-         "runtime_environment": {"environment": "host"},
-         "accelerators": [{"kind": "tpm"}],
-         "replace_required": False},
-        {"schema_version": "1.0", "arch": "x86_64", "isa_tier": "good",
-         "verdict": "GOOD - production-capable in software",
-         "cpu_model": "Intel Xeon", "kernel_info": {"os_release_id": "rhel"},
-         "runtime_environment": {"environment": "container"},
-         "accelerators": [{"kind": "hsm"}, {"kind": "tpm"}],
-         "replace_required": False},
-        {"schema_version": "1.0", "arch": "aarch64", "isa_tier": "poor",
-         "verdict": "POOR - not suitable for production PQC",
-         "cpu_model": "Old ARM", "kernel_info": {"os_release_id": "fedora"},
-         "runtime_environment": {"environment": "host"},
-         "accelerators": [],
-         "replace_required": True},
+        {
+            "schema_version": "1.0",
+            "arch": "x86_64",
+            "isa_tier": "excellent",
+            "verdict": "EXCELLENT - software PQC at production speed",
+            "cpu_model": "AMD EPYC",
+            "kernel_info": {"os_release_id": "rhel"},
+            "runtime_environment": {"environment": "host"},
+            "accelerators": [{"kind": "tpm"}],
+            "replace_required": False,
+        },
+        {
+            "schema_version": "1.0",
+            "arch": "x86_64",
+            "isa_tier": "good",
+            "verdict": "GOOD - production-capable in software",
+            "cpu_model": "Intel Xeon",
+            "kernel_info": {"os_release_id": "rhel"},
+            "runtime_environment": {"environment": "container"},
+            "accelerators": [{"kind": "hsm"}, {"kind": "tpm"}],
+            "replace_required": False,
+        },
+        {
+            "schema_version": "1.0",
+            "arch": "aarch64",
+            "isa_tier": "poor",
+            "verdict": "POOR - not suitable for production PQC",
+            "cpu_model": "Old ARM",
+            "kernel_info": {"os_release_id": "fedora"},
+            "runtime_environment": {"environment": "host"},
+            "accelerators": [],
+            "replace_required": True,
+        },
     ]
     out = pr.aggregate_reports(reports)
     assert out["total_hosts"] == 3
@@ -642,6 +688,7 @@ def test_aggregate_to_csv_renders_groups() -> None:
 # ---------------------------------------------------------------------------
 # Section 4: host_path prefixing
 # ---------------------------------------------------------------------------
+
 
 def test_host_path_no_prefix_leaves_path_unchanged() -> None:
     # HOST_PREFIX is "" by default; host_path returns Path(p) verbatim.
@@ -758,6 +805,7 @@ def test_parse_proc_crypto_cnsa_aes_below_256_not_compliant() -> None:
 # evaluate_cnsa_2_0 — overall compliance classifier
 # ---------------------------------------------------------------------------
 
+
 def test_evaluate_cnsa_2_0_fully_compliant() -> None:
     openssl = {
         "available": True,
@@ -859,24 +907,28 @@ def test_evaluate_cnsa_2_0_partial_when_only_one_input_available() -> None:
 import pytest  # noqa: E402  (placed after the existing tests for diff locality)
 
 
-@pytest.mark.parametrize("fixture, expected_family, expected_id, has_codename", [
-    ("rhel-8.txt",       "rhel",   "rhel",      False),
-    ("rhel-9.txt",       "rhel",   "rhel",      False),
-    ("rhel-10.txt",      "rhel",   "rhel",      False),
-    ("fedora-41.txt",    "rhel",   "fedora",    False),
-    ("rocky-8.txt",      "rhel",   "rocky",     False),
-    ("rocky-9.txt",      "rhel",   "rocky",     False),
-    ("almalinux-8.txt",  "rhel",   "almalinux", False),
-    ("ubuntu-2404.txt",  "debian", "ubuntu",    True),
-    ("ubuntu-2604.txt",  "debian", "ubuntu",    True),
-    ("debian-12.txt",    "debian", "debian",    True),
-    ("debian-13.txt",    "debian", "debian",    True),
-    ("sles-15sp6.txt",   "suse",   "sles",      False),
-    ("arch.txt",         "arch",   "arch",      False),
-    ("alpine-321.txt",   "alpine", "alpine",    False),
-])
-def test_parse_os_release_matrix(fixture: str, expected_family: str,
-                                 expected_id: str, has_codename: bool) -> None:
+@pytest.mark.parametrize(
+    "fixture, expected_family, expected_id, has_codename",
+    [
+        ("rhel-8.txt", "rhel", "rhel", False),
+        ("rhel-9.txt", "rhel", "rhel", False),
+        ("rhel-10.txt", "rhel", "rhel", False),
+        ("fedora-41.txt", "rhel", "fedora", False),
+        ("rocky-8.txt", "rhel", "rocky", False),
+        ("rocky-9.txt", "rhel", "rocky", False),
+        ("almalinux-8.txt", "rhel", "almalinux", False),
+        ("ubuntu-2404.txt", "debian", "ubuntu", True),
+        ("ubuntu-2604.txt", "debian", "ubuntu", True),
+        ("debian-12.txt", "debian", "debian", True),
+        ("debian-13.txt", "debian", "debian", True),
+        ("sles-15sp6.txt", "suse", "sles", False),
+        ("arch.txt", "arch", "arch", False),
+        ("alpine-321.txt", "alpine", "alpine", False),
+    ],
+)
+def test_parse_os_release_matrix(
+    fixture: str, expected_family: str, expected_id: str, has_codename: bool
+) -> None:
     text = (FIXTURES / "os-release" / fixture).read_text()
     parsed = pr.parse_os_release(text)
     assert parsed["family"] == expected_family, parsed
@@ -910,7 +962,7 @@ def test_parse_os_release_strips_quotes_and_comments() -> None:
         "# this is a comment\n"
         'ID="rhel"\n'
         "VERSION_ID='9.6'\n"
-        "PRETTY_NAME=\"Red Hat Enterprise Linux 9.6 (Plow)\"\n"
+        'PRETTY_NAME="Red Hat Enterprise Linux 9.6 (Plow)"\n'
         "\n"
     )
     parsed = pr.parse_os_release(text)
@@ -922,6 +974,7 @@ def test_parse_os_release_strips_quotes_and_comments() -> None:
 # ---------------------------------------------------------------------------
 # Cross-distro §2: per-family package parsers + classification
 # ---------------------------------------------------------------------------
+
 
 def test_parse_dpkg_packages_normalises_to_dicts() -> None:
     text = (FIXTURES / "packages" / "dpkg-query-sample.txt").read_text()
@@ -1007,19 +1060,25 @@ def test_classify_bundled_crypto_unknown_family_is_empty() -> None:
 # Cross-distro §2: install hints
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("binary, family, expected_substring", [
-    ("lspci",       "rhel",   "dnf install"),
-    ("lspci",       "debian", "apt-get install"),
-    ("lspci",       "suse",   "zypper install"),
-    ("lspci",       "arch",   "pacman -S"),
-    ("lspci",       "alpine", "apk add"),
-    ("tpm2_getcap", "rhel",   "tpm2-tools"),
-    ("tpm2_getcap", "debian", "tpm2-tools"),
-    ("tpm2_getcap", "suse",   "tpm2.0-tools"),  # SUSE name
-    ("certutil",    "debian", "libnss3-tools"),  # Debian name differs
-    ("certutil",    "rhel",   "nss-tools"),
-])
-def test_install_hint_per_family(binary: str, family: str, expected_substring: str) -> None:
+
+@pytest.mark.parametrize(
+    "binary, family, expected_substring",
+    [
+        ("lspci", "rhel", "dnf install"),
+        ("lspci", "debian", "apt-get install"),
+        ("lspci", "suse", "zypper install"),
+        ("lspci", "arch", "pacman -S"),
+        ("lspci", "alpine", "apk add"),
+        ("tpm2_getcap", "rhel", "tpm2-tools"),
+        ("tpm2_getcap", "debian", "tpm2-tools"),
+        ("tpm2_getcap", "suse", "tpm2.0-tools"),  # SUSE name
+        ("certutil", "debian", "libnss3-tools"),  # Debian name differs
+        ("certutil", "rhel", "nss-tools"),
+    ],
+)
+def test_install_hint_per_family(
+    binary: str, family: str, expected_substring: str
+) -> None:
     hint = pr.detect.osinfo._install_hint(binary, family)
     assert expected_substring in hint
 
@@ -1031,6 +1090,7 @@ def test_install_hint_unknown_family_falls_back() -> None:
 # ---------------------------------------------------------------------------
 # Cross-distro §2: FIPS interpretation
 # ---------------------------------------------------------------------------
+
 
 def test_interpret_fips_rhel_active_provider_certified() -> None:
     fips = {"kernel": True, "openssl_provider": True}
@@ -1085,6 +1145,7 @@ def test_interpret_fips_arch_alpine_explicitly_uncertified() -> None:
 # Cross-distro §4: PKCS#11 search paths per family
 # ---------------------------------------------------------------------------
 
+
 def test_pkcs11_search_paths_debian_includes_multiarch() -> None:
     paths = pr.detect.hardware._pkcs11_search_paths("debian")
     assert "/usr/lib/x86_64-linux-gnu/pkcs11" in paths
@@ -1111,6 +1172,7 @@ def test_pkcs11_search_paths_always_include_vendor() -> None:
 # Cross-distro §6: OpenSSL upgrade-path hints per family
 # ---------------------------------------------------------------------------
 
+
 def test_openssl_upgrade_path_already_pqc_capable_returns_none() -> None:
     osr = {"family": "rhel", "id": "rhel", "version_id": "10.0"}
     assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
@@ -1123,11 +1185,14 @@ def test_openssl_upgrade_path_rhel9() -> None:
     assert "RHEL 10" in msg
 
 
-@pytest.mark.parametrize("id_, version_id, expected_distro_token", [
-    ("rhel",      "8.10", "RHEL 8"),
-    ("rocky",     "8.10", "EL8"),
-    ("almalinux", "8.10", "EL8"),
-])
+@pytest.mark.parametrize(
+    "id_, version_id, expected_distro_token",
+    [
+        ("rhel", "8.10", "RHEL 8"),
+        ("rocky", "8.10", "EL8"),
+        ("almalinux", "8.10", "EL8"),
+    ],
+)
 def test_openssl_upgrade_path_rhel8_family(
     id_: str, version_id: str, expected_distro_token: str
 ) -> None:
@@ -1209,7 +1274,8 @@ def test_openssl_upgrade_path_ubuntu_2604_already_capable() -> None:
 
 
 @pytest.mark.parametrize(
-    "version_id", ["16.04", "20.04", "22.04", "24.04", "25.04", "25.10", "26.04", "26.10"]
+    "version_id",
+    ["16.04", "20.04", "22.04", "24.04", "25.04", "25.10", "26.04", "26.10"],
 )
 def test_openssl_upgrade_path_ubuntu_never_recommends_interim_release(
     version_id: str,
@@ -1236,6 +1302,7 @@ def test_openssl_upgrade_path_no_os_release() -> None:
 # Cross-distro §7: SSH version + Libreswan parsing
 # ---------------------------------------------------------------------------
 
+
 def test_parse_ssh_version_standard_format() -> None:
     text = "OpenSSH_9.9p1, OpenSSL 3.5.5 27 Jan 2026\n"
     assert pr.parse_ssh_version(text) == "9.9p1"
@@ -1260,6 +1327,7 @@ def test_parse_libreswan_version_no_match() -> None:
 # /etc/SuSE-release) so the cross-distro contract is exercised end-to-end
 # without requiring a real distro switch.
 # ---------------------------------------------------------------------------
+
 
 def _stub_host(tmp_path, monkeypatch, files):
     """Helper: populate tmp_path with the given {relpath: content} dict
@@ -1292,9 +1360,13 @@ def test_detect_os_falls_back_to_usr_lib_os_release(tmp_path, monkeypatch) -> No
 
 def test_detect_os_falls_back_to_redhat_release(tmp_path, monkeypatch) -> None:
     """Pre-os-release RHEL-derivatives still have /etc/redhat-release."""
-    _stub_host(tmp_path, monkeypatch, {
-        "/etc/redhat-release": "Red Hat Enterprise Linux release 7.9 (Maipo)\n",
-    })
+    _stub_host(
+        tmp_path,
+        monkeypatch,
+        {
+            "/etc/redhat-release": "Red Hat Enterprise Linux release 7.9 (Maipo)\n",
+        },
+    )
     out = pr.detect_os()
     assert out["family"] == "rhel"
     assert out["version_id"] == "7.9"
@@ -1360,8 +1432,10 @@ def test_parse_openssl_tls_groups_colon_separated_form() -> None:
     separated line.  That's what runs in production today; the parser
     must accept this form (regression — the first cut only handled the
     one-per-line alias form)."""
-    text = ("secp256r1:secp384r1:x25519:ffdhe2048:MLKEM512:MLKEM768:"
-            "MLKEM1024:SecP256r1MLKEM768:X25519MLKEM768:SecP384r1MLKEM1024\n")
+    text = (
+        "secp256r1:secp384r1:x25519:ffdhe2048:MLKEM512:MLKEM768:"
+        "MLKEM1024:SecP256r1MLKEM768:X25519MLKEM768:SecP384r1MLKEM1024\n"
+    )
     names = pr.parse_openssl_tls_groups(text)
     assert "secp256r1" in names
     assert "MLKEM768" in names
@@ -1377,8 +1451,10 @@ def test_classify_tls_groups_splits_hybrid_pure_classical() -> None:
     out = pr.classify_tls_groups(names)
     assert out["pure_pqc"] == ["MLKEM1024", "MLKEM512", "MLKEM768"]
     assert out["hybrid"] == [
-        "SecP256r1MLKEM768", "SecP384r1MLKEM1024",
-        "X25519MLKEM768", "X448MLKEM1024",
+        "SecP256r1MLKEM768",
+        "SecP384r1MLKEM1024",
+        "X25519MLKEM768",
+        "X448MLKEM1024",
     ]
     # Classical bucket: named EC curves + FFDHE + brainpool.
     assert "secp256r1" in out["classical"]
@@ -1409,16 +1485,19 @@ def test_classify_tls_groups_empty_input_returns_empty_buckets() -> None:
 # SSH KEX classification
 # ---------------------------------------------------------------------------
 
+
 def test_classify_ssh_kex_marks_mlkem_x25519_as_hybrid() -> None:
     """OpenSSH 9.x ships mlkem768x25519-sha256 and mlkem768nistp256-
     sha256 as the PQC kex options; both embed a classical group token
     and must classify as hybrid, not pure_pqc."""
-    out = pr.classify_ssh_kex([
-        "mlkem768x25519-sha256",
-        "mlkem768nistp256-sha256",
-        "mlkem1024nistp384-sha384",
-        "sntrup761x25519-sha512",
-    ])
+    out = pr.classify_ssh_kex(
+        [
+            "mlkem768x25519-sha256",
+            "mlkem768nistp256-sha256",
+            "mlkem1024nistp384-sha384",
+            "sntrup761x25519-sha512",
+        ]
+    )
     assert out["hybrid"] == [
         "mlkem1024nistp384-sha384",
         "mlkem768nistp256-sha256",
@@ -1452,10 +1531,12 @@ def test_parse_ssh_kex_emits_kex_groups_and_back_compat_pqc_kex() -> None:
     assert out["available"] is True
     assert out["kex_count"] == 5
     assert out["pqc_kex"] == [
-        "mlkem768x25519-sha256", "sntrup761x25519-sha512",
+        "mlkem768x25519-sha256",
+        "sntrup761x25519-sha512",
     ]
     assert out["kex_groups"]["hybrid"] == [
-        "mlkem768x25519-sha256", "sntrup761x25519-sha512",
+        "mlkem768x25519-sha256",
+        "sntrup761x25519-sha512",
     ]
     assert out["kex_groups"]["pure_pqc"] == []
     # Issue #40: classical SSH kex must surface in its own bucket so
@@ -1501,10 +1582,12 @@ def test_classify_ssh_kex_drops_unrecognised_names() -> None:
     """Names that match no PQC and no classical pattern are dropped, the
     same way classify_tls_groups treats unknown TLS groups.  This keeps
     the report honest about what we don't yet catalogue."""
-    out = pr.classify_ssh_kex([
-        "unknown-future-kex-sha512",
-        "gss-group14-sha256-",  # GSS-API kex; out of scope for PQC inventory
-    ])
+    out = pr.classify_ssh_kex(
+        [
+            "unknown-future-kex-sha512",
+            "gss-group14-sha256-",  # GSS-API kex; out of scope for PQC inventory
+        ]
+    )
     assert out == {"pure_pqc": [], "hybrid": [], "classical": []}
 
 
@@ -1562,6 +1645,7 @@ def test_classify_ssh_kex_real_classical_names_land_in_classical() -> None:
 # per_algo_verdict — hybrid availability surfaces in ML-KEM notes
 # ---------------------------------------------------------------------------
 
+
 def test_per_algo_verdict_emits_hybrid_note_for_ml_kem_when_available() -> None:
     """When OpenSSL exposes hybrid TLS groups, the ML-KEM verdict notes
     must point at hybrid as the preferred transitional path — that's
@@ -1571,7 +1655,10 @@ def test_per_algo_verdict_emits_hybrid_note_for_ml_kem_when_available() -> None:
         "pqc": {"ML-KEM-768": {"decaps/s": 30000.0}},
     }
     out = pr.per_algo_verdict(
-        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=True,
+        bench,
+        cores=8,
+        mem_bw_gb_s=80.0,
+        tls_hybrid_available=True,
     )
     notes_joined = " ".join(out["ML-KEM-768"]["notes"])
     assert "hybrid" in notes_joined.lower()
@@ -1586,7 +1673,10 @@ def test_per_algo_verdict_no_hybrid_note_when_unavailable() -> None:
         "pqc": {"ML-KEM-768": {"decaps/s": 30000.0}},
     }
     out = pr.per_algo_verdict(
-        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=False,
+        bench,
+        cores=8,
+        mem_bw_gb_s=80.0,
+        tls_hybrid_available=False,
     )
     notes_joined = " ".join(out["ML-KEM-768"]["notes"])
     assert "hybrid" not in notes_joined.lower()
@@ -1603,7 +1693,10 @@ def test_per_algo_verdict_hybrid_note_does_not_attach_to_signatures() -> None:
         },
     }
     out = pr.per_algo_verdict(
-        bench, cores=8, mem_bw_gb_s=80.0, tls_hybrid_available=True,
+        bench,
+        cores=8,
+        mem_bw_gb_s=80.0,
+        tls_hybrid_available=True,
     )
     for key in ("ML-DSA-65", "SLH-DSA-SHA2-128s"):
         notes = " ".join(out[key]["notes"])

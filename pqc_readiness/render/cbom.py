@@ -436,6 +436,7 @@ def canonical_assets(r: _report.Report) -> list[CryptoAsset]:
 # exchange, so emitting this shape lets downstream PQC-migration tooling
 # ingest pqc-readiness output without writing a bespoke translator.
 
+
 # Provenance tag stamped onto every emitted CBOM asset so downstream
 # aggregators can tell which tool detected the entry.
 def _cbom_provenance() -> list[dict[str, str]]:
@@ -552,6 +553,4 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
-_registry.register_output(
-    _registry.OutputFormat("cbom", 10, lambda r: render_cbom(r))
-)
+_registry.register_output(_registry.OutputFormat("cbom", 10, lambda r: render_cbom(r)))

@@ -52,7 +52,9 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
         "detect_runtime_environment",
         lambda: {"environment": "bare_metal", "evidence": []},
     )
-    monkeypatch.setattr(pr.detect.runtime, "build_host_fs_detections_unavailable", lambda: {})
+    monkeypatch.setattr(
+        pr.detect.runtime, "build_host_fs_detections_unavailable", lambda: {}
+    )
     monkeypatch.setattr(pr.detect.hardware, "detect_accelerators", lambda: [])
     monkeypatch.setattr(pr.detect.hardware, "detect_network_hsms", lambda: [])
     monkeypatch.setattr(
@@ -65,15 +67,23 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
             "pretty_name": "Red Hat Enterprise Linux 10.0 (Stub)",
         },
     )
-    monkeypatch.setattr(pr.detect.hardware, "detect_pkcs11_modules", lambda family="unknown": [])
     monkeypatch.setattr(
-        pr.detect.hardware, "detect_kernel_crypto_hw_annotated", lambda: {"items": ["aesni_intel"]}
+        pr.detect.hardware, "detect_pkcs11_modules", lambda family="unknown": []
     )
-    monkeypatch.setattr(pr.detect.hardware, "detect_ktls_annotated", lambda: {"supported": True})
+    monkeypatch.setattr(
+        pr.detect.hardware,
+        "detect_kernel_crypto_hw_annotated",
+        lambda: {"items": ["aesni_intel"]},
+    )
+    monkeypatch.setattr(
+        pr.detect.hardware, "detect_ktls_annotated", lambda: {"supported": True}
+    )
     monkeypatch.setattr(
         pr.detect.config, "detect_fips_mode", lambda: {"enabled": False, "sources": []}
     )
-    monkeypatch.setattr(pr.detect.hardware, "detect_tpm_pqc", lambda: {"present": False})
+    monkeypatch.setattr(
+        pr.detect.hardware, "detect_tpm_pqc", lambda: {"present": False}
+    )
     monkeypatch.setattr(
         pr.detect.config,
         "openssl_capability",
@@ -90,17 +100,27 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
         },
     )
     monkeypatch.setattr(
-        pr.detect.protocols, "detect_ssh_pqc", lambda family="unknown": {"available": False}
+        pr.detect.protocols,
+        "detect_ssh_pqc",
+        lambda family="unknown": {"available": False},
     )
     monkeypatch.setattr(
-        pr.detect.protocols, "detect_ipsec_pqc", lambda family="unknown": {"available": False}
+        pr.detect.protocols,
+        "detect_ipsec_pqc",
+        lambda family="unknown": {"available": False},
     )
     monkeypatch.setattr(pr.detect.protocols, "detect_nss", lambda: {"available": False})
     monkeypatch.setattr(
-        pr.detect.osinfo, "detect_kernel_info", lambda os_release=None: {"release": "6.12.0-stub"}
+        pr.detect.osinfo,
+        "detect_kernel_info",
+        lambda os_release=None: {"release": "6.12.0-stub"},
     )
-    monkeypatch.setattr(pr.detect.config, "interpret_fips", lambda fips, osinfo, osr: fips)
-    monkeypatch.setattr(pr.detect.config, "fips_pqc_conflict_check", lambda fips, osinfo: None)
+    monkeypatch.setattr(
+        pr.detect.config, "interpret_fips", lambda fips, osinfo, osr: fips
+    )
+    monkeypatch.setattr(
+        pr.detect.config, "fips_pqc_conflict_check", lambda fips, osinfo: None
+    )
     monkeypatch.setattr(pr._platform, "is_linux", lambda: False)
 
 
@@ -260,8 +280,10 @@ def test_render_output_ansible_wraps_report_and_beats_json(
 def test_render_output_recommend_formats(
     stub_renderers: pr.Report, argv: tuple[str, ...], expected_prefix: str
 ) -> None:
-    assert pr.render_output(stub_renderers, _args(*argv)).lstrip().startswith(
-        expected_prefix
+    assert (
+        pr.render_output(stub_renderers, _args(*argv))
+        .lstrip()
+        .startswith(expected_prefix)
     )
 
 

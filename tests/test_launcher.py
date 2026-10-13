@@ -13,6 +13,7 @@ launcher promises:
 3. Only-too-old python3 on PATH — same AppStream guidance, distinct
    exit code from "no python at all".
 """
+
 from __future__ import annotations
 
 import os
@@ -98,13 +99,7 @@ def test_launcher_only_old_python_emits_appstream_guidance(
     # Pretend to be Python 3.6 — print "3.6" on the version probe and
     # exit 0 on anything else so the wrapper doesn't fall through to a
     # different error path.
-    fake_py.write_text(
-        "#!/bin/sh\n"
-        "case \"$1\" in\n"
-        "  -c) echo 3.6 ;;\n"
-        "esac\n"
-        "exit 0\n"
-    )
+    fake_py.write_text('#!/bin/sh\ncase "$1" in\n  -c) echo 3.6 ;;\nesac\nexit 0\n')
     fake_py.chmod(0o755)
 
     proc = subprocess.run(

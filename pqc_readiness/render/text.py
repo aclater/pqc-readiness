@@ -224,9 +224,7 @@ def _render_text_openssl_tls_groups(tls_groups: dict[str, Any]) -> list[str]:
         L.append(
             f"   TLS PQC groups (hybrid): {', '.join(hybrid) if hybrid else 'none'}"
         )
-        L.append(
-            f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}"
-        )
+        L.append(f"   TLS PQC groups (pure):   {', '.join(pure) if pure else 'none'}")
     if classical:
         L.append(f"   TLS classical groups:    {len(classical)} detected")
     return L
@@ -315,9 +313,7 @@ def _render_text_tls_handshake(r: _report.Report) -> list[str]:
                 )
                 continue
             if s.get("skipped"):
-                L.append(
-                    f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}"
-                )
+                L.append(f"   {s.get('label', '?'):<32} skipped: {s.get('reason', '')}")
                 continue
             hps = s.get("handshakes_per_sec")
             ttfb = s.get("ttfb_ms_median")
@@ -424,9 +420,7 @@ def _render_text_trust_store(r: _report.Report) -> list[str]:
     if not r.trust_store.get("available"):
         return []
     L: list[str] = [C.wrap(C.BOLD, "9. Trust store inventory")]
-    L.append(
-        f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}"
-    )
+    L.append(f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}")
     L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
     if r.trust_store.get("truncated"):
         L.append(

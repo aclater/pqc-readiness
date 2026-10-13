@@ -20,6 +20,4 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--json", action="store_true", help="emit JSON")
 
 
-_registry.register_output(
-    _registry.OutputFormat("json", 0, lambda r: render_json(r))
-)
+_registry.register_output(_registry.OutputFormat("json", 0, lambda r: render_json(r)))

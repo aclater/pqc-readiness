@@ -104,7 +104,7 @@ def build_bdb(
     def overflow_chain(data: bytes) -> int:
         nonlocal next_free
         room = pagesize - 26
-        chunks = [data[i:i + room] for i in range(0, len(data), room)]
+        chunks = [data[i : i + room] for i in range(0, len(data), room)]
         first = next_free
         for i, chunk in enumerate(chunks):
             pgno = next_free
@@ -113,7 +113,7 @@ def build_bdb(
             nxt = pgno + 1 if i + 1 < len(chunks) else 0
             struct.pack_into(bo + "I", pg, 16, nxt)
             struct.pack_into(bo + "H", pg, 22, len(chunk))
-            pg[26:26 + len(chunk)] = chunk
+            pg[26 : 26 + len(chunk)] = chunk
         return first
 
     items: list[bytes] = []
@@ -123,14 +123,17 @@ def build_bdb(
         if len(value) <= inline_max:
             items.append(b"\x01" + value)
         else:
-            items.append(b"\x03\0\0\0" + struct.pack(bo + "II", overflow_chain(value), len(value)))
+            items.append(
+                b"\x03\0\0\0"
+                + struct.pack(bo + "II", overflow_chain(value), len(value))
+            )
     bucket = new_page(1, 13)
     struct.pack_into(bo + "H", bucket, 20, len(items))
     off = pagesize
     for i, it in enumerate(items):
         off -= len(it)
         assert off > 26 + 2 * len(items), "bucket page too small for synthetic items"
-        bucket[off:off + len(it)] = it
+        bucket[off : off + len(it)] = it
         struct.pack_into(bo + "H", bucket, 26 + 2 * i, off)
     meta = bytearray(pagesize)
     struct.pack_into(bo + "I", meta, 12, 0x00061561)
@@ -156,7 +159,7 @@ def build_ndb(blobs: list[bytes], free_slots_first: int = 1) -> bytes:
         blkcnt = -(-(16 + len(blob) + 12) // 16)
         region = bytearray(blkcnt * 16)
         struct.pack_into("<4sIII", region, 0, b"BlbS", pkgidx, 1, len(blob))
-        region[16:16 + len(blob)] = blob
+        region[16 : 16 + len(blob)] = blob
         adl = zlib.adler32(bytes(region[:-12]))
         struct.pack_into("<II4s", region, len(region) - 12, adl, len(blob), b"BlbE")
         struct.pack_into("<4sIII", slots, slotno * 16, b"Slot", pkgidx, blkoff, blkcnt)
@@ -190,7 +193,11 @@ def _write(tmp_path: Path, name: str, data: bytes) -> Path:
 def test_el8_bdb_fixture_matches_rpm_qa_without_rpm(host, tmp_path) -> None:
     _el8_host(host(tmp_path))
     inv = pr.query_rpm_packages()
-    assert (inv["source"], inv["backend"], inv["db_root"]) == ("rpmdb-bdb", "bdb", "/var/lib/rpm")
+    assert (inv["source"], inv["backend"], inv["db_root"]) == (
+        "rpmdb-bdb",
+        "bdb",
+        "/var/lib/rpm",
+    )
     assert _qa_lines(inv["packages"]) == _expected("el8-bdb")
 
 
@@ -254,10 +261,17 @@ def test_bdb_named_lookup_filters_exactly(tmp_path) -> None:
 def test_ndb_synthetic_with_free_slots(tmp_path) -> None:
     db = _write(tmp_path, "Packages.db", build_ndb(PKGS, free_slots_first=3))
     assert pr.rpmdb_backend_by_magic(db) == "ndb"
-    assert sorted(p["name"] for p in pr.read_rpmdb_blobs("ndb", db)) == ["bash", "bigpkg", "nss"]
+    assert sorted(p["name"] for p in pr.read_rpmdb_blobs("ndb", db)) == [
+        "bash",
+        "bigpkg",
+        "nss",
+    ]
 
 
-@pytest.mark.parametrize(("backend", "builder", "name"), [("bdb", build_bdb, "Packages"), ("ndb", build_ndb, "Packages.db")])
+@pytest.mark.parametrize(
+    ("backend", "builder", "name"),
+    [("bdb", build_bdb, "Packages"), ("ndb", build_ndb, "Packages.db")],
+)
 def test_database_without_packages_is_invalid(tmp_path, backend, builder, name) -> None:
     db = _write(tmp_path, name, builder([]))
     with pytest.raises(pr.RpmdbError, match="0 packages"):
@@ -315,11 +329,11 @@ def _ndb_corruptions() -> dict[str, bytes]:
     struct.pack_into("<I", bad, first_used + 8, 0xFFFFFF)  # blob past EOF
     out["slot-past-eof"] = bytes(bad)
     bad = bytearray(good)
-    bad[first_used:first_used + 4] = b"Xlot"
+    bad[first_used : first_used + 4] = b"Xlot"
     out["slot-magic"] = bytes(bad)
     blob0 = 4096
     bad = bytearray(good)
-    bad[blob0:blob0 + 4] = b"XlbS"
+    bad[blob0 : blob0 + 4] = b"XlbS"
     out["blob-magic"] = bytes(bad)
     bad = bytearray(good)
     bad[blob0 + 20] ^= 0xFF  # flip a data byte: Adler-32 mismatch
@@ -344,8 +358,16 @@ def test_corruption_late_in_file_discards_everything(tmp_path) -> None:
         pr.read_rpmdb_blobs("ndb", db)
 
 
-@pytest.mark.parametrize(("name", "data"), [("Packages", _bdb_corruptions()["overflow-loop"]), ("Packages.db", _ndb_corruptions()["checksum"])])
-def test_unreadable_database_falls_back_to_rpm_cli(host, monkeypatch, tmp_path, name, data) -> None:
+@pytest.mark.parametrize(
+    ("name", "data"),
+    [
+        ("Packages", _bdb_corruptions()["overflow-loop"]),
+        ("Packages.db", _ndb_corruptions()["checksum"]),
+    ],
+)
+def test_unreadable_database_falls_back_to_rpm_cli(
+    host, monkeypatch, tmp_path, name, data
+) -> None:
     root = host(tmp_path)
     (root / "var/lib/rpm").mkdir(parents=True)
     (root / "var/lib/rpm" / name).write_bytes(data)
@@ -384,19 +406,30 @@ def test_nss_tool_label_on_cli_fallback_is_rpm_q(host, monkeypatch, tmp_path) ->
 
 @pytest.mark.parametrize(
     ("source", "label"),
-    [("rpmdb-sqlite", "rpmdb (sqlite)"), ("rpmdb-bdb", "rpmdb (bdb)"), ("rpmdb-ndb", "rpmdb (ndb)"), ("rpm-cli", "rpm -q")],
+    [
+        ("rpmdb-sqlite", "rpmdb (sqlite)"),
+        ("rpmdb-bdb", "rpmdb (bdb)"),
+        ("rpmdb-ndb", "rpmdb (ndb)"),
+        ("rpm-cli", "rpm -q"),
+    ],
 )
 def test_nss_tool_label_matches_packages_source(monkeypatch, source, label) -> None:
     monkeypatch.setattr(
         pr.detect.packages,
         "query_rpm_named",
-        lambda names: {"available": True, "source": source, "packages": [{"name": "nss", "version": "3.112.0"}]},
+        lambda names: {
+            "available": True,
+            "source": source,
+            "packages": [{"name": "nss", "version": "3.112.0"}],
+        },
     )
     assert pr.detect.protocols._nss_from_rpmdb()["tool"] == label
 
 
 @pytest.mark.parametrize("make_host", [_el8_host, _suse_host])
-def test_named_lookup_on_bdb_and_ndb_prefers_rpm_q(host, monkeypatch, tmp_path, make_host) -> None:
+def test_named_lookup_on_bdb_and_ndb_prefers_rpm_q(
+    host, monkeypatch, tmp_path, make_host
+) -> None:
     # BDB / ndb have no index we read: a direct named lookup walks the whole
     # database (10-60 ms measured on EL8 / SUSE VMs) while `rpm -q` uses
     # rpm's index (~4 ms).  With rpm available, one `rpm -q` runs, pointed
@@ -423,7 +456,11 @@ def test_named_lookup_falls_back_to_direct_read_when_rpm_q_fails(
     host, monkeypatch, tmp_path, make_host
 ) -> None:
     make_host(host(tmp_path))
-    monkeypatch.setattr(pr._platform, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages index"))
+    monkeypatch.setattr(
+        pr._platform,
+        "_run",
+        lambda cmd, timeout=None: (1, "error: cannot open Packages index"),
+    )
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     out = pr.query_rpm_named(("libgpg-error", "libgpg-error0"))
     assert out["source"].startswith("rpmdb-")

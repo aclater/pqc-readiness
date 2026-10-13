@@ -10,6 +10,7 @@ Tests must patch the module that *defines* a name
 the package root: the root only re-exports, so a patch there would
 silently not reach the code under test. The ``monkeypatch`` fixture below
 rejects such patches."""
+
 from __future__ import annotations
 
 import os
@@ -27,10 +28,14 @@ if _IMPORT_ROOT not in sys.path:
     sys.path.insert(0, _IMPORT_ROOT)
 
 # Command line for subprocess tests: the zipapp itself, or the package.
-PQC_CLI: list[str] = [sys.executable, _IMPORT_ROOT] if PYZ else [sys.executable, "-m", "pqc_readiness"]
+PQC_CLI: list[str] = (
+    [sys.executable, _IMPORT_ROOT] if PYZ else [sys.executable, "-m", "pqc_readiness"]
+)
 PQC_ENV: dict[str, str] = {
     **os.environ,
-    "PYTHONPATH": os.pathsep.join(p for p in (_IMPORT_ROOT, os.environ.get("PYTHONPATH", "")) if p),
+    "PYTHONPATH": os.pathsep.join(
+        p for p in (_IMPORT_ROOT, os.environ.get("PYTHONPATH", "")) if p
+    ),
 }
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -43,6 +48,7 @@ def _clear_openssl_version_cache() -> None:
     cache is hot — clear before every test so each one starts with a
     fresh subprocess invocation."""
     import pqc_readiness as pr
+
     pr._platform._openssl_version_text.cache_clear()
     pr.detect.hardware._openssl_providers_verbose_text.cache_clear()
     pr.detect.packages._query_rpm_packages_cached.cache_clear()
@@ -59,7 +65,9 @@ def _reject_package_root(target: Any, args: tuple[Any, ...]) -> None:
             "pr.detect.certs or pr._platform"
         )
     if isinstance(target, str) and target.rpartition(".")[0] == "pqc_readiness":
-        raise AssertionError(f"monkeypatch of {target!r} targets the package root; patch the defining module")
+        raise AssertionError(
+            f"monkeypatch of {target!r} targets the package root; patch the defining module"
+        )
 
 
 @pytest.fixture

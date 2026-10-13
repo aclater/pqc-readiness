@@ -75,12 +75,15 @@ def outputs() -> list[OutputFormat]:
     """Registered formats, highest precedence (lowest number) first."""
     return sorted(_OUTPUTS.values(), key=lambda f: f.precedence)
 
+
 def positive_int(value: str) -> int:
     """argparse ``type=`` for flags that must be >= 1."""
     try:
         n = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+        raise argparse.ArgumentTypeError(
+            f"expected an integer, got {value!r}"
+        ) from None
     if n < 1:
         raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
     return n

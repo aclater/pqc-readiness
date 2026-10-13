@@ -174,7 +174,9 @@ def run_pqc_bench(
     results: dict[str, Any] = {}
     for algo, flag, labels in plan:
         if algo.upper() not in provided:
-            log.debug("run_pqc_bench: skipping %s: %s", algo, BENCH_SKIPPED_NOT_PROVIDED)
+            log.debug(
+                "run_pqc_bench: skipping %s: %s", algo, BENCH_SKIPPED_NOT_PROVIDED
+            )
             results[algo] = {"skipped": BENCH_SKIPPED_NOT_PROVIDED}
             continue
         cmd = ["openssl", "speed", "-seconds", str(seconds), flag, algo]
@@ -404,7 +406,9 @@ def _tls_byte_counting_proxy(
                     ("127.0.0.1", target_port), timeout=2.0
                 )
             except OSError as e:
-                log.debug("tls proxy: upstream connect to port %d failed: %s", target_port, e)
+                log.debug(
+                    "tls proxy: upstream connect to port %d failed: %s", target_port, e
+                )
                 client.close()
                 continue
             client.settimeout(None)

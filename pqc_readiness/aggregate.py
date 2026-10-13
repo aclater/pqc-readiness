@@ -78,7 +78,9 @@ def _aggregate_iter(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
         # A detection key is counted at most once per host: the aggregator
         # only cares whether *any* host had probe Y flagged unavailable,
         # not how many duplicate annotations a single host carried.
-        for det_key, det_info in (r.get("host_fs_detections_unavailable") or {}).items():
+        for det_key, det_info in (
+            r.get("host_fs_detections_unavailable") or {}
+        ).items():
             if isinstance(det_info, dict) and det_info.get("unavailable_in_container"):
                 detections_unavailable[det_key] += 1
         if r.get("replace_required"):

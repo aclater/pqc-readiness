@@ -10,6 +10,7 @@ expected ways.
 Acceptance criteria source: issue #13 (algorithm recommendation engine)
 and `docs/recommendation-policies.md`.
 """
+
 from __future__ import annotations
 
 import json
@@ -147,17 +148,12 @@ def test_recommendations_differ_across_policies_for_same_host() -> None:
     # (commercial does not flag a FIPS caveat when FIPS is off).
     r2 = _make_report(isa_tier="excellent", fips_kernel=False)
     rec2 = pr.recommend(r2, policy="auto", role="tls-server")
-    assert any(
-        "FIPS" in c
-        for c in rec2["recommendations"]["nist-civilian"]["caveats"]
+    assert any("FIPS" in c for c in rec2["recommendations"]["nist-civilian"]["caveats"])
+    assert all(
+        "FIPS" not in c for c in rec2["recommendations"]["commercial"]["caveats"]
     )
     assert all(
-        "FIPS" not in c
-        for c in rec2["recommendations"]["commercial"]["caveats"]
-    )
-    assert all(
-        "FIPS" not in c
-        for c in rec2["recommendations"]["eu-anssi-bsi"]["caveats"]
+        "FIPS" not in c for c in rec2["recommendations"]["eu-anssi-bsi"]["caveats"]
     )
 
     # Commercial mode on the original host should be pure.
@@ -198,21 +194,21 @@ def test_pqc_accelerator_softens_isa_caveat() -> None:
 
 def test_fips_off_emits_caveat_for_cnsa_and_nist() -> None:
     r = _make_report(isa_tier="excellent", fips_kernel=False)
-    cnsa_caveats = pr.recommend(r, "cnsa-2.0", "tls-server")[
-        "recommendations"
-    ]["cnsa-2.0"]["caveats"]
-    nist_caveats = pr.recommend(r, "nist-civilian", "tls-server")[
-        "recommendations"
-    ]["nist-civilian"]["caveats"]
+    cnsa_caveats = pr.recommend(r, "cnsa-2.0", "tls-server")["recommendations"][
+        "cnsa-2.0"
+    ]["caveats"]
+    nist_caveats = pr.recommend(r, "nist-civilian", "tls-server")["recommendations"][
+        "nist-civilian"
+    ]["caveats"]
     assert any("FIPS" in c for c in cnsa_caveats)
     assert any("FIPS" in c for c in nist_caveats)
 
 
 def test_missing_hybrid_groups_caveat_under_anssi_bsi() -> None:
     r = _make_report(isa_tier="excellent", hybrid_groups=[])
-    sub = pr.recommend(r, "eu-anssi-bsi", "tls-server")[
-        "recommendations"
-    ]["eu-anssi-bsi"]
+    sub = pr.recommend(r, "eu-anssi-bsi", "tls-server")["recommendations"][
+        "eu-anssi-bsi"
+    ]
     assert any("hybrid groups" in c for c in sub["caveats"])
 
 
@@ -224,9 +220,7 @@ def test_missing_pure_groups_caveat_under_cnsa() -> None:
 
 def test_openssl_unavailable_emits_caveat() -> None:
     r = _make_report(isa_tier="excellent", openssl_available=False)
-    sub = pr.recommend(r, "commercial", "tls-server")[
-        "recommendations"
-    ]["commercial"]
+    sub = pr.recommend(r, "commercial", "tls-server")["recommendations"]["commercial"]
     assert any("OpenSSL was not detected" in c for c in sub["caveats"])
 
 
@@ -328,9 +322,7 @@ def test_tls_client_hybrid_share_size_includes_classical_component() -> None:
 
 
 def test_ml_kem_encaps_key_sizes_match_pqc_sizes() -> None:
-    assert (
-        pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-768"] == pr.PQC_SIZES["ML-KEM-768"]["pk"]
-    )
+    assert pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-768"] == pr.PQC_SIZES["ML-KEM-768"]["pk"]
     assert pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-1024"] == 1568
 
 
@@ -359,14 +351,16 @@ def test_signing_service_algorithms_per_policy(policy: str, isa_tier: str) -> No
     expected_sig = "ML-DSA-87" if policy == "cnsa-2.0" else "ML-DSA-65"
     assert sub["signature"]["algorithm"] == expected_sig
     assert sub["hash"]["algorithm"] == _EXPECTED_TLS[policy][3]
-    assert "sign" in sub["signature"]["reason"] or "mandated" in sub["signature"]["reason"]
+    assert (
+        "sign" in sub["signature"]["reason"] or "mandated" in sub["signature"]["reason"]
+    )
 
 
 @pytest.mark.parametrize("policy", ALL_POLICIES)
 def test_signing_service_kem_is_null(policy: str) -> None:
-    sub = pr.recommend(_make_report(), policy, "signing-service")[
-        "recommendations"
-    ][policy]
+    sub = pr.recommend(_make_report(), policy, "signing-service")["recommendations"][
+        policy
+    ]
     assert sub["kem"]["algorithm"] is None
     assert sub["kem"]["mode"] == "n/a"
     assert "not applicable" in sub["kem"]["reason"]
@@ -383,13 +377,11 @@ def test_signing_service_has_no_tls_group_caveat(policy: str) -> None:
 
 @pytest.mark.parametrize("policy", ("nist-civilian", "eu-anssi-bsi", "commercial"))
 def test_signing_service_notes_slh_dsa_for_low_volume(policy: str) -> None:
-    sub = pr.recommend(_make_report(), policy, "signing-service")[
-        "recommendations"
-    ][policy]
+    sub = pr.recommend(_make_report(), policy, "signing-service")["recommendations"][
+        policy
+    ]
     assert sub["signature"]["algorithm"] == "ML-DSA-65"
-    assert any(
-        "SLH-DSA-SHA2-128s" in c and "low-volume" in c for c in sub["caveats"]
-    )
+    assert any("SLH-DSA-SHA2-128s" in c and "low-volume" in c for c in sub["caveats"])
 
 
 def test_signing_service_cnsa_does_not_offer_slh_dsa() -> None:
@@ -478,9 +470,9 @@ def test_firmware_signing_reason_cites_signature_size_from_pqc_sizes() -> None:
     sub = pr.recommend(_make_report(), "commercial", "firmware-signing")[
         "recommendations"
     ]["commercial"]
-    assert f"{pr.PQC_SIZES['SLH-DSA-SHA2-128s']['sig']}-byte" in sub["signature"][
-        "reason"
-    ]
+    assert (
+        f"{pr.PQC_SIZES['SLH-DSA-SHA2-128s']['sig']}-byte" in sub["signature"]["reason"]
+    )
 
 
 def test_firmware_signing_notes_pqc_hsm() -> None:
@@ -498,7 +490,9 @@ def test_firmware_signing_differs_from_signing_service(policy: str) -> None:
     assert fw["signature"]["algorithm"] != svc["signature"]["algorithm"]
 
 
-@pytest.mark.parametrize("role", ["tls-server", "tls-client", "signing-service", "firmware-signing"])
+@pytest.mark.parametrize(
+    "role", ["tls-server", "tls-client", "signing-service", "firmware-signing"]
+)
 def test_workload_roles_are_implemented(role: str) -> None:
     sub = pr.recommend(_make_report(), "commercial", role)["recommendations"][
         "commercial"

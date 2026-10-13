@@ -6,6 +6,7 @@
 - Flags and output formats come from per-module registrations, in a
   stable order, so adding one never edits a shared block.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -40,7 +41,9 @@ def test_patching_the_package_root_is_rejected(monkeypatch: pytest.MonkeyPatch) 
         monkeypatch.setattr("pqc_readiness.render_cbom", lambda r: "x")
 
 
-def test_patching_the_defining_module_reaches_callers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_patching_the_defining_module_reaches_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Cross-module calls go through the module (``_platform._run``), so one
     patch on the defining module is seen everywhere."""
     calls: list[list[str]] = []
@@ -76,11 +79,19 @@ def test_lane_modules_exist(module: str) -> None:
 
 def test_argument_hooks_build_the_documented_flag_order() -> None:
     ap = pr.build_parser()
-    flags = [a.option_strings[-1] for a in ap._actions if a.option_strings and a.dest != "help"]
+    flags = [
+        a.option_strings[-1]
+        for a in ap._actions
+        if a.option_strings and a.dest != "help"
+    ]
     assert flags[:5] == ["--json", "--markdown", "--cbom", "--spdx", "--sarif"]
     assert flags[-2:] == ["--debug", "--version"]
     assert flags.index("--bench") < flags.index("--check") < flags.index("--quiet")
-    assert flags.index("--scan-trust-store") < flags.index("--host-mount") < flags.index("--recommend")
+    assert (
+        flags.index("--scan-trust-store")
+        < flags.index("--host-mount")
+        < flags.index("--recommend")
+    )
     assert ap.prog == "pqc-readiness"
 
 
@@ -110,7 +121,9 @@ def test_registry_rejects_duplicate_registrations() -> None:
         with pytest.raises(ValueError, match="registered twice"):
             registry.register_arguments(998)(hook)
     finally:
-        registry._ARGUMENT_HOOKS[:] = [h for h in registry._ARGUMENT_HOOKS if h[2] is not hook]
+        registry._ARGUMENT_HOOKS[:] = [
+            h for h in registry._ARGUMENT_HOOKS if h[2] is not hook
+        ]
 
 
 def test_positive_int_rejects_zero_and_text() -> None:

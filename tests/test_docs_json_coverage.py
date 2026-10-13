@@ -33,7 +33,9 @@ DOC = ROOT / "docs" / "json-output.md"
 GOLDEN = ROOT / "tests" / "fixtures" / "golden" / "stubbed-host-report.json"
 
 # The UBI 8 CI image copies only the script and tests/, not docs/.
-pytestmark = pytest.mark.skipif(not DOC.exists(), reason="docs/ not present in this image")
+pytestmark = pytest.mark.skipif(
+    not DOC.exists(), reason="docs/ not present in this image"
+)
 
 TOP_LEVEL = "Top-level keys"
 RECOMMEND = "`--recommend --json` document"
@@ -162,7 +164,11 @@ def _function_keys(name: str) -> set[str]:
     # The scanner is a package (#80): search every module's source.
     from conftest import PACKAGE_SRC
 
-    nodes = [n for f in sorted(PACKAGE_SRC.rglob("*.py")) for n in ast.parse(f.read_text()).body]
+    nodes = [
+        n
+        for f in sorted(PACKAGE_SRC.rglob("*.py"))
+        for n in ast.parse(f.read_text()).body
+    ]
     for node in nodes:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             keys: set[str] = set()
@@ -181,7 +187,9 @@ def _function_keys(name: str) -> set[str]:
                 ):
                     keys.add(n.slice.value)
             return keys - INTERNAL_KEYS.get(name, set())
-    raise AssertionError(f"producing function {name} no longer exists; update FUNCTION_SECTIONS")
+    raise AssertionError(
+        f"producing function {name} no longer exists; update FUNCTION_SECTIONS"
+    )
 
 
 @pytest.mark.parametrize("func", sorted(FUNCTION_SECTIONS))

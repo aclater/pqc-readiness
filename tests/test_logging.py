@@ -4,6 +4,7 @@
 The contract: detection fallbacks log at DEBUG instead of silently
 swallowing errors, the default level emits nothing, and --debug output
 goes to stderr so stdout stays a clean report stream."""
+
 from __future__ import annotations
 
 import logging
