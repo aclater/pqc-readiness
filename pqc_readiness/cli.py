@@ -26,6 +26,7 @@ from .detect import osinfo as _osinfo
 from .detect import packages as _packages
 from .detect import protocols as _protocols
 from .detect import runtime as _runtime
+from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
 from .render import text as _text
 from . import report as _report
@@ -209,6 +210,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
         packages_info = _packages.scan_packages(os_release)
+    services_info: dict[str, Any] = {}
+    if getattr(args, "scan_services", False):
+        services_info = _runtime_services.scan_services()
     dedicated = _hardware.has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
     hsm_pqc_capable = any(
@@ -284,6 +288,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         cnsa_2_0=cnsa_2_0,
         trust_store=trust_store_info,
         runtime_environment=runtime_env,
+        service_crypto_linkage=services_info,
         host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
         replace_required=replace_required,

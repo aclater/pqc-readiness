@@ -200,6 +200,7 @@
       "evidence": []
     },
     "schema_version": "1.4",
+    "service_crypto_linkage": {},
     "ssh_pqc": {
       "available": false
     },
