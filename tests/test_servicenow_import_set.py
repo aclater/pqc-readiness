@@ -24,6 +24,11 @@ SAMPLE = (
     Path(__file__).resolve().parent.parent / "deploy/servicenow/ndjson_to_import_set.py"
 )
 
+# The container test images copy tests/ and the package, not deploy/.
+pytestmark = pytest.mark.skipif(
+    not SAMPLE.is_file(), reason="deploy/servicenow sample not in this tree"
+)
+
 
 def _sample() -> ModuleType:
     spec = importlib.util.spec_from_file_location("ndjson_to_import_set", SAMPLE)
