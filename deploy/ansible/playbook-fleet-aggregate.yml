@@ -2,7 +2,7 @@
 #
 # Two-phase fleet rollup: each target host runs the probe and writes a
 # JSON file, then the controller fetches every file and runs
-# `pqc_readiness.py --aggregate` over the collected directory to produce
+# `pqc-readiness --aggregate` over the collected directory to produce
 # a single fleet-wide rollup.
 #
 # This mirrors the pattern documented under "Aggregation" in README.md:
@@ -30,7 +30,8 @@
   tasks:
     - name: Run pqc-readiness with --json
       ansible.builtin.script:
-        cmd: "../../pqc_readiness.py --json"
+        # Build the zipapp first on the controller: `make dist` (#80).
+        cmd: "../../dist/pqc-readiness.pyz --json"
       register: pqc_raw
       changed_when: false
 
@@ -65,7 +66,7 @@
     - name: Run --aggregate on the collected JSON
       ansible.builtin.shell:
         cmd: >-
-          {{ playbook_dir }}/../../pqc_readiness.py
+          {{ playbook_dir }}/../../pqc-readiness
           --aggregate {{ rollup_dir }}
           > {{ aggregate_output }}
       changed_when: true

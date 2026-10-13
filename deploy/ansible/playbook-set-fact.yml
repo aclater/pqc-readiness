@@ -31,7 +31,8 @@
   tasks:
     - name: Run pqc-readiness with --ansible
       ansible.builtin.script:
-        cmd: ../../pqc_readiness.py --ansible
+        # Build the zipapp first on the controller: `make dist` (#80).
+        cmd: ../../dist/pqc-readiness.pyz --ansible
       register: pqc_raw
       changed_when: false
       become: "{{ become_for_tpm }}"

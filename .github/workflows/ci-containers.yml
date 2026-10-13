@@ -40,6 +40,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      - name: Build the zipapp the image ships
+        # Every Containerfile COPYs dist/pqc-readiness.pyz (#80).
+        run: python3 scripts/build_zipapp.py
+
       - name: Build the UBI 10 runtime image
         # podman is preinstalled on ubuntu-latest runners; the same
         # `make container-ubi10` target reproduces this locally.
@@ -58,7 +62,7 @@ jobs:
 
       - name: Build the UBI 10 test extension image
         # Same pattern as ci-ubi8.yml: layer pytest + schema validators on
-        # the runtime image and COPY tests/ + the script into a work dir.
+        # the runtime image and COPY tests/, the package and the zipapp into a work dir.
         run: |
           cat <<'CONTAINERFILE' | podman build --format=docker -t pqc-readiness:ubi10-test -f - .
           FROM pqc-readiness:ubi10
@@ -72,10 +76,11 @@ jobs:
                   pytest \
                   jsonschema \
                   referencing
-          COPY tests/             /tmp/build/tests/
-          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
-          COPY pqc-readiness      /tmp/build/pqc-readiness
-          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          COPY tests/                   /tmp/build/tests/
+          COPY pqc_readiness/           /tmp/build/pqc_readiness/
+          COPY pqc-readiness            /tmp/build/pqc-readiness
+          COPY dist/pqc-readiness.pyz   /tmp/build/dist/pqc-readiness.pyz
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/dist/pqc-readiness.pyz
           CONTAINERFILE
 
       - name: Run pytest inside the UBI 10 test image
@@ -84,13 +89,17 @@ jobs:
             --user 0 \
             --entrypoint /bin/sh \
             pqc-readiness:ubi10-test \
-            -c 'cd /tmp/build && python3 -m pytest tests/ -q'
+            -c 'cd /tmp/build && python3 -m pytest tests/ -q && PQC_READINESS_PYZ=dist/pqc-readiness.pyz python3 -m pytest tests/ -q'
 
   build-debian:
     name: build + test (Debian)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
+
+      - name: Build the zipapp the image ships
+        # Every Containerfile COPYs dist/pqc-readiness.pyz (#80).
+        run: python3 scripts/build_zipapp.py
 
       - name: Build the Debian runtime image
         run: |
@@ -117,10 +126,11 @@ jobs:
                   git \
               && apt-get clean \
               && rm -rf /var/lib/apt/lists/*
-          COPY tests/             /tmp/build/tests/
-          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
-          COPY pqc-readiness      /tmp/build/pqc-readiness
-          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          COPY tests/                   /tmp/build/tests/
+          COPY pqc_readiness/           /tmp/build/pqc_readiness/
+          COPY pqc-readiness            /tmp/build/pqc-readiness
+          COPY dist/pqc-readiness.pyz   /tmp/build/dist/pqc-readiness.pyz
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/dist/pqc-readiness.pyz
           CONTAINERFILE
 
       - name: Run pytest inside the Debian test image
@@ -129,4 +139,4 @@ jobs:
             --user 0 \
             --entrypoint /bin/sh \
             pqc-readiness:debian-test \
-            -c 'cd /tmp/build && python3 -m pytest tests/ -q'
+            -c 'cd /tmp/build && python3 -m pytest tests/ -q && PQC_READINESS_PYZ=dist/pqc-readiness.pyz python3 -m pytest tests/ -q'

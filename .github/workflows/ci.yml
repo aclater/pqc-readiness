@@ -42,13 +42,27 @@ jobs:
           pip install pytest ruff==0.17.0 mypy==2.4.0 numpy jsonschema referencing
 
       - name: ruff check
-        run: ruff check pqc_readiness.py tests/
+        run: ruff check pqc_readiness/ scripts/ tests/
 
       - name: mypy --strict
-        run: mypy --strict pqc_readiness.py
+        run: mypy --strict pqc_readiness
 
-      - name: pytest
+      - name: pytest (source package)
         run: pytest tests/ -q
+
+      - name: Build the zipapp
+        run: python scripts/build_zipapp.py
+
+      - name: pytest (built zipapp)
+        # The whole suite again, importing pqc_readiness from inside
+        # dist/pqc-readiness.pyz, so the shipped artifact is what is tested (#80).
+        run: PQC_READINESS_PYZ=dist/pqc-readiness.pyz pytest tests/ -q
+
+      - name: Smoke-test the zipapp as an executable
+        run: |
+          ./dist/pqc-readiness.pyz --version
+          ./dist/pqc-readiness.pyz --json > /tmp/report.json || test $? -le 3
+          python -c "import json; json.load(open('/tmp/report.json'))"
 
       - name: README documents every --help flag
         run: bash scripts/check-readme-flags.sh

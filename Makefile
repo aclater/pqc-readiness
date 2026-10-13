@@ -43,13 +43,13 @@ container-build: container-ubi10 ## Alias for container-ubi10 (back-compat)
 
 container: container-ubi8 container-ubi10 container-debian ## Build all three container images
 
-container-ubi8: ## Build the UBI 8 minimal container (RHEL 8 / Rocky 8 / AlmaLinux 8) with podman
+container-ubi8: dist ## Build the UBI 8 minimal container (RHEL 8 / Rocky 8 / AlmaLinux 8) with podman
 	$(PODMAN) build --format=docker -t $(IMAGE_UBI8) -f Containerfile.ubi8 .
 
-container-ubi10: ## Build the UBI 10 minimal container with podman
+container-ubi10: dist ## Build the UBI 10 minimal container with podman
 	$(PODMAN) build --format=docker -t $(IMAGE_UBI10) -f Containerfile.ubi10 .
 
-container-debian: ## Build the Debian 12-slim container with podman
+container-debian: dist ## Build the Debian 12-slim container with podman
 	$(PODMAN) build --format=docker -t $(IMAGE_DEBIAN) -f Containerfile.debian .
 
 clean: ## Remove caches and dist/
