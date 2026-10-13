@@ -494,6 +494,53 @@ from the scanner's are not merged.
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
 
+## `--ndjson` events
+
+`--ndjson` writes newline-delimited JSON for SIEMs (#146): one compact
+JSON object per line, shaped after [OCSF](https://schema.ocsf.io) 1.9.0.
+Every event validates against the OCSF 1.9.0 JSON Schema for its class
+(base class, no profiles), which CI checks. The first line is one
+**Device Inventory Info** event (class 5001) for the host. Each following
+line is one **Compliance Finding** event (class 2003) per matched rule:
+the same rules, in the same order, as `--sarif`. OCSF has no
+crypto-inventory class, so scanner-specific detail goes under
+`unmapped.pqc_readiness`. Integration recipes are in
+[docs/siem-ndjson.md](siem-ndjson.md).
+
+Fields common to both event types:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `class_uid` / `class_name` | int / string | `5001` Device Inventory Info, or `2003` Compliance Finding. |
+| `category_uid` / `category_name` | int / string | `5` Discovery, or `2` Findings. |
+| `activity_id` / `activity_name` | int / string | `1`: `Log` for 5001, `Create` for 2003. Each run is a snapshot; deduplicate on `finding_info.uid`. |
+| `type_uid` / `type_name` | int / string | `class_uid × 100 + activity_id`: `500101` or `200301`. |
+| `severity_id` / `severity` | int / string | 5001 is always `1` Informational. For 2003, the rule's `security-severity` on the CVSS v3.1 bands: `2` Low (< 4.0), `3` Medium (< 7.0), `4` High. |
+| `time` | int | `generated_at` in milliseconds since the Unix epoch (OCSF `timestamp_t`). |
+| `message` | string | 5001: `PQC readiness: <verdict>`. 2003: the finding message. |
+| `metadata` | object | `version` (OCSF version, `1.9.0`); `uid` (this event: hash of the finding identity and `generated_at`); `log_name` (`pqc_readiness`); `original_time` (`generated_at` as emitted); `product` = `{name, vendor_name, version, url_string}`. |
+| `device` | object | `hostname`; `type_id`/`type` (`0` Unknown, because the scanner does not classify the host); `os` = `{name, type_id, type}`, with `type_id` `200` Linux when `/etc/os-release` was read. |
+
+Compliance Finding (2003) only:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `status_id` / `status` | int / string | `1` New. Lifecycle is left to the SIEM. |
+| `finding_info` | object | `uid`: stable identity of host + rule, identical to the `--sarif-anchor` fingerprint. `title` / `desc`: the rule's short and full description. `types`: `["Post-Quantum Cryptography Readiness"]`. `src_url`: the rule help page. `analytic` = `{uid, name, type_id, type}`, the rule ID, with `type_id` `1` Rule. |
+| `compliance` | object | `control` (rule ID), `standards` (`["pqc-readiness"]`), `status` / `status_id` (`Fail` / `3`). |
+
+`unmapped.pqc_readiness`, the scanner-specific detail:
+
+| Field | Event | Meaning |
+|---|---|---|
+| `schema_version`, `verdict`, `exit_code`, `isa_tier`, `replace_required` | 5001 | As in the `--json` report. |
+| `cnsa_2_0_status` | 5001 | `cnsa_2_0.status`. |
+| `openssl_version`, `openssl_pqc_native` | 5001 | `openssl.version`, `openssl.pqc_native`. |
+| `tls_hybrid_groups`, `tls_pure_pqc_groups` | 5001 | `openssl.tls_groups.hybrid` / `.pure_pqc`. |
+| `findings_count` | 5001 | Number of 2003 events that follow. |
+| `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
+| `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
+
 ## Schema alignment with CycloneDX 1.6
 
 [docs/schema-alignment.md](schema-alignment.md) is a field-by-field
