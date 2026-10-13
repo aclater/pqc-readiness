@@ -6,7 +6,7 @@ import argparse
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -1060,6 +1060,23 @@ def _mirror_crypto_facts(
             )
 
 
+def _mirror_provides(
+    components: list[dict[str, Any]], provides: dict[str, list[str]]
+) -> None:
+    """Record which library provides each asset as a namespaced property,
+    in place.  Dependency-Track re-exports CycloneDX 1.5, which predates
+    `dependencies[].provides`, so the link would otherwise be lost (#194)."""
+    by_asset: dict[str, list[str]] = {}
+    for lib, refs in provides.items():
+        for ref in refs:
+            by_asset.setdefault(ref, []).append(lib)
+    for comp in components:
+        for lib in by_asset.get(comp.get("bom-ref", ""), []):
+            comp.setdefault("properties", []).append(
+                {"name": _MIRROR_PREFIX + "providedBy", "value": lib}
+            )
+
+
 # `openssl version` prints the CLI build, then "(Library: …)" when the
 # loaded libcrypto differs; the library is what actually runs.
 _OPENSSL_LIBRARY_VERSION = re.compile(r"Library:\s*OpenSSL\s+(\S+)")
@@ -1158,6 +1175,353 @@ def _library_components(
     return list(libs.values()), provides
 
 
+# Crypto libraries and services (#194) ---------------------------------------
+#
+# CycloneDX 1.7 only (1.6 output stays byte-identical, #138).  Each library
+# --scan-crypto-libraries detects becomes a `library` component that
+# `provides` the algorithm assets found in its binary; each listening
+# process from --scan-services becomes an `application` component that
+# depends on the crypto library it actually maps.  With neither flag set
+# nothing here is emitted, so default output is unchanged.
+
+# algorithms{} kind -> (bom-ref segment, category suffix, primitive).  SSH
+# key exchanges split into hybrid / pure-PQC by name, like _canonical_ssh_assets.
+_LIBRARY_ALGORITHM_KINDS: dict[str, tuple[str, str, str]] = {
+    "kem": ("kem", "kem", "kem"),
+    "signatures": ("sig", "sig", "signature"),
+    "tls_hybrid_groups": ("tls-hybrid", "tls_hybrid", "combiner"),
+}
+
+
+def _library_crypto_assets(r: _report.Report) -> list[CryptoAsset]:
+    """Algorithm assets for the PQC names found in each crypto library's
+    binary (`crypto_libraries.libraries.<lib>.algorithms`).  Keys are
+    namespaced per library so they never collide with OpenSSL / OpenSSH
+    assets of the same algorithm name."""
+    cl = r.crypto_libraries or {}
+    if not cl.get("available"):
+        return []
+    out: list[CryptoAsset] = []
+    for lib, info in sorted((cl.get("libraries") or {}).items()):
+        if not info.get("installed"):
+            continue
+        src = f"{lib}@{info.get('version') or 'unknown'}"
+        props = (("library", lib),)
+        for kind, names in sorted((info.get("algorithms") or {}).items()):
+            for name in names:
+                if kind == "ssh_kex":
+                    hybrid = any(c in name.upper() for c in _HYBRID_CURVE_MARKERS)
+                    seg, cat, prim = (
+                        ("ssh-kex/hybrid", "ssh_kex_hybrid", "key-agree")
+                        if hybrid
+                        else ("ssh-kex/pure-pqc", "ssh_kex_pqc", "kem")
+                    )
+                else:
+                    seg, cat, prim = _LIBRARY_ALGORITHM_KINDS.get(
+                        kind, (kind, kind, "other")
+                    )
+                key = f"library/{lib}/{seg}/{name}"
+                if prim in ("kem", "signature") and kind != "ssh_kex":
+                    out.append(
+                        replace(
+                            _pqc_algorithm_asset(
+                                key, name, f"library_{cat}", prim, src
+                            ),
+                            properties=props,
+                        )
+                    )
+                else:
+                    out.append(
+                        CryptoAsset(
+                            key=key,
+                            name=name,
+                            category=f"library_{cat}",
+                            asset_type="algorithm",
+                            primitive=prim,
+                            execution_environment="software-plain-ram",
+                            source=src,
+                            properties=props,
+                        )
+                    )
+    return out
+
+
+def _tri(value: Any) -> str:
+    return "unknown" if value is None else str(bool(value)).lower()
+
+
+def _package_purl(r: _report.Report, name: str, version: str) -> str | None:
+    """Distro purl for a package, or None when the family has no purl type."""
+    osr = r.os_release or {}
+    ptype = _PURL_TYPE_BY_FAMILY.get(str(osr.get("family")))
+    if not ptype or not osr.get("id") or not name or not version:
+        return None
+    distro = f"{osr['id']}-{osr.get('version_id') or ''}".rstrip("-")
+    return (
+        f"pkg:{ptype}/{_purl_part(str(osr['id']))}/{_purl_part(name)}"
+        f"@{_purl_part(version)}?distro={_purl_part(distro)}"
+    )
+
+
+def _generic_purl(name: str, version: str) -> str:
+    return f"pkg:generic/{_purl_part(name)}@{_purl_part(version)}"
+
+
+def _library_component(
+    ref: str,
+    name: str,
+    version: str | None,
+    purl: str | None,
+    props: list[dict[str, str]],
+) -> dict[str, Any]:
+    comp: dict[str, Any] = {"type": "library", "bom-ref": ref, "name": name}
+    if version:
+        comp["version"] = version
+    if purl:
+        comp["purl"] = purl
+    comp["properties"] = _cbom_provenance() + props
+    return comp
+
+
+def _crypto_library_inventory(
+    r: _report.Report, lib_assets: list[CryptoAsset]
+) -> tuple[list[dict[str, Any]], dict[str, list[str]], dict[tuple[str, str], str]]:
+    """(library components, provides, (family, version) -> bom-ref) for the
+    libraries --scan-crypto-libraries found.  JDK and Go installs become
+    one component per install."""
+    cl = r.crypto_libraries or {}
+    comps: list[dict[str, Any]] = []
+    provides: dict[str, list[str]] = {}
+    index: dict[tuple[str, str], str] = {}
+    if not cl.get("available"):
+        return comps, provides, index
+    by_lib: dict[str, list[str]] = {}
+    for a in lib_assets:
+        by_lib.setdefault(dict(a.properties).get("library", ""), []).append(a.key)
+    for lib, info in sorted((cl.get("libraries") or {}).items()):
+        if not info.get("installed"):
+            continue
+        base = [
+            {"name": "pqc-readiness:library:basis", "value": "crypto-library-probe"},
+            {
+                "name": "pqc-readiness:library:pqc_capable",
+                "value": _tri(info.get("pqc_capable")),
+            },
+            {
+                "name": "pqc-readiness:library:evidence",
+                "value": str(info.get("evidence")),
+            },
+        ]
+        base += [
+            {"name": "pqc-readiness:library:caveat", "value": str(c)}
+            for c in info.get("caveats") or []
+        ]
+        if info.get("reference"):
+            base.append(
+                {
+                    "name": "pqc-readiness:library:reference",
+                    "value": str(info["reference"]),
+                }
+            )
+        installs = info.get("installs")
+        if installs:  # JDKs, Go toolchains
+            for inst in installs:
+                version = str(inst.get("version") or "") or None
+                ref = (
+                    _generic_purl(lib, version)
+                    if version
+                    else f"crypto-library/{lib}/{_purl_part(str(inst.get('path')))}"
+                )
+                props = list(base)
+                props.append(
+                    {
+                        "name": "pqc-readiness:library:path",
+                        "value": str(inst.get("path")),
+                    }
+                )
+                for k, v in sorted(inst.items()):
+                    if k not in ("path", "version", "implementor") and (
+                        v is None or isinstance(v, bool)
+                    ):
+                        props.append(
+                            {"name": f"pqc-readiness:library:{k}", "value": _tri(v)}
+                        )
+                comps.append(
+                    _library_component(
+                        ref, lib, version, ref if version else None, props
+                    )
+                )
+                if version:
+                    index.setdefault((lib, version), ref)
+            continue
+        version = str(info.get("version") or "") or None
+        pkg = next(iter(info.get("packages") or []), None) or {}
+        purl = _package_purl(r, str(pkg.get("name", "")), str(pkg.get("version", "")))
+        if purl is None and version:
+            purl = _generic_purl(lib, version)
+        ref = purl or f"crypto-library/{lib}"
+        props = list(base)
+        props += [
+            {"name": "pqc-readiness:library:file", "value": str(f)}
+            for f in info.get("files") or []
+        ]
+        comps.append(_library_component(ref, lib, version, purl, props))
+        if by_lib.get(lib):
+            provides[ref] = by_lib[lib]
+        if version:
+            index.setdefault((lib, version), ref)
+    return comps, provides, index
+
+
+def _service_inventory(
+    r: _report.Report, index: dict[tuple[str, str], str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, list[str]]]:
+    """(application components, extra library components, service -> library
+    refs) from --scan-services.  Listeners of one process collapse into one
+    component; unattributed listeners are skipped (they have no process to
+    name).  Libraries a service maps but --scan-crypto-libraries did not
+    report (OpenSSL, NSS, Go runtimes) get their own `pkg:generic` component."""
+    sv = r.service_crypto_linkage or {}
+    services: dict[str, dict[str, Any]] = {}
+    extra: dict[str, dict[str, Any]] = {}
+    uses: dict[str, list[str]] = {}
+    if not sv.get("available"):
+        return [], [], uses
+    for lst in sv.get("listeners") or []:
+        if lst.get("pid") is None and not lst.get("exe"):
+            continue
+        # Name by systemd .service unit when there is one; transient scopes
+        # (app-…-NNNN.scope, terminal spawns) differ per session, so fall
+        # back to the executable path, which is stable across runs.
+        unit = str(lst.get("systemd_unit") or "")
+        ident = (
+            unit
+            if unit.endswith(".service")
+            else str(lst.get("exe") or lst.get("process") or unit)
+        )
+        ref = f"service/{ident}"
+        comp = services.get(ref)
+        if comp is None:
+            props: list[dict[str, str]] = []
+            for key, prop in (
+                ("exe", "exe"),
+                ("systemd_unit", "systemd_unit"),
+                ("process", "process"),
+            ):
+                if lst.get(key):
+                    props.append({"name": f"service:{prop}", "value": str(lst[key])})
+            if lst.get("static_binary") is not None:
+                props.append(
+                    {
+                        "name": "service:static_binary",
+                        "value": _tri(lst["static_binary"]),
+                    }
+                )
+            comp = {
+                "type": "application",
+                "bom-ref": ref,
+                "name": unit
+                if unit.endswith(".service")
+                else str(lst.get("process") or ident),
+                "properties": _cbom_provenance() + props,
+            }
+            services[ref] = comp
+            uses[ref] = []
+        addr = str(lst.get("address"))
+        if lst.get("family") == "ipv6":
+            addr = f"[{addr}]"
+        comp["properties"].append(
+            {
+                "name": "service:endpoint",
+                "value": f"{lst.get('protocol')}/{addr}:{lst.get('port')}",
+            }
+        )
+        links: list[tuple[str, str | None, dict[str, str]]] = []
+        for link in lst.get("crypto_libraries") or []:
+            links.append(
+                (
+                    str(link.get("family")),
+                    str(link.get("version") or "") or None,
+                    {"pqc_capable": _tri(link.get("library_pqc_capable"))},
+                )
+            )
+        go = lst.get("go") or {}
+        if go.get("go_version"):
+            gv = str(go["go_version"])
+            links.append(
+                (
+                    "go",
+                    gv[2:] if gv.startswith("go") else gv,
+                    {"default_hybrid_kex": str(go.get("default_hybrid_kex"))},
+                )
+            )
+        for family, version, extra_props in links:
+            lib_ref = index.get((family, version or "")) if version else None
+            if lib_ref is None:
+                lib_ref = (
+                    _generic_purl(family, version)
+                    if version
+                    else f"crypto-library/{family}"
+                )
+                if lib_ref not in extra:
+                    props = [
+                        {
+                            "name": "pqc-readiness:library:basis",
+                            "value": "service-linkage",
+                        }
+                    ]
+                    props += [
+                        {"name": f"pqc-readiness:library:{k}", "value": v}
+                        for k, v in extra_props.items()
+                    ]
+                    extra[lib_ref] = _library_component(
+                        lib_ref, family, version, lib_ref if version else None, props
+                    )
+            if lib_ref not in uses[ref]:
+                uses[ref].append(lib_ref)
+    return list(services.values()), list(extra.values()), uses
+
+
+def _merge_inventory(
+    r: _report.Report,
+    lib_assets: list[CryptoAsset],
+    libraries: list[dict[str, Any]],
+    provides: dict[str, list[str]],
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, list[str]],
+    list[dict[str, Any]],
+    dict[str, list[str]],
+]:
+    """Union of the interop library components (#175) with the crypto
+    library probe (#110) and service-linkage (#111) components, keyed by
+    bom-ref.  When two sources describe the same bom-ref, properties are
+    combined (no duplicates) and `provides` lists are merged in order."""
+    by_ref: dict[str, dict[str, Any]] = {c["bom-ref"]: c for c in libraries}
+    merged = {k: list(v) for k, v in provides.items()}
+
+    def add(comp: dict[str, Any]) -> None:
+        cur = by_ref.get(comp["bom-ref"])
+        if cur is None:
+            by_ref[comp["bom-ref"]] = comp
+            return
+        have = {(p["name"], p["value"]) for p in cur.get("properties", [])}
+        for p in comp.get("properties", []):
+            if (p["name"], p["value"]) not in have:
+                cur.setdefault("properties", []).append(p)
+
+    lib_comps, lib_provides, index = _crypto_library_inventory(r, lib_assets)
+    for c in lib_comps:
+        add(c)
+    for ref, keys in lib_provides.items():
+        bucket = merged.setdefault(ref, [])
+        bucket += [k for k in keys if k not in bucket]
+    services, extra, uses = _service_inventory(r, index)
+    for c in extra:
+        add(c)
+    return list(by_ref.values()), merged, services, uses
+
+
 def render_cbom(
     r: _report.Report,
     spec_version: str = CBOM_DEFAULT_VERSION,
@@ -1187,20 +1551,39 @@ def render_cbom(
         components = [_cbom17_component(a) for a in assets]
         components += _cbom17_protocol_components(assets)
         components += _cbom17_certificate_components(r)
+    lib_assets = _library_crypto_assets(r) if spec_version == "1.7" else []
+    for a in lib_assets:
+        comp = _cbom17_component(a)
+        # `group` namespaces the algorithm by the library that provides it,
+        # so consumers that key components on name (Dependency-Track merges
+        # same-named components) keep GnuTLS's ML-KEM-768 apart from
+        # OpenSSL's.
+        comp["group"] = dict(a.properties)["library"]
+        components.append(comp)
+    all_assets = assets + lib_assets
     if prof is not None:
-        _apply_profile_to_components(prof, assets, components)
+        _apply_profile_to_components(prof, all_assets, components)
     libraries: list[dict[str, Any]] = []
     provides: dict[str, list[str]] = {}
+    services: list[dict[str, Any]] = []
+    uses: dict[str, list[str]] = {}
     if interop != INTEROP_NONE:
         libraries, provides = _library_components(r, assets)
+    if spec_version == "1.7":
+        libraries, provides, services, uses = _merge_inventory(
+            r, lib_assets, libraries, provides
+        )
     if interop == INTEROP_DEPENDENCY_TRACK:
-        _mirror_crypto_facts(components, assets)
-        components += libraries
+        _mirror_crypto_facts(components, all_assets)
+        _mirror_provides(components, provides)
+        components += libraries + services
     elif interop == INTEROP_SBOM_ONLY:
         # Consumers without a cryptographic-asset classifier reject the
-        # whole BOM, so only the library components are emitted.
-        components = libraries
+        # whole BOM, so only the library / service components are emitted.
+        components = libraries + services
         provides = {}
+    else:
+        components += libraries + services
 
     timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
@@ -1252,10 +1635,17 @@ def render_cbom(
         },
         "components": components,
     }
-    if interop != INTEROP_NONE:
+    if interop != INTEROP_NONE or libraries or services:
         deps: list[dict[str, Any]] = [
-            {"ref": host_bom_ref, "dependsOn": [lib["bom-ref"] for lib in libraries]}
+            {
+                "ref": host_bom_ref,
+                "dependsOn": [c["bom-ref"] for c in libraries + services],
+            }
         ]
+        for svc in services:
+            deps.append(
+                {"ref": svc["bom-ref"], "dependsOn": uses.get(svc["bom-ref"], [])}
+            )
         for lib in libraries:
             entry: dict[str, Any] = {"ref": lib["bom-ref"]}
             if provides.get(lib["bom-ref"]):

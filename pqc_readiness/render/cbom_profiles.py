@@ -83,6 +83,12 @@ FEDERAL_DRAFT: dict[str, Any] = {
         "ssh_kex_hybrid": False,
         "ssh_kex_pqc": False,
         "ssh_kex_classical": True,
+        # PQC names found in other crypto libraries' binaries (#110, #194).
+        "library_kem": False,
+        "library_sig": False,
+        "library_tls_hybrid": False,
+        "library_ssh_kex_hybrid": False,
+        "library_ssh_kex_pqc": False,
     },
     # Trust-store certificate category -> quantum-vulnerable?
     "quantum_vulnerable_by_cert_category": {
