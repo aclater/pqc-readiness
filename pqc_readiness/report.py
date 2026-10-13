@@ -101,3 +101,6 @@ class Report:
     # Operator-supplied facts from --inventory-metadata FILE (OMB M-23-02
     # items the host can't know); None when the flag isn't given (#144).
     inventory_metadata: dict[str, Any] | None = None
+    # --root PATH (#152): offline scan of a filesystem tree.  None for live
+    # scans; otherwise {mode, root, not_applicable, partial, reason}.
+    scan_mode: dict[str, Any] | None = None

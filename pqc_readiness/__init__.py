@@ -68,6 +68,7 @@ from .detect.runtime import (  # noqa: F401
     detect_runtime_environment,
     parse_cgroup_for_container,
 )
+from .detect.runtime_offline import collect_offline_report  # noqa: F401
 from .detect.runtime_services import scan_services  # noqa: F401
 from .detect.osinfo import (  # noqa: F401
     OS_FAMILY_BY_ID,

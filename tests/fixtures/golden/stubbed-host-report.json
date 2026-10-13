@@ -440,6 +440,7 @@
       "environment": "bare_metal",
       "evidence": []
     },
+    "scan_mode": null,
     "schema_version": "1.4",
     "service_crypto_linkage": {},
     "signing_keys": {},
