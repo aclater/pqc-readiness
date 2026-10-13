@@ -61,6 +61,8 @@ class Report:
     nss: dict[str, Any] = field(default_factory=dict)
     # System-wide crypto policy and what it lets PQC do (#104).
     crypto_policy: dict[str, Any] = field(default_factory=dict)
+    # Effective sshd key exchange + host keys (#105).
+    sshd: dict[str, Any] = field(default_factory=dict)
     kernel_info: dict[str, Any] = field(default_factory=dict)
     fips_pqc_conflict: dict[str, Any] = field(default_factory=dict)
     cnsa_2_0: dict[str, Any] = field(default_factory=dict)

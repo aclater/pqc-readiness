@@ -88,6 +88,11 @@ _HOST_FS_DEPENDENT_DETECTIONS: tuple[tuple[str, str, str], ...] = (
         "/etc/crypto-policies and /usr/share/crypto-policies",
     ),
     (
+        "sshd",
+        "sshd configuration detection",
+        "/etc/ssh, /usr/etc/ssh and the crypto-policies OpenSSH back-ends",
+    ),
+    (
         "nss",
         "NSS version detection",
         "certutil and the rpm database (/usr/lib/sysimage/rpm, /var/lib/rpm or /usr/share/rpm)",

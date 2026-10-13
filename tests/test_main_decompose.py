@@ -125,6 +125,18 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         pr.detect.config_policy, "detect_crypto_policy", _crypto_policy_from_fixture
     )
+    # sshd config parsed from a captured Rocky 9.8 tree (#105).
+    real_detect_sshd = pr.detect.config_sshd.detect_sshd
+
+    def _sshd_from_fixture(ssh_client=None):  # noqa: ARG001
+        saved = pr._platform.HOST_PREFIX
+        pr._platform.HOST_PREFIX = str(FIXTURES / "sshd" / "rocky9" / "root")
+        try:
+            return real_detect_sshd(None)
+        finally:
+            pr._platform.HOST_PREFIX = saved
+
+    monkeypatch.setattr(pr.detect.config_sshd, "detect_sshd", _sshd_from_fixture)
     monkeypatch.setattr(
         pr.detect.osinfo,
         "detect_kernel_info",

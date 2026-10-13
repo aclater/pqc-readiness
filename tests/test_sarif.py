@@ -64,6 +64,16 @@ def _full_trigger_report() -> pr.Report:
             "upgrade_path": {"recommendation": "upgrade to OpenSSL 3.5"},
             "tls_groups": {"hybrid": ["X25519MLKEM768"], "pure_pqc": []},
         },
+        # Rocky 9.8-style sshd: OpenSSH can, sshd config won't (pqc-010).
+        sshd={
+            "available": True,
+            "source": "config files",
+            "kex_offered": ["curve25519-sha256"],
+            "first_kex": "curve25519-sha256",
+            "pqc_offered": False,
+            "pqc_first": False,
+            "openssh_supports_pqc_kex": True,
+        },
         # EL9.8-style DEFAULT policy: OpenSSL can, policy won't (pqc-008).
         crypto_policy={
             "available": True,
@@ -144,7 +154,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 9
+    assert len(rules) == 10
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -155,6 +165,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-007-fips-without-algorithm-fence",
         "pqc-008-crypto-policy-blocks-pqc",
         "pqc-009-classical-package-signing-keys",
+        "pqc-010-sshd-pqc-kex-not-offered",
     }
     assert {r["id"] for r in rules} == expected_ids
     for r in rules:

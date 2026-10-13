@@ -192,6 +192,25 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
             L.append(f"     hybrid:    {', '.join(hyb)}")
         if pure:
             L.append(f"     pure PQC:  {', '.join(pure)}")
+    sshd = r.sshd
+    if sshd.get("available"):
+        if sshd.get("kex_offered") is None:
+            offered = "compiled-in default (not determinable from config)"
+        elif sshd.get("pqc_offered"):
+            offered = "PQC offered" + (
+                " first"
+                if sshd.get("pqc_first")
+                else f", but {sshd.get('first_kex')} first"
+            )
+        else:
+            offered = "no PQC key exchange offered"
+        L.append(f"   sshd kex:      {offered}  (via {sshd.get('source')})")
+        keys = [k for k in sshd.get("host_keys") or [] if k.get("readable")]
+        if keys:
+            L.append(
+                "     host keys: "
+                + ", ".join(f"{k.get('type')} {k.get('bits', '?')}" for k in keys)
+            )
     if r.ipsec_pqc.get("available"):
         impl = {"strongswan": "strongSwan", "libreswan": "Libreswan"}.get(
             str(r.ipsec_pqc.get("implementation")), "IPsec"

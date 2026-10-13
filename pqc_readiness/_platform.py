@@ -45,6 +45,9 @@ _HOST_NAMESPACES = (
     "/var/lib/dpkg",
     "/usr/share",
     "/usr/lib/os-release",
+    # SUSE vendor configuration (/usr/etc/ssh/sshd_config is read when
+    # /etc/ssh/sshd_config is absent, measured on Leap 16.0; #105).
+    "/usr/etc",
 )
 
 
