@@ -87,12 +87,12 @@ def test_fence_check_skipped_when_only_kernel_fips() -> None:
 def test_fence_parse_extracts_kem_names() -> None:
     """Parser extracts canonical ML-KEM names from openssl list output
     regardless of ordering, dedupes, and ignores noise."""
-    extracted = pr._fence_parse_algos(REBUILD_FIPS_KEMS_DEFAULT, pr._FENCE_KEM_RE)
+    extracted = pr.detect.config._fence_parse_algos(REBUILD_FIPS_KEMS_DEFAULT, pr.detect.config._FENCE_KEM_RE)
     assert extracted == ["ML-KEM-1024", "ML-KEM-512", "ML-KEM-768"]
 
 
 def test_fence_parse_extracts_signature_names() -> None:
-    extracted = pr._fence_parse_algos(REBUILD_FIPS_SIGS_DEFAULT, pr._FENCE_SIG_RE)
+    extracted = pr.detect.config._fence_parse_algos(REBUILD_FIPS_SIGS_DEFAULT, pr.detect.config._FENCE_SIG_RE)
     # 3 ML-DSA + 6 SLH-DSA-SHA2 + 6 SLH-DSA-SHAKE = 15
     assert len(extracted) == 15
     assert "ML-DSA-87" in extracted
@@ -109,9 +109,9 @@ def test_fence_engaged_when_default_subset_of_fips(monkeypatch: Any) -> None:
     ) -> list[str]:
         return []  # RHEL: neither column lists PQC
 
-    monkeypatch.setattr(pr, "_fence_provider_algos", fake_provider_algos)
+    monkeypatch.setattr(pr.detect.config, "_fence_provider_algos", fake_provider_algos)
     monkeypatch.setattr(
-        pr, "_run", lambda *a, **kw: (1, "")
+        pr._platform, "_run", lambda *a, **kw: (1, "")
     )  # tls-groups query unavailable / no diff
 
     fips = {"kernel": True, "openssl_provider": True}
@@ -146,8 +146,8 @@ def test_fence_absent_when_default_strict_superset(monkeypatch: Any) -> None:
     ) -> list[str]:
         return fence_outputs.get((list_arg, provider), [])
 
-    monkeypatch.setattr(pr, "_fence_provider_algos", fake_provider_algos)
-    monkeypatch.setattr(pr, "_run", lambda *a, **kw: (1, ""))
+    monkeypatch.setattr(pr.detect.config, "_fence_provider_algos", fake_provider_algos)
+    monkeypatch.setattr(pr._platform, "_run", lambda *a, **kw: (1, ""))
 
     fips = {"kernel": True, "openssl_provider": True}
     out = pr.fips_fence_check(fips)
@@ -179,8 +179,8 @@ def test_fence_absent_when_default_partial_overlap(monkeypatch: Any) -> None:
     ) -> list[str]:
         return fence_outputs.get((list_arg, provider), [])
 
-    monkeypatch.setattr(pr, "_fence_provider_algos", fake_provider_algos)
-    monkeypatch.setattr(pr, "_run", lambda *a, **kw: (1, ""))
+    monkeypatch.setattr(pr.detect.config, "_fence_provider_algos", fake_provider_algos)
+    monkeypatch.setattr(pr._platform, "_run", lambda *a, **kw: (1, ""))
 
     fips = {"kernel": True, "openssl_provider": True}
     out = pr.fips_fence_check(fips)

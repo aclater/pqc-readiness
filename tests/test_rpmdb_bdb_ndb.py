@@ -18,6 +18,7 @@ import zlib
 from pathlib import Path
 
 import pytest
+import shutil
 
 import pqc_readiness as pr
 
@@ -31,13 +32,13 @@ def _no_subprocess(cmd, timeout=None):  # noqa: ARG001
 @pytest.fixture
 def host(monkeypatch):
     def _use(root: Path) -> Path:
-        monkeypatch.setattr(pr, "HOST_PREFIX", str(root))
-        monkeypatch.setattr(pr, "_run", _no_subprocess)
-        pr._query_rpm_packages_cached.cache_clear()
+        monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(root))
+        monkeypatch.setattr(pr._platform, "_run", _no_subprocess)
+        pr.detect.packages._query_rpm_packages_cached.cache_clear()
         return root
 
     yield _use
-    pr._query_rpm_packages_cached.cache_clear()
+    pr.detect.packages._query_rpm_packages_cached.cache_clear()
 
 
 def _header(name: str, version: str, release: str = "1", arch: str = "x86_64") -> bytes:
@@ -212,7 +213,7 @@ def test_detect_nss_reads_bdb_and_ndb_in_process(
     # No usable rpm binary: the host database is read in-process and no
     # subprocess may run (certutil would describe the scanner image).
     monkeypatch.setattr(
-        pr.shutil, "which", lambda name: None if name == "rpm" else f"/usr/bin/{name}"
+        shutil, "which", lambda name: None if name == "rpm" else f"/usr/bin/{name}"
     )
     out = pr.detect_nss()
     assert out["tool"] == tool
@@ -225,7 +226,7 @@ def test_named_lookup_on_bdb_and_ndb_without_rpm_is_in_process(
     host, monkeypatch, tmp_path, make_host
 ) -> None:
     make_host(host(tmp_path))
-    monkeypatch.setattr(pr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
     out = pr.query_rpm_named(("libgpg-error", "libgpg-error0"))
     assert out["source"].startswith("rpmdb-")
     assert [p["name"] for p in out["packages"]] in (["libgpg-error"], ["libgpg-error0"])
@@ -354,8 +355,8 @@ def test_unreadable_database_falls_back_to_rpm_cli(host, monkeypatch, tmp_path, 
         calls.append(cmd)
         return 0, "bash 5.1.8 9.el8 x86_64\n"
 
-    monkeypatch.setattr(pr, "_run", fake_run)
-    monkeypatch.setattr(pr.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}")
     inv = pr.query_rpm_packages()
     assert inv["source"] == "rpm-cli"
     assert calls[0][:5] == ["rpm", "--root", str(root), "--dbpath", "/var/lib/rpm"]
@@ -373,8 +374,8 @@ def test_nss_tool_label_on_cli_fallback_is_rpm_q(host, monkeypatch, tmp_path) ->
         calls.append(cmd)
         return 1, "nss 3.124.0 5.el8_10 x86_64\npackage mozilla-nss is not installed\n"
 
-    monkeypatch.setattr(pr, "_run", fake_run)
-    monkeypatch.setattr(pr.shutil, "which", lambda n: f"/usr/bin/{n}")
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda n: f"/usr/bin/{n}")
     out = pr.detect_nss()
     assert out["tool"] == "rpm -q"
     assert out["version"] == "3.124.0"
@@ -387,11 +388,11 @@ def test_nss_tool_label_on_cli_fallback_is_rpm_q(host, monkeypatch, tmp_path) ->
 )
 def test_nss_tool_label_matches_packages_source(monkeypatch, source, label) -> None:
     monkeypatch.setattr(
-        pr,
+        pr.detect.packages,
         "query_rpm_named",
         lambda names: {"available": True, "source": source, "packages": [{"name": "nss", "version": "3.112.0"}]},
     )
-    assert pr._nss_from_rpmdb()["tool"] == label
+    assert pr.detect.protocols._nss_from_rpmdb()["tool"] == label
 
 
 @pytest.mark.parametrize("make_host", [_el8_host, _suse_host])
@@ -407,8 +408,8 @@ def test_named_lookup_on_bdb_and_ndb_prefers_rpm_q(host, monkeypatch, tmp_path, 
         calls.append(cmd)
         return 0, "nss 3.124.0 1.el8 x86_64\n"
 
-    monkeypatch.setattr(pr, "_run", fake_run)
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     out = pr.query_rpm_named(("nss",))
     assert out["source"] == "rpm-cli"
     assert [p["version"] for p in out["packages"]] == ["3.124.0"]
@@ -422,8 +423,8 @@ def test_named_lookup_falls_back_to_direct_read_when_rpm_q_fails(
     host, monkeypatch, tmp_path, make_host
 ) -> None:
     make_host(host(tmp_path))
-    monkeypatch.setattr(pr, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages index"))
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pr._platform, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages index"))
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     out = pr.query_rpm_named(("libgpg-error", "libgpg-error0"))
     assert out["source"].startswith("rpmdb-")
     assert len(out["packages"]) == 1

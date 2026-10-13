@@ -9,11 +9,11 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import asdict
-from pathlib import Path
 
 import pytest
 
 import pqc_readiness as pr
+from conftest import REPO_ROOT
 
 NORMALIZED_FIELDS = (
     "benchmark",
@@ -60,7 +60,7 @@ def test_schema_version_is_1_2() -> None:
     assert pr.SCHEMA_VERSION == "1.4"
 
 
-DOCS_DIR = Path(pr.__file__).resolve().parent / "docs"
+DOCS_DIR = REPO_ROOT / "docs"
 
 
 # Repo-level integrity check: docs/ is not shipped into the UBI 8 test

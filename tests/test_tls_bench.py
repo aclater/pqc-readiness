@@ -27,33 +27,33 @@ import pqc_readiness as pr
 
 
 def test_pick_classical_group_prefers_x25519() -> None:
-    assert pr._tls_pick_classical_group(["secp256r1", "x25519", "secp384r1"]) == "x25519"
+    assert pr.bench._tls_pick_classical_group(["secp256r1", "x25519", "secp384r1"]) == "x25519"
 
 
 def test_pick_classical_group_falls_back_to_secp256r1() -> None:
-    assert pr._tls_pick_classical_group(["secp384r1", "secp256r1"]) == "secp256r1"
+    assert pr.bench._tls_pick_classical_group(["secp384r1", "secp256r1"]) == "secp256r1"
 
 
 def test_pick_classical_group_last_resort_returns_first_entry() -> None:
-    assert pr._tls_pick_classical_group(["ffdhe2048"]) == "ffdhe2048"
+    assert pr.bench._tls_pick_classical_group(["ffdhe2048"]) == "ffdhe2048"
 
 
 def test_pick_classical_group_empty_returns_none() -> None:
-    assert pr._tls_pick_classical_group([]) is None
+    assert pr.bench._tls_pick_classical_group([]) is None
 
 
 def test_find_composite_signature_alg_matches_mldsa_rsa() -> None:
     sigs = ["ML-DSA-65", "RSA-PSS", "id-MLDSA65-RSA3072-PSS-SHA512"]
-    assert pr._tls_find_composite_signature_alg(sigs) == "id-MLDSA65-RSA3072-PSS-SHA512"
+    assert pr.bench._tls_find_composite_signature_alg(sigs) == "id-MLDSA65-RSA3072-PSS-SHA512"
 
 
 def test_find_composite_signature_alg_matches_oqs_naming() -> None:
     sigs = ["mldsa65_p256", "ed25519"]
-    assert pr._tls_find_composite_signature_alg(sigs) == "mldsa65_p256"
+    assert pr.bench._tls_find_composite_signature_alg(sigs) == "mldsa65_p256"
 
 
 def test_find_composite_signature_alg_returns_none_for_pure_pqc() -> None:
-    assert pr._tls_find_composite_signature_alg(["ML-DSA-65", "ML-DSA-87"]) is None
+    assert pr.bench._tls_find_composite_signature_alg(["ML-DSA-65", "ML-DSA-87"]) is None
 
 
 def test_build_suites_picks_classical_hybrid_pure_pqc() -> None:
@@ -64,7 +64,7 @@ def test_build_suites_picks_classical_hybrid_pure_pqc() -> None:
             "pure_pqc": ["MLKEM512", "MLKEM768"],
         }
     }
-    suites = pr._tls_build_suites(osinfo)
+    suites = pr.bench._tls_build_suites(osinfo)
     roles = [s["role"] for s in suites]
     assert roles == ["classical", "hybrid", "pure_pqc"]
     classical, hybrid, pure = suites
@@ -81,13 +81,13 @@ def test_build_suites_omits_unavailable_categories() -> None:
             "pure_pqc": [],
         }
     }
-    suites = pr._tls_build_suites(osinfo)
+    suites = pr.bench._tls_build_suites(osinfo)
     assert len(suites) == 1
     assert suites[0]["role"] == "classical"
 
 
 def test_build_suites_handles_missing_tls_groups_key() -> None:
-    assert pr._tls_build_suites({}) == []
+    assert pr.bench._tls_build_suites({}) == []
 
 
 def test_build_suites_falls_back_when_preferred_hybrid_unavailable() -> None:
@@ -98,7 +98,7 @@ def test_build_suites_falls_back_when_preferred_hybrid_unavailable() -> None:
             "pure_pqc": ["MLKEM1024"],
         }
     }
-    suites = pr._tls_build_suites(osinfo)
+    suites = pr.bench._tls_build_suites(osinfo)
     hybrid = next(s for s in suites if s["role"] == "hybrid")
     pure = next(s for s in suites if s["role"] == "pure_pqc")
     assert hybrid["group"] == "SecP384r1MLKEM1024"
@@ -106,7 +106,7 @@ def test_build_suites_falls_back_when_preferred_hybrid_unavailable() -> None:
 
 
 def test_get_free_port_returns_bindable_port() -> None:
-    port = pr._tls_get_free_port()
+    port = pr.bench._tls_get_free_port()
     assert 0 < port < 65536
     # Confirm the port is free at the moment we observed it.
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -117,8 +117,8 @@ def test_get_free_port_returns_bindable_port() -> None:
 def test_wait_for_port_returns_false_for_dead_port() -> None:
     # _tls_get_free_port closes its probe socket, so this port is
     # almost certainly unbound right now — that's the negative case.
-    port = pr._tls_get_free_port()
-    assert pr._tls_wait_for_port(port, timeout=0.3) is False
+    port = pr.bench._tls_get_free_port()
+    assert pr.bench._tls_wait_for_port(port, timeout=0.3) is False
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ def test_wait_for_port_returns_false_for_dead_port() -> None:
 def test_run_tls_handshake_bench_unavailable_when_openssl_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pr.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     out = pr.run_tls_handshake_bench(seconds=1)
     assert out == {"available": False, "reason": "openssl not on PATH"}
 
@@ -137,12 +137,12 @@ def test_run_tls_handshake_bench_unavailable_when_openssl_missing(
 def test_run_tls_handshake_bench_unavailable_for_old_openssl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pr.shutil, "which", lambda _name: "/usr/bin/openssl")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/openssl")
 
     def fake_run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
         return 0, "OpenSSL 3.0.13 30 Jan 2024\n"
 
-    monkeypatch.setattr(pr, "_run", fake_run)
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
     out = pr.run_tls_handshake_bench(seconds=1)
     assert out["available"] is False
     assert "pre-3.5" in out["reason"]
@@ -151,12 +151,12 @@ def test_run_tls_handshake_bench_unavailable_for_old_openssl(
 def test_run_tls_handshake_bench_unavailable_when_no_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pr.shutil, "which", lambda _name: "/usr/bin/openssl")
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/openssl")
 
     def fake_run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
         return 0, "OpenSSL 3.5.5 27 Jan 2026\n"
 
-    monkeypatch.setattr(pr, "_run", fake_run)
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
     out = pr.run_tls_handshake_bench(
         seconds=1,
         osinfo={"available": True, "tls_groups": {}},
@@ -227,12 +227,12 @@ def test_bench_tls_handshake_attaches_to_report_json(tmp_path: Any) -> None:
     benchmark_tls_handshake field populated with engine = tls-handshake.
     """
     import json
-    import sys
-    from pathlib import Path
 
-    script = Path(pr.__file__)
+    from conftest import PQC_CLI, PQC_ENV
+
     proc = subprocess.run(
-        [sys.executable, str(script), "--bench-tls", "--json", "--seconds", "1"],
+        [*PQC_CLI, "--bench-tls", "--json", "--seconds", "1"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,

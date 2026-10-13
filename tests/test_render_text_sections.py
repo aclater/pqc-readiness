@@ -15,7 +15,7 @@ reflection.
 from __future__ import annotations
 
 import pqc_readiness as pr
-from pqc_readiness import (
+from pqc_readiness.render.text import (
     _render_text_accelerators,
     _render_text_benchmark,
     _render_text_cnsa_2_0,

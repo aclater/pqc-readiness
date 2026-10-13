@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import shutil
 
 import pqc_readiness as pr
 
@@ -55,8 +56,8 @@ class FakeOpenSSL:
 @pytest.fixture
 def fake(monkeypatch: pytest.MonkeyPatch) -> FakeOpenSSL:
     f = FakeOpenSSL()
-    monkeypatch.setattr(pr, "_run", f)
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pr._platform, "_run", f)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     return f
 
 
@@ -107,8 +108,8 @@ def test_run_benchmarks_standalone_looks_up_lists(
             "-signature-algorithms": "  { 2.16.840.1.101.3.4.3.18, id-ml-dsa-65, ML-DSA-65 } @ default\n",
         }
     )
-    monkeypatch.setattr(pr, "_run", f)
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pr._platform, "_run", f)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     out = pr.run_benchmarks(seconds=1, threads=1)
     assert len(f.list_calls()) == 2
     assert "SLH-DSA-SHA2-128s" not in f.speed_targets()
@@ -117,8 +118,8 @@ def test_run_benchmarks_standalone_looks_up_lists(
 
 
 def test_capability_unavailable_falls_back_to_lookup() -> None:
-    assert pr._bench_provided_algorithms(None) is None
-    assert pr._bench_provided_algorithms({"available": False}) is None
+    assert pr.bench._bench_provided_algorithms(None) is None
+    assert pr.bench._bench_provided_algorithms({"available": False}) is None
 
 
 def test_verdict_reports_skip_reason() -> None:
@@ -176,8 +177,8 @@ def test_providers_listed_once_for_fips_and_capability(
             return 0, VERSION_35
         return 0, ""
 
-    monkeypatch.setattr(pr, "_run", fake_run)
-    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pr._platform, "_run", fake_run)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     cap = pr.openssl_capability()
     fips = pr.detect_fips_mode()
     assert cap["providers"] == ["base", "default", "fips"]
