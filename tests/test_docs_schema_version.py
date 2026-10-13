@@ -26,7 +26,9 @@ pytestmark = pytest.mark.skipif(
 
 # Sample-output forms: `schema_version: "X"` (YAML) and
 # `"schema_version": "X"` (JSON).
-SAMPLE_VERSION_RE = re.compile(r'"?schema_version"?:\s*"([0-9.]+)"')
+# The lookbehind keeps other *_schema_version keys (e.g. the endpoint
+# observation format's `observation_schema_version`, #149) from matching.
+SAMPLE_VERSION_RE = re.compile(r'(?<![\w])"?schema_version"?:\s*"([0-9.]+)"')
 
 
 def test_doc_sample_outputs_use_current_schema_version() -> None:
@@ -52,3 +54,9 @@ def test_json_output_doc_has_a_row_for_every_report_field() -> None:
         f.name for f in dataclasses.fields(pr.Report) if f.name not in documented
     ]
     assert not missing, f"Report fields missing from docs/json-output.md: {missing}"
+
+
+def test_sample_regex_ignores_other_schema_version_keys() -> None:
+    assert SAMPLE_VERSION_RE.findall('"observation_schema_version": "1.0"') == []
+    assert SAMPLE_VERSION_RE.findall('{"schema_version": "1.4"}') == ["1.4"]
+    assert SAMPLE_VERSION_RE.findall('schema_version: "1.4"') == ["1.4"]
