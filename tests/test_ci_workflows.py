@@ -109,3 +109,25 @@ def test_every_shipped_containerfile_is_built_in_ci() -> None:
     # guards the three images CI is responsible for.
     missing = [name for name in missing if name != "Containerfile.ubuntu-fips"]
     assert not missing, f"Containerfiles not built by any workflow: {missing}"
+
+
+def test_ci_runs_detect_secrets_with_precommit_version() -> None:
+    """ci.yml must run detect-secrets against the shared baseline, at the
+    same version pinned in .pre-commit-config.yaml (#94).
+
+    A version skew between the hook and CI would let the two disagree on
+    what counts as a finding, so a contributor could pass locally and fail
+    in CI (or vice versa).
+    """
+    import re
+
+    body = _read_workflow("ci.yml")
+    precommit = REPO_ROOT / ".pre-commit-config.yaml"
+    if not precommit.exists():
+        pytest.skip(f"pre-commit config not present in this checkout: {precommit}")
+    assert "detect-secrets-hook --baseline .secrets.baseline" in body
+    m = re.search(
+        r"Yelp/detect-secrets\s*\n\s*rev:\s*v?([0-9.]+)", precommit.read_text()
+    )
+    assert m, "detect-secrets hook not found in .pre-commit-config.yaml"
+    assert f"detect-secrets=={m.group(1)}" in body
