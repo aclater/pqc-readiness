@@ -13,7 +13,8 @@
 # What this does: search PATH for the highest-version python3.x
 # available (3.13 → 3.9, then `python3`, then `python`), exec the
 # zipapp (or the package from a checkout) with that interpreter, and pass all arguments through.  If no Python
-# 3.9+ is on PATH, print AppStream-aware guidance and exit 127.
+# 3.9+ is on PATH, print install guidance for the host family
+# (SUSE, RHEL 8 family, Debian/Ubuntu) and exit 127.
 #
 # Co-located with pqc-readiness.pyz: the wrapper is shipped in the
 # container images (UBI 10 and Debian 12-slim) at the same path so the
@@ -87,21 +88,86 @@ for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 p
     fi
 done
 
+# No usable interpreter: print install guidance for this host's family
+# (#127).  ID / ID_LIKE are read in a subshell with shell builtins only,
+# so a stripped PATH still works and os-release variables cannot leak
+# into this script.  PQC_READINESS_OS_RELEASE overrides the file for
+# tests.
+os_family() {
+    for f in "${PQC_READINESS_OS_RELEASE:-}" /etc/os-release /usr/lib/os-release; do
+        [ -n "$f" ] && [ -r "$f" ] || continue
+        ids=$( . "$f" 2>/dev/null; printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}" )
+        case $ids in
+            *" suse "*|*" sles "*|*" opensuse"*) echo suse; return ;;
+            *" rhel "*|*" centos "*|*" fedora "*) echo rhel; return ;;
+            *" debian "*|*" ubuntu "*) echo debian; return ;;
+        esac
+        echo other
+        return
+    done
+    echo other
+}
+
 cat >&2 <<'EOF'
 pqc-readiness: no Python 3.9+ interpreter found on PATH.
 
-This script requires Python 3.9 or newer.  On RHEL 8, Rocky Linux 8,
-or AlmaLinux 8 the default `python3` is 3.6 (stock cloud images have no
-`python3` at all, only /usr/libexec/platform-python 3.6), which cannot
-parse the modern type-hint syntax this script uses.  Enable the
-AppStream `python39` module (or, on EL 8.8+, install `python3.11`),
-then re-run this launcher:
+This tool requires Python 3.9 or newer; older interpreters cannot parse
+the modern type-hint syntax it uses.
+EOF
+
+case $(os_family) in
+suse)
+    cat >&2 <<'EOF'
+
+SLES 15 and openSUSE Leap 15 ship Python 3.6 as `python3`.  Install a
+newer interpreter alongside it (the system python3 is left untouched),
+then re-run this launcher, which finds `python3.11` automatically:
+
+    sudo zypper --gpg-auto-import-keys ref
+    sudo zypper -n in python311
+    /path/to/pqc-readiness [flags]
+EOF
+    ;;
+rhel)
+    cat >&2 <<'EOF'
+
+On RHEL 8, Rocky Linux 8, or AlmaLinux 8 the default `python3` is 3.6
+(some stock cloud images have no `python3` at all, only
+/usr/libexec/platform-python 3.6).  Enable the AppStream `python39`
+module (or, on EL 8.8+, install `python3.11`), then re-run this
+launcher:
 
     sudo dnf module install -y python39
     /path/to/pqc-readiness [flags]
 
+On RHEL / Rocky / AlmaLinux 9+ and Fedora, `python3` is already 3.9+;
+install it if a minimal image omits it: `sudo dnf install -y python3`.
+EOF
+    ;;
+debian)
+    cat >&2 <<'EOF'
+
+Debian 11+ and Ubuntu 22.04+ ship Python 3.9 or newer as `python3`:
+
+    sudo apt-get install -y python3
+    /path/to/pqc-readiness [flags]
+EOF
+    ;;
+*)
+    cat >&2 <<'EOF'
+
+Install Python 3.9 or newer with your distribution's package manager.
+On RHEL 8 family hosts that is the AppStream module
+(`sudo dnf module install -y python39`); on SLES / openSUSE Leap 15 it
+is `sudo zypper -n in python311`.
+EOF
+    ;;
+esac
+
+cat >&2 <<'EOF'
+
 You can also invoke any 3.9+ interpreter directly against the zipapp:
 
-    python3.9 /path/to/pqc-readiness.pyz [flags]
+    python3.11 /path/to/pqc-readiness.pyz [flags]
 EOF
 exit 127

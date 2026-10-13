@@ -245,7 +245,8 @@ def stub_renderers(monkeypatch: pytest.MonkeyPatch) -> pr.Report:
         (pr.render.text, "render_markdown"),
         (pr.render.text, "render_text"),
     ):
-        monkeypatch.setattr(module, name, lambda r, _n=name: _n)
+        # Renderers may take extra options (e.g. render_cbom's spec version).
+        monkeypatch.setattr(module, name, lambda r, *_a, _n=name, **_k: _n)
     return pr.collect_report(_args())
 
 

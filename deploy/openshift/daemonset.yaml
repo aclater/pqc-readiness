@@ -127,11 +127,25 @@ spec:
                   --bench --seconds 1 \
                   --save --quiet \
                   || true
+                # Optional Prometheus metrics for node_exporter's textfile
+                # collector (#140): set PQC_PROM_FILE (see env below) to a
+                # *.prom path inside a volume node_exporter also reads.
+                # Skips --bench: the metrics don't use benchmark results.
+                if [ -n "${PQC_PROM_FILE:-}" ]; then
+                  /usr/local/bin/pqc-readiness \
+                    --host-mount /host \
+                    --prometheus --output "$PQC_PROM_FILE" \
+                    || true
+                fi
                 sleep "$interval"
               done
           env:
             - name: PQC_PROBE_INTERVAL
               value: "3600"
+            # Uncomment (and mount node-exporter-textfile below) to export
+            # metrics; the path must end in .prom (#140).
+            # - name: PQC_PROM_FILE
+            #   value: /textfile/pqc_readiness.prom
             - name: HOME
               value: /var/lib/pqc-readiness
           securityContext:
@@ -184,6 +198,9 @@ spec:
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
               readOnly: false
+            # - name: node-exporter-textfile
+            #   mountPath: /textfile
+            #   readOnly: false
             - name: tmp
               mountPath: /tmp
       volumes:
@@ -223,6 +240,12 @@ spec:
           hostPath:
             path: /var/lib/pqc-readiness
             type: DirectoryOrCreate
+        # Directory node_exporter reads with --collector.textfile.directory
+        # (match your node_exporter deployment; #140).
+        # - name: node-exporter-textfile
+        #   hostPath:
+        #     path: /var/lib/node_exporter/textfile_collector
+        #     type: Directory
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

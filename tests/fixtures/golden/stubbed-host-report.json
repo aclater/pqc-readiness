@@ -10,7 +10,8 @@
       "kem_compliant": false,
       "notes": [
         "OpenSSL not available; cannot verify ML-KEM-1024 (KEM) or ML-DSA-87 (signature) availability.",
-        "/proc/crypto not available; cannot verify AES-256 (symmetric) or hardware-accelerated SHA-384/SHA-512 (hash)."
+        "/proc/crypto not available; cannot verify AES-256 (symmetric) or hardware-accelerated SHA-384/SHA-512 (hash).",
+        "TLS offers PQC key exchange only through groups that do not meet CNSA 2.0 (MLKEM768, X25519MLKEM768): their ML-KEM component is not ML-KEM-1024.  A CNSA 2.0 TLS deployment needs SecP384r1MLKEM1024 (RFC 10024) or pure MLKEM1024 (draft-ietf-tls-mlkem)."
       ],
       "requirements": {
         "hash": [
@@ -29,7 +30,14 @@
       },
       "signature_compliant": false,
       "status": "unknown",
-      "symmetric_compliant": false
+      "symmetric_compliant": false,
+      "tls_key_exchange": {
+        "compliant_groups": [],
+        "non_compliant_pqc_groups": [
+          "MLKEM768",
+          "X25519MLKEM768"
+        ]
+      }
     },
     "cores_logical": 16,
     "cores_physical": 8,
@@ -275,6 +283,7 @@
     "host_fs_detections_unavailable": {},
     "hostname": "golden-host",
     "hsm_present_but_not_pqc": false,
+    "inventory_metadata": null,
     "ipsec_pqc": {
       "available": false
     },
