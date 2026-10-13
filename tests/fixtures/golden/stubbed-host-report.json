@@ -312,6 +312,7 @@
     "isa_reason": "AVX2 + AES-NI + PCLMULQDQ - production-capable in software",
     "isa_score": 6,
     "isa_tier": "good",
+    "kerberos": {},
     "kernel_crypto_hw": [
       "aesni_intel"
     ],

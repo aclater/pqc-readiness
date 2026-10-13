@@ -34,6 +34,7 @@ from ..detect import osinfo as _osinfo
 from ..detect import packages as _packages
 from ..detect import protocols as _protocols
 from ..detect import protocols_ike as _ike
+from ..detect import protocols_kerberos as _kerberos
 from ..detect import protocols_signing as _signing
 
 log = logging.getLogger("pqc-readiness")
@@ -299,6 +300,10 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
     signing_keys: dict[str, Any] = {}
     if getattr(args, "scan_signing_keys", False):
         signing_keys = _signing.scan_signing_keys(os_release)
+    # krb5.conf / kdc.conf / keytabs are files, so the tree answers (#109).
+    kerberos: dict[str, Any] = {}
+    if getattr(args, "scan_kerberos", False):
+        kerberos = _kerberos.scan_kerberos()
 
     return _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -330,6 +335,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         process_crypto_linkage=dict(host_state),
         packages=packages,
         signing_keys=signing_keys,
+        kerberos=kerberos,
         os_release=os_release,
         verdict=VERDICT,
         verdict_reason=scan_mode_record(root)["reason"],

@@ -17,6 +17,7 @@ fails if a registered rule has no page.
 | [pqc-009-classical-package-signing-keys](pqc-009-classical-package-signing-keys.md) | note | Every trusted package-signing key is classical |
 | [pqc-010-sshd-pqc-kex-not-offered](pqc-010-sshd-pqc-kex-not-offered.md) | warning | OpenSSH can do a PQC key exchange; sshd doesn't offer it (note: offered but not first) |
 | [pqc-020-classical-boot-chain](pqc-020-classical-boot-chain.md) | note | Boot chain signing keys (Secure Boot, module signing, IMA) are all classical; TPM has no PQC |
+| [pqc-021-kerberos-weak-enctypes](pqc-021-kerberos-weak-enctypes.md) | warning | Kerberos allows deprecated enctypes (note: only 128-bit enctypes, or classical PKINIT) |
 
 Sources are cited with their status. **Draft** means the document is not
 final, for example NIST IR 8547, which is still an initial public draft.

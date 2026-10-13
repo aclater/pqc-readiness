@@ -145,6 +145,19 @@ def _full_trigger_report() -> pr.Report:
                 },
             },
         },
+        kerberos={
+            "available": True,
+            "config": {
+                "enctype_lists": {"permitted_enctypes": {"source": "mit_default"}}
+            },
+            "summary": {
+                "deprecated_enctypes": ["arcfour-hmac", "des3-cbc-sha1"],
+                "aes128_enctypes": ["aes128-cts-hmac-sha1-96"],
+                "enctypes_in_keytabs": ["arcfour-hmac"],
+                "keytab_keys_128_bit_only": False,
+                "pkinit_classical": False,
+            },
+        },
     )
 
 
@@ -187,6 +200,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-009-classical-package-signing-keys",
         "pqc-010-sshd-pqc-kex-not-offered",
         "pqc-020-classical-boot-chain",
+        "pqc-021-kerberos-weak-enctypes",
     }
     assert expected_ids <= {r["id"] for r in rules}
     for r in rules:

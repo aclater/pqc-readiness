@@ -77,6 +77,7 @@ nothing was found.
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
 | `boot_chain` | Boot chain trust anchors and their algorithms: UEFI Secure Boot state and the PK / KEK / db / dbx / MOK signature lists, kernel module signing, IMA / EVM, kernel lockdown and TPM 2.0 post-quantum support. Populated only when `--scan-boot-chain` is set (`{}` otherwise). Keys: `available`, `secure_boot`, `module_signing`, `ima_evm`, `lockdown`, `tpm`, `summary` (see [Nested fields](#boot_chain)). |
+| `kerberos` | Kerberos encryption types and PKINIT: the client / KDC enctype lists (`krb5.conf` with includes, `kdc.conf`), keytab entries (principal, kvno, enctype; never keys) and PKINIT settings. Populated only when `--scan-kerberos` is set (`{}` otherwise). Keys: `available`, `config_files`, `config`, `kdc`, `keytabs`, `summary` (see [Nested fields](#kerberos)). |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -685,6 +686,34 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`)
 | `pqc_algorithms` | list[string] | Post-quantum algorithms the TPM implements: `ML-KEM`, `ML-DSA`, `HashML-DSA` (TPM 2.0 Library v1.85 IDs 0x00A0-0x00A2). |
 | `pqc_capable` | bool | Any of them. |
 | `spec_note` | string | Where the v1.85 algorithm IDs come from (a release candidate, per wolfTPM's implementation). |
+
+### `kerberos`
+
+`{}` unless `--scan-kerberos`. Read in-process (no `klist`): `/etc/krb5.conf` and everything it pulls in with `include` / `includedir` (symlinks resolved under the host prefix, so the RHEL crypto-policies back-end in `/etc/krb5.conf.d` is the host's), `kdc.conf`, and keytabs. Keytabs are parsed from MIT's FILE keytab format; key contents are skipped by length and never stored or emitted. Enctype names and status follow the IANA Kerberos Encryption Type Numbers registry. Works with `--root`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | False when neither `/etc/krb5.conf` nor a `kdc.conf` exists. |
+| `reason` | string | Why `available` is false, or with `unavailable_in_container`. |
+| `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`. |
+| `config_files` | list[string] | Configuration files read, in order. |
+| `config` | object | `{allow_weak_crypto, default_keytab_name, enctype_lists, pkinit}` from `[libdefaults]` (below). |
+| `kdc` | object \| null | `{path, realms}` from `/var/kerberos/krb5kdc/kdc.conf` or `/etc/krb5kdc/kdc.conf`; `realms` maps each realm to `{supported_enctypes, master_key_type}` (salt types dropped). Null without a `kdc.conf`. |
+| `keytabs` | list[object] | One per keytab found (`/etc/krb5.keytab`, `default_keytab_name`, `*.keytab` up to three levels under `/etc`): `{path, readable, reason}` when unreadable (keytabs are root-only), otherwise `{path, readable, parsed, format_version, entries, enctypes}` (`parsed: false` with `reason` for a malformed file). Each `entries` item is `{principal, kvno, enctype, enctype_number, status}`; `enctypes` maps enctype name to key count. |
+| `summary` | object | `{enctypes_allowed, enctypes_in_keytabs, deprecated_enctypes, aes128_enctypes, keytab_keys_128_bit_only, pkinit_classical}`. `enctypes_allowed` is the union of every expanded list, the KDC `supported_enctypes` and the keytab enctypes. `pkinit_classical` is true when a PKINIT identity is configured with classical certificates, null when the identity store can't be read (e.g. a PKCS#11 token), false when PKINIT isn't used. Drives SARIF `pqc-021`. |
+
+`config.enctype_lists` has one entry per `permitted_enctypes`, `default_tkt_enctypes` and `default_tgs_enctypes`: `{raw, source, enctypes}`. `raw` is the configured string; `source` is `configured`, `permitted_enctypes` (unset, so `permitted_enctypes` applies, as in krb5 1.18 and later) or `mit_default` (unset everywhere: MIT's built-in default, which still includes the deprecated `des3-cbc-sha1` and `arcfour-hmac`); `enctypes` is the list expanded with MIT's rules (aliases, the `aes` / `des3` / `rc4` / `camellia` families, `DEFAULT`, `-x` removal), with MIT's "weak" types dropped unless `allow_weak_crypto` is true.
+
+Enctype `status`: `deprecated` (DES, 3DES, RC4: RFC 6649 / RFC 8429), `aes128` (128-bit AES / Camellia: about 64-bit security against Grover's algorithm; CNSA 2.0 requires AES-256), `ok` (256-bit), `unknown`.
+
+`config.pkinit`:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `settings` | list[string] | Every `pkinit_*` tag found in `[libdefaults]`, `[realms]` or `[kdcdefaults]`. |
+| `anchors` | object \| null | `pkinit_anchors`. For a `FILE:` value `{path, exists, certificates, categories, key_algorithms}` (`exists: false` when the file is missing, as with Fedora's stock `ca-bundle.crt` path); otherwise `{value}` naming only the store type. |
+| `identity_configured` | bool | `pkinit_identity` / `pkinit_identities` is set: PKINIT is in use. Anchors alone don't count. |
+| `identity` | object \| null | For a `FILE:` identity, the same fields as `anchors` (certificates only; the key half is never read); for other stores `{store}` (e.g. `PKCS11`). |
 
 ### `os_release`
 
