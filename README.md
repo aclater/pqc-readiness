@@ -60,8 +60,9 @@ privileged DaemonSet on OpenShift.
 `pqc-readiness` is a shell wrapper that picks a usable Python 3.9+ from
 `PATH` (`python3.13` … `python3.9`, then `python3` / `python`) and
 `exec`s `pqc_readiness.py`. On hosts whose default `python3` is too old
-(RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6) it prints AppStream guidance
-instead of a `SyntaxError`. Hosts with Python ≥ 3.9 can invoke
+(RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6, and stock EL8 cloud images
+have no `python3` at all) it prints AppStream guidance and exits 127
+instead of failing with a `SyntaxError` or an `env` error. Hosts with Python ≥ 3.9 can invoke
 `./pqc_readiness.py` directly; the two are interchangeable. See
 [Distribution support](#distribution-support) for per-distro notes.
 
@@ -250,11 +251,29 @@ overstated what GitHub Actions exercises today — see
 [issue #44](https://github.com/aclater/pqc-readiness/issues/44) for
 the audit finding.
 
-**RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** The system `python3` on
-EL8 is 3.6, which cannot parse the script. Install the AppStream
-`python39` (or `python311`) module and invoke through the
-`pqc-readiness` wrapper — the wrapper finds the right interpreter
-automatically and prints AppStream guidance when none is available.
+**RHEL 8 / Rocky 8 / AlmaLinux 8 specifics.** EL8 needs one manual
+prerequisite: a Python 3.9+ interpreter from AppStream. Stock EL8 cloud
+images (RHEL / Rocky / AlmaLinux 8.10 KVM qcow2s) ship **no** `python3`
+on `PATH` at all — only `/usr/libexec/platform-python` (3.6), which
+cannot parse the script — so out of the box `./pqc_readiness.py` fails
+with `/usr/bin/env: 'python3': No such file or directory` (exit 127)
+and the `pqc-readiness` wrapper exits 127 with the same guidance as
+below. Install an interpreter once per host (or in your configuration-
+management baseline), then invoke through the wrapper, which finds it
+automatically:
+
+```bash
+sudo dnf module install -y python39   # AppStream module, provides python3.9
+# or, on EL 8.8+:
+sudo dnf install -y python3.11        # non-modular AppStream package
+./pqc-readiness --json
+```
+
+Python 3.6 / `platform-python` is deliberately not supported: the
+script relies on 3.7+ language and stdlib features (`from __future__
+import annotations`, `dataclasses`), and back-porting would lock every
+future change into 3.6 (see
+[issue #36](https://github.com/aclater/pqc-readiness/issues/36)).
 OpenSSL 1.1.1 on EL8 means `openssl.pqc_native: false` and a no-bench
 caveat in the verdict; the inventory probe still works. A
 ready-to-deploy image is shipped at
