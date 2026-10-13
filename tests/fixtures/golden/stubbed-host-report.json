@@ -436,6 +436,7 @@
         "sk": 128
       }
     },
+    "process_crypto_linkage": {},
     "production_estimate": {},
     "replace_required": false,
     "runtime_environment": {
