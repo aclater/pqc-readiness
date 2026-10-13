@@ -169,6 +169,41 @@ def test_run_aggregator_mixed_schema_skips_old_version(tmp_path: Path) -> None:
     )
 
 
+def test_run_aggregator_mixed_schema_counts_only_current_version(
+    tmp_path: Path,
+) -> None:
+    """Fleet dirs accumulate reports across tool upgrades.  Several older
+    versions, a newer major, and a report with no schema_version at all
+    must each be skipped with a reason; total_hosts counts only the
+    current-schema reports."""
+    for i in range(2):
+        (tmp_path / f"current-{i}.json").write_text(
+            json.dumps(_valid_report(cpu=f"cpu-{i}"))
+        )
+    mismatched = {"v0_9.json": "0.9", "v1_0.json": "1.0", "v9_0.json": "9.0"}
+    for name, version in mismatched.items():
+        stale = _valid_report(arch="aarch64")
+        stale["schema_version"] = version
+        (tmp_path / name).write_text(json.dumps(stale))
+    unversioned = _valid_report(arch="s390x")
+    del unversioned["schema_version"]
+    (tmp_path / "unversioned.json").write_text(json.dumps(unversioned))
+
+    rollup = json.loads(pr.run_aggregator(tmp_path, output="json")[0])
+    assert rollup["total_hosts"] == 2
+    assert rollup["by_arch"] == {"x86_64": 2}
+    assert rollup["unique_cpu_models"] == ["cpu-0", "cpu-1"]
+    reasons = {Path(s["file"]).name: s["reason"] for s in rollup["skipped"]}
+    for name, version in mismatched.items():
+        assert reasons[name] == (
+            f"schema mismatch: file={version!r} expected={pr.SCHEMA_VERSION!r}"
+        )
+    assert reasons["unversioned.json"] == (
+        f"schema mismatch: file=None expected={pr.SCHEMA_VERSION!r}"
+    )
+    assert len(reasons) == 4
+
+
 def test_run_aggregator_malformed_json_skipped_others_aggregate(
     tmp_path: Path,
 ) -> None:
