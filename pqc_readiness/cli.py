@@ -298,6 +298,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         verdict_reason=why,
         verdict_caveat=caveat,
         exit_code=code,
+        inventory_metadata=getattr(args, "inventory_metadata", None),
     )
     return r
 

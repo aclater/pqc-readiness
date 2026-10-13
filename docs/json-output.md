@@ -79,6 +79,7 @@ nothing was found.
 | `verdict_reason` | One-line explanation for the verdict. |
 | `verdict_caveat` | `""` when `--bench` measured the PQC primitives; otherwise an explanation that the verdict reflects CPU instruction set and memory only. |
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](../README.md#exit-codes) table in the README. |
+| `inventory_metadata` | Operator-supplied inventory facts from `--inventory-metadata FILE` (OMB M-23-02 items the host can't know), validated and normalised; `null` when the flag isn't given. See [`inventory_metadata`](#inventory_metadata). |
 
 ## Nested fields
 
@@ -364,6 +365,32 @@ Each `suites[]` entry:
 | `assumptions` | string | The per-connection and RAM assumptions above. |
 
 Each rate key appears only when the matching `per_algo` entry has a measured rate.
+
+### `inventory_metadata`
+
+`null` unless `--inventory-metadata FILE` is given. Every key is optional;
+the file is rejected (exit 2, before any probing) if it contains unknown
+keys or invalid values. Values are echoed as supplied, so the file must
+hold **identifiers only**: OMB M-23-02 footnote 13 forbids names that
+reveal a system's function or location.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `fisma_system_id` | string | FISMA system identifier (M-23-02 item 1). |
+| `fips199_categorization` | string | `Low`, `Moderate` or `High` (item 2); input is case-insensitive. |
+| `hva_id` | string | High Value Asset identifier, if the system is an HVA (item 3). |
+| `hosting` | object | Hosting model (item 7): `{model, provider?}`. |
+| `hosting.model` | string | `on-premises`, `commercial-csp`, `government-csp` or `hybrid`. |
+| `hosting.provider` | string | Provider name(s); required for every model except `on-premises`. |
+| `data_lifecycle` | object | Data lifecycle (item 8): `{records_categories?, time_to_live_years?}`. |
+| `data_lifecycle.records_categories` | list of string | Records-management categories of the data. |
+| `data_lifecycle.time_to_live_years` | number | How long the data and metadata need protection. |
+| `notes` | string | Free text (item 9). |
+
+The same facts appear in `--cbom` as `inventory:*` properties on the host
+component. With `--cbom-profile federal-draft` the CBOM also reports, per
+item, whether it was `provided`, `collected`, `partial` or
+`not-provided`; see [docs/inventory-methodology.md](inventory-methodology.md).
 
 ## `--ansible` variant
 
