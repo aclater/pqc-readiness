@@ -138,6 +138,11 @@ spec:
                     --prometheus --output "$PQC_PROM_FILE" \
                     || true
                 fi
+                # Opt-in per-node summary ConfigMap (deploy/openshift-summary,
+                # #157).  Unset in the base: no API access, nothing runs.
+                if [ -n "${PQC_SUMMARY_HOOK:-}" ]; then
+                  "$PQC_SUMMARY_HOOK" || true
+                fi
                 sleep "$interval"
               done
           env:

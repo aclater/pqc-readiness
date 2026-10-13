@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: Apache-2.0
+# Least privilege for the per-node summary publisher (#157): read and write
+# ConfigMaps in this namespace only.  No cluster scope, no other resources.
+# "create" can't be limited by resourceNames in RBAC, so it applies to any
+# ConfigMap name in the namespace; the namespace is dedicated to the scanner.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pqc-readiness-summary
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pqc-readiness-summary
+  namespace: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pqc-readiness-summary
+subjects:
+  - kind: ServiceAccount
+    name: pqc-readiness
+    namespace: pqc-readiness

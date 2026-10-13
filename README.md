@@ -768,6 +768,10 @@ the host root is mounted at `/host` and the probe is invoked with
 image.
 
 For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in [`deploy/openshift/services/`](docs/openshift-services-overlay.md) instead (adds only `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`).
+For per-node summary ConfigMaps that ACM governance policies and Compliance
+Operator CEL rules can evaluate, apply the opt-in overlay with
+`oc apply -k deploy/openshift-summary` ([details](docs/integrations/openshift-node-summaries.md);
+it adds a token and a ConfigMap-only Role, nothing else).
 
 For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).

@@ -1,0 +1,67 @@
+# SPDX-License-Identifier: Apache-2.0
+# Sample ACM governance policy over the per-node summary ConfigMaps (#157).
+# Non-compliant when any node's summary reports a protocol whose PQC
+# capability is not configured (a config change closes it) or not capable
+# (an upgrade is needed).  Unnamed mustnothave objects match every
+# ConfigMap in the namespace that carries the listed fields.
+# Bind it to clusters with your own Placement + PlacementBinding.
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: pqc-readiness-node-gaps
+  namespace: pqc-policies
+  annotations:
+    policy.open-cluster-management.io/standards: NIST IR 8547 (draft)
+    policy.open-cluster-management.io/categories: Post-quantum readiness
+    policy.open-cluster-management.io/controls: PQC deployment gap
+spec:
+  remediationAction: inform
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: pqc-readiness-node-gaps
+        spec:
+          remediationAction: inform
+          severity: medium
+          namespaceSelector:
+            include: ["pqc-readiness"]
+          object-templates:
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  labels:
+                    pqc-readiness/summary: node
+                data:
+                  gap_tls: capable_not_configured
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  labels:
+                    pqc-readiness/summary: node
+                data:
+                  gap_ssh: capable_not_configured
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  labels:
+                    pqc-readiness/summary: node
+                data:
+                  gap_tls: not_capable
+            - complianceType: mustnothave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  labels:
+                    pqc-readiness/summary: node
+                data:
+                  gap_ssh: not_capable

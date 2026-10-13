@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Turns on the per-node summary for the base DaemonSet (#157): mounts the
+# publisher script, gives the pod its service-account token (the base has
+# none), and points the probe loop's PQC_SUMMARY_HOOK at the script.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: pqc-readiness
+  namespace: pqc-readiness
+spec:
+  template:
+    spec:
+      # Needed to write the ConfigMap; scoped by rbac.yaml to ConfigMaps in
+      # this namespace.
+      automountServiceAccountToken: true
+      containers:
+        - name: probe
+          env:
+            - name: PQC_SUMMARY_HOOK
+              value: /opt/pqc-summary/publish-node-summary.py
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: summary-script
+              mountPath: /opt/pqc-summary
+              readOnly: true
+      volumes:
+        - name: summary-script
+          configMap:
+            name: pqc-readiness-summary-script
+            defaultMode: 0555
