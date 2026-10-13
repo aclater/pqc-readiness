@@ -213,11 +213,42 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
     return L
 
 
+def _crypto_config_summary(cp: dict[str, object]) -> str:
+    ossl = cp.get("openssl") or {}
+    settings = ossl.get("settings") or {} if isinstance(ossl, dict) else {}
+    parts = []
+    if settings.get("MinProtocol"):
+        parts.append(f"MinProtocol {settings['MinProtocol']}")
+    if isinstance(ossl, dict) and ossl.get("seclevel") is not None:
+        parts.append(f"SECLEVEL {ossl['seclevel']}")
+    if isinstance(ossl, dict) and ossl.get("groups_configured"):
+        parts.append("Groups " + ":".join(ossl["groups_configured"]))
+    return ", ".join(parts) or "no OpenSSL settings"
+
+
+def _render_text_crypto_config(cp: dict[str, object]) -> list[str]:
+    """Ubuntu crypto-config (#170): the profile, what its OpenSSL snippet
+    sets, and whether PQC key exchange is left to the library default."""
+    en = cp.get("pqc_enabled") or {}
+    tls = en.get("tls_key_exchange") if isinstance(en, dict) else None
+    pqc = (
+        "library default (profile sets no TLS groups)"
+        if tls is None
+        else ("yes" if tls else "no")
+    )
+    return [
+        f"   Crypto policy: crypto-config profile {cp.get('active')}  ({_crypto_config_summary(cp)})",
+        f"     PQC TLS kex: {pqc}",
+    ]
+
+
 def _render_text_crypto_policy(r: _report.Report) -> list[str]:
     """Section 3d: system-wide crypto policy and what it lets PQC do (#104)."""
     cp = r.crypto_policy
     if not cp.get("available"):
         return []
+    if cp.get("framework") == "crypto-config":
+        return _render_text_crypto_config(cp)
     state = "applied" if cp.get("applied") else "NOT applied"
     if cp.get("applied") is None:
         state = "applied: unknown"
@@ -635,9 +666,15 @@ def render_markdown(r: _report.Report) -> str:
             return "unknown" if v is None else ("yes" if v else "**no**")
 
         L.append("## System crypto policy")
-        L.append(
-            f"- Active: `{cp.get('active')}` (configured `{cp.get('configured')}`)"
-        )
+        if cp.get("framework") == "crypto-config":
+            L.append(
+                f"- Active: crypto-config profile `{cp.get('active')}` "
+                f"({_crypto_config_summary(cp)})"
+            )
+        else:
+            L.append(
+                f"- Active: `{cp.get('active')}` (configured `{cp.get('configured')}`)"
+            )
         L.append(
             f"- PQC allowed: TLS key exchange {md_yn(en.get('tls_key_exchange'))}, "
             f"TLS signatures {md_yn(en.get('tls_signatures'))}, "

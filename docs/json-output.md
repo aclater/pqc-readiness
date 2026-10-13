@@ -62,7 +62,7 @@ nothing was found.
 | `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan presence and PQC (ML-KEM) key-exchange support. See [`ipsec_pqc`](#ipsec_pqc). |
 | `nss` | NSS PQC algorithm exposure: `{available, tool, version, pqc_capable, note?}`. `tool` is `certutil --version`, `rpmdb (sqlite)` / `rpmdb (bdb)` / `rpmdb (ndb)` (package `nss` / `mozilla-nss` read from the rpm database in-process; the suffix is the database format) or `rpm -q` (CLI fallback when the database cannot be read directly). Under `--host-mount` the host rpm database is consulted before `certutil`, because `certutil` belongs to the scanner image. |
-| `crypto_policy` | System-wide crypto policy (crypto-policies) and what it lets PQC do: active / configured policy, subpolicies, per-protocol `pqc_enabled`, and the parsed OpenSSL / GnuTLS / NSS / OpenSSH / libreswan back-ends. Read from files, so it works under `--host-mount` and on SUSE releases that ship the policy data without `update-crypto-policies`. `{available: false, reason}` where there is no `/etc/crypto-policies`. See [Nested fields](#crypto_policy). |
+| `crypto_policy` | System-wide crypto policy and what it lets PQC do. `framework` is `crypto-policies` (RHEL family, Fedora, SUSE) or `crypto-config` (Ubuntu's optional package, #170). For crypto-policies: active / configured policy, subpolicies, per-protocol `pqc_enabled`, and the parsed OpenSSL / GnuTLS / NSS / OpenSSH / libreswan back-ends. Read from files, so it works under `--host-mount` and on SUSE releases that ship the policy data without `update-crypto-policies`. For crypto-config: the active profile, its OpenSSL snippet settings and which applications it configures. `{available: false, reason}` where neither `/etc/crypto-policies` nor `/var/lib/crypto-config` exists. See [Nested fields](#crypto_policy). |
 | `kernel_info` | Kernel release, OS identity copies kept for back-compat, `/etc/redhat-release` and PQC-named `/proc/crypto` drivers. See [`kernel_info`](#kernel_info). |
 | `fips_pqc_conflict` | `{in_conflict, explanation}`: `in_conflict` is true when kernel FIPS mode is on but PQC algorithms are exposed only through the non-FIPS default provider. See [`fips_pqc_conflict`](#fips_pqc_conflict). |
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
@@ -282,7 +282,8 @@ they overlap (`crypto_policies_active`, `crypto_policies_available_subpolicies`,
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `available` | bool | `/etc/crypto-policies/state/current` or `/etc/crypto-policies/config` was readable. When false only `reason` (and any container note) follows. |
+| `available` | bool | A framework was found: `/etc/crypto-policies/state/current` or `/etc/crypto-policies/config` was readable, or `/var/lib/crypto-config/profiles/current` exists. When false only `reason` (and any container note) follows. |
+| `framework` | string | `crypto-policies` or `crypto-config`. The crypto-config fields are described after this table. |
 | `active` | string \| null | Applied policy from `state/current`, e.g. `DEFAULT:TEST-PQ` (role: `crypto_policies_active`). |
 | `base_policy` | string \| null | Part before the first `:` (`DEFAULT`, `FUTURE`, `FIPS`, `LEGACY`, …). |
 | `subpolicies` | list[string] | Modules after the base, in order. |
@@ -310,6 +311,25 @@ they overlap (`crypto_policies_active`, `crypto_policies_available_subpolicies`,
 SARIF rule `pqc-008-crypto-policy-blocks-pqc` fires when `openssl.tls_groups`
 lists hybrid or pure PQC groups but `pqc_enabled.tls_key_exchange` is false.
 
+
+**Ubuntu `crypto-config` (`framework: "crypto-config"`).** Ubuntu 26.04's
+optional `crypto-config` package switches per-application snippets via the
+symlink `/var/lib/crypto-config/profiles/current`; `/etc/ssl/openssl.cnf`
+includes the active profile's `openssl.conf.d`. Measured on a booted Ubuntu
+26.04.1 cloud image with crypto-config 0.7.4-0ubuntu2 (2026-10-13): the
+package isn't installed by default; its profiles set no TLS groups and don't
+configure OpenSSH, so `openssl list -tls-groups` and sshd's KexAlgorithms
+were identical under `default`, `future` and `legacy`. These keys replace
+the crypto-policies ones:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `active` | string | Active profile, e.g. `default`, `future`, `legacy`, or a namespaced `debian/test1`. |
+| `available_profiles` | list of strings | Profiles with a `metadata.json` under `/var/lib/crypto-config/profiles`. |
+| `profile` | object | `summary` and `parent` from the active profile's `metadata.json` (null when unreadable). |
+| `applications` | list of strings | What the active profile configures: `openssl.conf.d`, `gnutls.conf`, `nginx.conf.d`, `apt.conf.d`, `exim`. |
+| `openssl` | object | The active profile's OpenSSL snippet: `settings` (`MinProtocol`, `MaxProtocol`, `CipherString`, `Ciphersuites`, `Groups`, `Curves`, `SignatureAlgorithms` where set), `seclevel` (from `@SECLEVEL=N`), `groups_configured` (null when the profile sets no groups), `pqc_groups` (`hybrid` / `pure_pqc`, null without groups), `files` read. |
+| `pqc_enabled` | object | Same keys as for crypto-policies. `tls_key_exchange` is null when the profile sets no TLS groups (OpenSSL's default applies; OpenSSL 3.5 prefers hybrid ML-KEM), otherwise whether a PQC group is listed. The SSH and IKE keys are always null: crypto-config doesn't configure them. |
 ### `kernel_info`
 
 | Key | Type | Meaning |
