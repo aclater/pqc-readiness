@@ -30,6 +30,7 @@ from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
 from .detect import packages as _packages
 from .detect import protocols as _protocols
+from .detect import protocols_boot as _boot
 from .detect import protocols_libraries as _libraries
 from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
@@ -235,6 +236,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     crypto_libraries_info: dict[str, Any] = {}
     if getattr(args, "scan_crypto_libraries", False):
         crypto_libraries_info = _libraries.scan_crypto_libraries(os_release)
+    boot_chain_info: dict[str, Any] = {}
+    if getattr(args, "scan_boot_chain", False):
+        boot_chain_info = _boot.scan_boot_chain()
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
         services_info = _runtime_services.scan_services()
@@ -321,6 +325,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         packages=packages_info,
         signing_keys=signing_keys_info,
         crypto_libraries=crypto_libraries_info,
+        boot_chain=boot_chain_info,
         replace_required=replace_required,
         os_release=os_release,
         benchmark=bench,

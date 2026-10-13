@@ -48,6 +48,11 @@ _HOST_NAMESPACES = (
     # SUSE vendor configuration (/usr/etc/ssh/sshd_config is read when
     # /etc/ssh/sshd_config is absent, measured on Leap 16.0; #105).
     "/usr/etc",
+    # Kernel config and module files for boot-chain module-signing
+    # detection (#112).
+    "/boot",
+    "/lib/modules",
+    "/usr/lib/modules",
 )
 
 

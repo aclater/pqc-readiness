@@ -94,6 +94,8 @@ _INCOMPATIBLE_FLAGS: tuple[tuple[str, str], ...] = (
     ("bench", "--bench"),
     ("bench_tls", "--bench-tls"),
     ("scan_services", "--scan-services"),
+    # Secure Boot / TPM / lockdown are firmware and kernel state (#112).
+    ("scan_boot_chain", "--scan-boot-chain"),
     ("check", "--check"),
     ("fips_strict", "--fips-strict"),
     ("recommend", "--recommend"),

@@ -8,6 +8,7 @@ from typing import Any, Callable
 from . import algorithms as _algorithms
 from . import report as _report
 from . import registry as _registry
+from .detect import protocols_boot as _boot
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +860,14 @@ def _recommend_firmware_signing(r: _report.Report, policy: str) -> dict[str, Any
             "A PQC-capable accelerator is present; keep the firmware "
             f"signing key in it and sign {sig_chosen} there so the key "
             "never leaves the HSM."
+        )
+    boot_layers = _boot.describe_classical_layers(r.boot_chain)
+    if boot_layers:
+        caveats.append(
+            "This host's own boot chain is classical ("
+            + "; ".join(boot_layers)
+            + f"): moving firmware signing to {sig_chosen} also means "
+            "enrolling a post-quantum key at each of those layers."
         )
     _fips_caveat(policy, bool((r.fips or {}).get("kernel")), caveats)
     return _recommendation_record(

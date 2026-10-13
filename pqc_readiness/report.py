@@ -88,6 +88,9 @@ class Report:
     # GnuTLS / libgcrypt / libssh / wolfSSL / AWS-LC / JDK / Go PQC
     # capability (--scan-crypto-libraries, #110); {} when not requested.
     crypto_libraries: dict[str, Any] = field(default_factory=dict)
+    # Secure Boot / module signing / IMA / TPM (--scan-boot-chain, #112);
+    # {} when not requested.
+    boot_chain: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is
