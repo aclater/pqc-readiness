@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+# Lints --prometheus output with the real promtool (#140).  A separate
+# workflow file so it can't collide with other lanes' ci.yml edits (#137).
+name: ci-prometheus
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  promtool:
+    name: promtool check metrics
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Render metrics on the runner
+        run: python -m pqc_readiness --prometheus --scan-trust-store --scan-packages --output metrics.prom
+
+      - name: promtool check metrics
+        # Pinned image tag (verified as the current Prometheus release).
+        run: docker run --rm -i --entrypoint promtool quay.io/prometheus/prometheus:v3.15.0 check metrics < metrics.prom
