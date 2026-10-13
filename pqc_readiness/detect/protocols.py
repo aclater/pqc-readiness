@@ -10,6 +10,7 @@ from .. import _platform as _platform
 from ..detect import osinfo as _osinfo
 from ..detect import packages as _packages
 from ..detect import runtime as _runtime
+from ..detect import protocols_ike as _ike
 
 
 # ---------------------------------------------------------------------------
@@ -128,21 +129,64 @@ def parse_libreswan_version(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
-    """Detect IPsec PQC support across the two major implementations.
+# Libreswan's upstream CHANGES list ML_KEM_768 in IKE_SA_INIT and
+# IKE_INTERMEDIATE (RFC 9370) from v5.4 (2026-08-13).  Distributions may
+# backport; the configured-proposal scan below reports what is asked for
+# either way.
+LIBRESWAN_PQC_MIN_VERSION = (5, 4)
 
-    strongSwan exposes algorithms via `swanctl --list-algs`; Libreswan
-    (more common on RHEL) does not have a single equivalent — it
-    advertises supported KE methods through the `ipsec` command's
-    config-validation output, but PQC support there is still
-    pre-release as of early 2026.  We report both implementations
-    when present so customers know which stack the host runs."""
+
+def _libreswan_pqc(version: str | None) -> bool:
+    m = re.match(r"v?(\d+)\.(\d+)", version or "")
+    if m is None:
+        return False
+    return (int(m.group(1)), int(m.group(2))) >= LIBRESWAN_PQC_MIN_VERSION
+
+
+def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
+    """IPsec PQC capability and configuration.
+
+    Capability: strongSwan exposes algorithms via `swanctl --list-algs`;
+    Libreswan has no equivalent, so its version decides (ML-KEM from
+    5.4).  Configuration (#154): `configured` classifies every IKE and
+    child-SA proposal in swanctl.conf / ipsec.conf (and their includes),
+    whether or not an IPsec daemon is installed."""
+    out = _detect_ipsec_capability(family)
+    configured = _ike.scan_ike_proposals()
+    offering = configured["summary"]["connections_offering_pqc"]
+    if out.get("available") and not out.get("pqc") and offering:
+        # Configured but not capable: verified on Rocky 10, whose
+        # Libreswan 5.3.2 rejects `ke=ml_kem_768` and `addke1=` outright,
+        # so such a connection fails to load rather than falling back.
+        configured["capability_mismatch"] = {
+            "connections": sorted(
+                {
+                    p["connection"]
+                    for p in configured["proposals"]
+                    if p["kind"] == "ike" and p["category"] in ("hybrid", "pure_pqc")
+                }
+            ),
+            "reason": (
+                f"{offering} connection(s) configure ML-KEM but the installed "
+                f"{out.get('implementation')} reports no ML-KEM support"
+            ),
+        }
+    out["configured"] = configured
+    return out
+
+
+def _detect_ipsec_capability(family: str) -> dict[str, Any]:
     out: dict[str, Any] = {"available": False}
     if shutil.which("swanctl"):
         rc, sw_out = _platform._run(["swanctl", "--list-algs"], timeout=10)
         if rc == 0:
+            # strongSwan prints ML_KEM_768 etc.; a trailing \b after "KEM"
+            # never matched there because "_" is a word character, so
+            # PQC-capable strongSwan was reported as pqc=false.
             pqc_match = re.search(
-                r"\b(ML[-_ ]?KEM|kyber|mlkem)\b", sw_out, re.IGNORECASE
+                r"\b(ML[-_ ]?KEM(?:[-_ ]?\d+)?|kyber\d*|mlkem\d*)",
+                sw_out,
+                re.IGNORECASE,
             )
             out.update(
                 {
@@ -162,9 +206,10 @@ def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
                     "available": True,
                     "implementation": "libreswan",
                     "version": parse_libreswan_version(ip_out),
-                    "pqc": False,
-                    "note": "Libreswan PQC support is pre-release as of 2026; "
-                    "verify against upstream release notes.",
+                    "pqc": _libreswan_pqc(parse_libreswan_version(ip_out)),
+                    "note": "Libreswan supports ML-KEM-768 from upstream 5.4 "
+                    "(RFC 9370 additional key exchanges); earlier "
+                    "distribution builds may carry backports.",
                 }
             )
             return out
