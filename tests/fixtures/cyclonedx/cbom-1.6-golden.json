@@ -10,9 +10,9 @@
       "components": [
         {
           "type": "application",
-          "bom-ref": "tool/pqc-readiness@2.1.0",
+          "bom-ref": "tool/pqc-readiness@2.2.0",
           "name": "pqc-readiness",
-          "version": "2.1.0"
+          "version": "2.2.0"
         }
       ]
     },
@@ -52,7 +52,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "isa:flag",
@@ -79,7 +79,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "isa:flag",
@@ -106,7 +106,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "accelerator:kind",
@@ -133,7 +133,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "accelerator:kind",
@@ -160,7 +160,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "tpm:pqc_advertised",
@@ -185,7 +185,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "pkcs11:module_path",
@@ -209,7 +209,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -233,7 +233,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -257,7 +257,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -281,7 +281,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -305,7 +305,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -329,7 +329,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -351,7 +351,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -377,7 +377,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -403,7 +403,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -429,7 +429,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "source",
@@ -454,7 +454,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "ipsec:implementation",
@@ -483,7 +483,7 @@
       "properties": [
         {
           "name": "detectedBy",
-          "value": "pqc-readiness@2.1.0"
+          "value": "pqc-readiness@2.2.0"
         },
         {
           "name": "trust_store:total_certs",

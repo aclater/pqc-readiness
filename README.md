@@ -33,6 +33,153 @@ privileged DaemonSet on OpenShift.
 
 ## What's new
 
+### 2026-10-13: version 2.2.0, deployment-gap verdict and PQC failure findings, schema 1.6
+
+Version **2.2.0**. All JSON changes are additive, so the schema goes to
+**1.6**. The fleet aggregator only merges reports with the same
+`schema_version`, so re-scan before mixing old and new reports.
+
+#### The deployment-gap verdict
+
+Each host now carries `pqc_deployment_gap` (#107). It rates TLS, SSH,
+IPsec, each crypto-linked listening service (#107) and each outbound
+client process group (#202) as one of:
+- **deployed:** the software can do PQC and is configured to;
+- **capable but not configured:** an upgrade isn't needed, a configuration
+  change is;
+- **configured but not capable;**
+- **not capable;**
+- **unknown** or **not present.**
+
+Every state carries JSON paths to the fields that decided it, and it is
+computed only from what the scan already collected. With `--aggregate
+--observations`, the fleet rollup adds what endpoints were actually
+observed negotiating (#149). SARIF/NDJSON rule `pqc-020` reports
+"capable but not configured".
+
+On booted VMs:
+- **Rocky 9.8, DEFAULT policy:** TLS and SSH capable but not configured,
+  observed classical.
+- **Rocky 9.8 after `DEFAULT:PQ`:** deployed, observed hybrid.
+- **Fedora 44:** deployed. A Go client run with `GODEBUG=tlsmlkem=0` is
+  flagged as capable but not configured.
+
+#### Software that will fail at PQC is now flagged
+
+Detections that find software unable to do PQC now raise a SARIF/NDJSON
+finding, not just a JSON field (#193):
+
+| Rule | Flags |
+|---|---|
+| `pqc-011` | A listening service on a crypto library without PQC |
+| `pqc-012` | A Go service without hybrid ML-KEM (old Go, or `tlsmlkem=0`) |
+| `pqc-013` | An installed crypto library, JDK or Go toolchain without PQC |
+| `pqc-014` | A library with only pre-standard ML-KEM |
+| `pqc-015` / `pqc-016` | IPsec proposals the stack can't run, or classical-only IKE |
+| `pqc-017` | Packages bundling crypto without PQC |
+| `pqc-018` | PQC capability that couldn't be determined (never reported as a failure) |
+| `pqc-030` | A classical boot chain (#112) |
+| `pqc-031` | Deprecated or 128-bit-only Kerberos enctypes, classical PKINIT (#109) |
+| `pqc-032` | A WireGuard peer without a pre-shared key (#113) |
+| `pqc-033` | An OpenVPN configuration that can't negotiate PQC (#113) |
+| `pqc-034` | Classical-only DNSSEC signing (#113) |
+| `pqc-010` | sshd not offering a PQC key exchange that OpenSSH supports (#105) |
+
+On booted VMs this flagged sshd, rpcbind and chronyd on AlmaLinux 8.10;
+libgcrypt, libssh and a JDK 17 install on Rocky 9.8; and on Fedora 44 a
+Go 1.26 binary whose `go.mod` line `go 1.22` silently turns ML-KEM off
+(#193). Every rule has a help page under [docs/rules/](docs/rules/)
+(#179).
+
+#### New detections
+
+- **sshd's effective configuration** (#105): the key exchanges the server
+  actually offers, and host keys read from `.pub` files only. On six VM
+  images the config-file path matched `sshd -T` exactly.
+- **`--scan-crypto-libraries`** (#110): GnuTLS, libgcrypt, libssh,
+  wolfSSL, AWS-LC, JDKs and Go, judged from the algorithm names inside the
+  library file. Rocky 9.8's GnuTLS turned out to be PQC-capable, which a
+  version check alone would miss.
+- **`--scan-processes`** (#155): every process, including outbound-only
+  TLS clients, attributed to the crypto library or Go runtime it has
+  loaded. On Fedora 44 and Rocky 9.8 every process matched a
+  `/proc/*/maps` ground truth.
+- **`--root PATH`** (#152): scan a mounted disk image or an extracted
+  container filesystem without running anything from it. On six container
+  images the package list matched the image's own package manager
+  exactly.
+- **`--scan-boot-chain`** (#112): Secure Boot keys, kernel module signing,
+  IMA/EVM, lockdown, and TPM 2.0 v1.85 ML-KEM / ML-DSA support.
+- **`--scan-kerberos`** (#109): `krb5.conf` / `kdc.conf` enctypes, keytab
+  entries (key bytes never read into the report) and PKINIT.
+- **`--scan-tunnels` and `--scan-dnssec`** (#113): WireGuard pre-shared
+  key presence (never key values), OpenVPN key exchange, DNSSEC signing
+  algorithms in BIND, Knot and PowerDNS, and Unbound / systemd-resolved
+  validation settings. Root-only configs scanned without root raise
+  `pqc-018` instead of silently reporting nothing.
+- **Ubuntu's `crypto-config`** (#170) is now read by `crypto_policy`. Its
+  profiles set no TLS groups, so PQC key exchange is reported as the
+  library default (`null`), not as blocked.
+
+#### Outputs and integrations
+
+- **CBOM:** host certificates found by `--scan-crypto-material` (#178),
+  crypto libraries with the algorithms they provide, and listening
+  services linked to the library they load (#194).
+- **`--cbom-interop dependency-track`** (#175): crypto details survive
+  Dependency-Track 5.x, which otherwise keeps only the asset name. In a
+  real 5.2.0 instance all 458 components and 3,047 mirrored properties
+  survived a re-export. `sbom-only` is the one shape 4.14.5 ingests.
+- **`--sbom`** (#157): a plain CycloneDX 1.6 package SBOM for SBOM graph
+  tools that don't understand crypto assets.
+- **Endpoint observations** (#149): `--aggregate DIR --observations FILE`
+  joins what a network scanner saw an endpoint negotiate to the host and
+  listening service, using a neutral, versioned record schema.
+- **Recipes and samples** (#156, #157): ServiceNow Vulnerability Response
+  import from the NDJSON findings; an Ansible playbook that fixes
+  `pqc-008` through the RHEL `crypto_policies` system role; an
+  Event-Driven Ansible rulebook; an ACM policy and Compliance Operator CEL
+  rule fed by an opt-in per-node summary ConfigMap; a SUSE Multi-Linux
+  Manager custom-info push.
+
+#### Deployment changes
+
+- **Host `/usr` is mounted read-only** in the DaemonSet, the services
+  overlay and the quadlet (#187). It replaces the narrower `os-release` and
+  `crypto-policies` mounts, and lets SUSE's vendor sshd config in
+  `/usr/etc/ssh` be read from the host.
+- **Opt-in OpenShift services overlay** (#181), for fleet-wide
+  `--scan-services` / `--scan-processes`. The base DaemonSet is unchanged
+  and least-privilege. The overlay is a separate DaemonSet and SCC, still
+  non-root, that drops all capabilities and adds back only
+  `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`. To make those effective for
+  a non-root pod it sets **`allowPrivilegeEscalation: true`** and gives
+  file capabilities to a dedicated interpreter copy (the system `python3`
+  gets none). Only deploy it where that trade-off is acceptable.
+- **Opt-in per-node summary overlay** (#157) writes one ConfigMap per
+  node for ACM and the Compliance Operator. The base DaemonSet still has
+  no API token or RBAC.
+
+#### Results that were wrong, now fixed
+
+- **EL9/EL10 OpenSSL upgrade advice** (#184): EL9 hosts were told to move
+  to RHEL 10. In fact EL 9.7 ships OpenSSL 3.5, while EL 10.0 only ships
+  3.2.
+- **Debian, Alpine and Arch package scans under `--host-mount`** read the
+  scanner image's package database instead of the host's (#152).
+- **SUSE sshd configuration in container mode** came from the scanner
+  image, because SUSE keeps it under `/usr/etc` (#105, #187).
+
+#### Known limitations
+
+- The federal CBOM profile waits on CISA/NIST's minimum CBOM elements,
+  expected around March 2027 (#150).
+- The OpenShift services and node-summary overlays are validated with
+  strict schema checks and on VMs, but not yet on a live OpenShift
+  cluster.
+- The ServiceNow recipe and the SUSE Multi-Linux Manager push are tested
+  against local harnesses, not live instances.
+
 ### 2026-10-13: version 2.1.0, one package, configuration-aware detection, schema 1.5
 
 Version **2.1.0**. All JSON changes are additive, so the schema goes to
@@ -181,7 +328,7 @@ Nothing was renamed, removed or re-typed. See the
   DaemonSet without `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`.
   Unreadable processes are counted, not guessed (#111). The default
   DaemonSet stays least-privilege. An opt-in DaemonSet variant with those
-  two capabilities is tracked in #181.
+  two capabilities is tracked in #181 (shipped in 2.2.0).
 - **The SIEM recipes haven't been run against live tenants** (#146).
 
 #### Under the hood
@@ -261,12 +408,6 @@ versions.
 |---|---|---|---|
 | Default scan | 0.38 s | 0.38 s | unchanged |
 | `--scan-packages` | 0.79 s | 0.36 s | 2.2× faster |
-| `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-009` when every key is classical). Public keys only. |
-| `--scan-crypto-libraries` | Report PQC support in GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains (`crypto_libraries` in JSON). Reads the algorithm and group names each installed library embeds, then falls back to upstream version thresholds; no subprocess. |
-| `--scan-boot-chain` | Inventory the boot chain's trust anchors (`boot_chain` in JSON): Secure Boot state and the PK / KEK / db / dbx / MOK certificate algorithms (read from efivarfs), the kernel module signing algorithm (kernel config plus one module's appended PKCS#7 signature), IMA / EVM state and certificates, kernel lockdown, and the TPM's specification revision and TPM 2.0 v1.85 ML-KEM / ML-DSA support (one read-only `TPM2_GetCapability`; needs root or the `tss` group). No subprocess. SARIF `pqc-030` flags a classical boot chain. Live hosts only. |
-| `--scan-kerberos` | Inventory Kerberos encryption types (`kerberos` in JSON): `krb5.conf` (with includes and the crypto-policies back-end) and `kdc.conf` enctype lists expanded with MIT's rules, keytab entries parsed in-process (principal, kvno, enctype; key bytes are never read into the report), and PKINIT settings. SARIF `pqc-031` flags deprecated DES / 3DES / RC4 enctypes (warning) and 128-bit-only enctypes or classical PKINIT (note). Also works with `--root`. |
-| `--scan-tunnels` | Inventory WireGuard and OpenVPN post-quantum posture (`tunnels` in JSON): WireGuard peers from wg-quick, systemd-networkd and NetworkManager configs (and, as root on a live host, `wg show`), recording only whether each peer has a pre-shared key, never the key; OpenVPN `tls-groups` / `tls-version-max` per config under `/etc/openvpn`. SARIF `pqc-032` flags peers without a pre-shared key, `pqc-033` OpenVPN configs whose key exchange can't be PQC. Also works with `--root` (configs only). |
-| `--scan-dnssec` | Inventory DNSSEC signing algorithms (`dnssec` in JSON) of BIND (`dnssec-policy`, key files), Knot and PowerDNS, plus Unbound / systemd-resolved / BIND validation settings. SARIF `pqc-034` notes classical-only signing (warning when an algorithm IANA marks MUST NOT for signing is in use). Also works with `--root`. |
 | `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
 | Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
 
@@ -549,6 +690,12 @@ Flags below are grouped by purpose.
 | `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process for the inventory, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
 | `--scan-services` | Map each listening TCP socket and bound UDP socket to the process that owns it and the crypto library that process actually maps (OpenSSL and its forks, GnuTLS, NSS, wolfSSL), or for Go binaries the toolchain version and its default hybrid key exchange. Reads `/proc` only, with no network connections; bounded by a process cap and a time budget. Needs root, or CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, to see other users' processes, and hostPID plus `--host-mount` in a container. Output: `service_crypto_linkage` ([docs/json-output.md](docs/json-output.md#service_crypto_linkage)). |
 | `--scan-processes` | Map **every** running process, including outbound-only TLS clients a service scan never sees, to the crypto library or Go runtime it has loaded, grouped by executable and library version (`process_crypto_linkage`). Groups that cannot do PQC are listed first and counted in the summary. Reads `/proc` only; run as root for other users' processes (otherwise they're counted as unreadable). Not available with `--root`. |
+| `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-009` when every key is classical). Public keys only. |
+| `--scan-crypto-libraries` | Report PQC support in GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains (`crypto_libraries` in JSON). Reads the algorithm and group names each installed library embeds, then falls back to upstream version thresholds; no subprocess. |
+| `--scan-boot-chain` | Inventory the boot chain's trust anchors (`boot_chain` in JSON): Secure Boot state and the PK / KEK / db / dbx / MOK certificate algorithms (read from efivarfs), the kernel module signing algorithm (kernel config plus one module's appended PKCS#7 signature), IMA / EVM state and certificates, kernel lockdown, and the TPM's specification revision and TPM 2.0 v1.85 ML-KEM / ML-DSA support (one read-only `TPM2_GetCapability`; needs root or the `tss` group). No subprocess. SARIF `pqc-030` flags a classical boot chain. Live hosts only. |
+| `--scan-kerberos` | Inventory Kerberos encryption types (`kerberos` in JSON): `krb5.conf` (with includes and the crypto-policies back-end) and `kdc.conf` enctype lists expanded with MIT's rules, keytab entries parsed in-process (principal, kvno, enctype; key bytes are never read into the report), and PKINIT settings. SARIF `pqc-031` flags deprecated DES / 3DES / RC4 enctypes (warning) and 128-bit-only enctypes or classical PKINIT (note). Also works with `--root`. |
+| `--scan-tunnels` | Inventory WireGuard and OpenVPN post-quantum posture (`tunnels` in JSON): WireGuard peers from wg-quick, systemd-networkd and NetworkManager configs (and, as root on a live host, `wg show`), recording only whether each peer has a pre-shared key, never the key; OpenVPN `tls-groups` / `tls-version-max` per config under `/etc/openvpn`. SARIF `pqc-032` flags peers without a pre-shared key, `pqc-033` OpenVPN configs whose key exchange can't be PQC. Also works with `--root` (configs only). |
+| `--scan-dnssec` | Inventory DNSSEC signing algorithms (`dnssec` in JSON) of BIND (`dnssec-policy`, key files), Knot and PowerDNS, plus Unbound / systemd-resolved / BIND validation settings. SARIF `pqc-034` notes classical-only signing (warning when an algorithm IANA marks MUST NOT for signing is in use). Also works with `--root`. |
 | `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 | `--root PATH` | Scan a filesystem tree offline: a mounted disk image or an extracted container rootfs. Package, certificate, key, crypto-policy, `openssl.cnf` and signing-key checks read `PATH`; CPU, kernel, device, process and benchmark sections are marked not applicable and no readiness tier is computed. Cannot be combined with `--host-mount`, `--bench`, `--bench-tls`, `--scan-services`, `--check`, `--fips-strict` or `--recommend`. See [Scanning images offline](#scanning-images-offline). |
 

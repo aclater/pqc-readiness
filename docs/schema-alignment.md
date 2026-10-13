@@ -18,7 +18,7 @@ The deliverable here is the mapping only. Applying any rename, bumping
 | Recommended `rename to <new>`            | 0     |
 | Recommended `keep`                       | 26    |
 | Recommended `no equivalent`              | 84    |
-| Rename-driven `SCHEMA_VERSION` bump      | none required (stayed `1.x`; current `1.5` from additive changes) |
+| Rename-driven `SCHEMA_VERSION` bump      | none required (stayed `1.x`; current `1.6` from additive changes) |
 
 **No field renames are recommended.** The reason is structural:
 
@@ -353,9 +353,9 @@ refactor, or introduce abstractions beyond what the task requires".
 ## Versioning recommendation
 
 No rename-driven bump: `SCHEMA_VERSION` stays on the `1.x` line and no
-follow-up rename PR is required. It is currently `"1.5"` through
+follow-up rename PR is required. It is currently `"1.6"` through
 additive minor bumps (`1.1`: role-aware `memory`; `1.2`: null
-normalisation of not-run benchmark fields and trust-store cap fields; `1.3`: benchmark skip reasons and RSA KEM/signature baseline rows; `1.4`: rpm database source fields; `1.5`: crypto policy, OpenSSL config, crypto material, service linkage, signing keys, configured IKEv2 proposals and inventory metadata).
+normalisation of not-run benchmark fields and trust-store cap fields; `1.3`: benchmark skip reasons and RSA KEM/signature baseline rows; `1.4`: rpm database source fields; `1.5`: crypto policy, OpenSSL config, crypto material, service linkage, signing keys, configured IKEv2 proposals and inventory metadata; `1.6`: sshd, crypto libraries, process attribution, offline scan mode, boot chain, Kerberos, tunnels, DNSSEC and the deployment-gap verdict).
 See the version table in [json-output.md](json-output.md).
 
 If a future patch *does* introduce a rename, the bump rule is:
