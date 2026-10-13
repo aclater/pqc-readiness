@@ -12,7 +12,7 @@ policy enumerated below names the issuing authority, links to the
 authoritative document, and states the position the engine encodes.
 
 The policy-to-preference mapping itself lives as a single declarative
-dictionary (`POLICY_PREFERENCES`) in `pqc_readiness.py`. Updating a
+dictionary (`POLICY_PREFERENCES`) in `pqc_readiness/recommendation.py`. Updating a
 policy when an authority revises guidance is a one-place edit; it must
 not require touching the engine.
 
@@ -188,7 +188,7 @@ Pick one of the roles above for an algorithm recommendation.
 
 ## How a policy update should be made
 
-1. Edit `POLICY_PREFERENCES` in `pqc_readiness.py`. This is the only
+1. Edit `POLICY_PREFERENCES` in `pqc_readiness/recommendation.py`. This is the only
    place the engine reads policy preferences from.
 2. Update the corresponding section in this document with the new
    authority position and a citation to the publication that motivated

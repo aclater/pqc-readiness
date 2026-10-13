@@ -15,12 +15,12 @@ import pytest
 
 import pqc_readiness as pr
 
-SCRIPT = Path(__file__).resolve().parent.parent / "pqc_readiness.py"
+from conftest import PQC_CLI, PQC_ENV
 
 
 def test_run_logs_missing_binary(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.DEBUG, logger="pqc-readiness"):
-        rc, _ = pr._run(["pqc-readiness-definitely-not-a-binary"])
+        rc, _ = pr._platform._run(["pqc-readiness-definitely-not-a-binary"])
     assert rc == 127
     assert any(
         "pqc-readiness-definitely-not-a-binary" in r.getMessage()
@@ -31,7 +31,7 @@ def test_run_logs_missing_binary(caplog: pytest.LogCaptureFixture) -> None:
 
 def test_run_logs_exit_code(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.DEBUG, logger="pqc-readiness"):
-        rc, _ = pr._run([sys.executable, "-c", "raise SystemExit(3)"])
+        rc, _ = pr._platform._run([sys.executable, "-c", "raise SystemExit(3)"])
     assert rc == 3
     assert any("rc=3" in r.getMessage() for r in caplog.records)
 
@@ -53,8 +53,8 @@ def test_unreadable_host_file_is_logged_not_swallowed(
 ) -> None:
     # Point every host_path() read at an empty directory so the
     # /proc reads fail with OSError.
-    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
-    monkeypatch.setattr(pr, "is_linux", lambda: True)
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
+    monkeypatch.setattr(pr._platform, "is_linux", lambda: True)
     with caplog.at_level(logging.DEBUG, logger="pqc-readiness"):
         probe()  # type: ignore[operator]
     assert any(expected in r.getMessage() for r in caplog.records)
@@ -62,7 +62,8 @@ def test_unreadable_host_file_is_logged_not_swallowed(
 
 def test_default_level_is_silent_on_stderr() -> None:
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--quiet", "--no-color"],
+        [*PQC_CLI, "--quiet", "--no-color"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,
@@ -72,7 +73,8 @@ def test_default_level_is_silent_on_stderr() -> None:
 
 def test_debug_goes_to_stderr_not_stdout() -> None:
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--quiet", "--no-color", "--debug"],
+        [*PQC_CLI, "--quiet", "--no-color", "--debug"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,

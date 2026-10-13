@@ -29,9 +29,9 @@ def container_no_host_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     forcing detect_runtime_environment() to report container and clearing
     HOST_PREFIX.  Detection helpers should then emit the
     `unavailable_in_container` annotation."""
-    monkeypatch.setattr(pr, "HOST_PREFIX", "")
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
     monkeypatch.setattr(
-        pr,
+        pr.detect.runtime,
         "detect_runtime_environment",
         lambda: {"environment": "container", "evidence": "test stub"},
     )
@@ -42,9 +42,9 @@ def container_with_host_mount(monkeypatch: pytest.MonkeyPatch) -> None:
     """Simulate container + --host-mount.  Detection helpers should NOT
     emit the annotation because /host bind-mounts make the host fs
     visible to the container."""
-    monkeypatch.setattr(pr, "HOST_PREFIX", "/host")
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", "/host")
     monkeypatch.setattr(
-        pr,
+        pr.detect.runtime,
         "detect_runtime_environment",
         lambda: {"environment": "container", "evidence": "test stub"},
     )
@@ -52,9 +52,9 @@ def container_with_host_mount(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def bare_metal(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pr, "HOST_PREFIX", "")
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
     monkeypatch.setattr(
-        pr,
+        pr.detect.runtime,
         "detect_runtime_environment",
         lambda: {"environment": "host", "evidence": "test stub"},
     )
@@ -103,7 +103,7 @@ def test_detect_pci_accelerators_emits_flag_in_container(
     without --host-mount it MUST surface the flag instead of silently
     returning an empty list (which is indistinguishable from "host has
     no PCI accelerators")."""
-    monkeypatch.setattr(pr, "detect_accelerators", lambda: [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_accelerators", lambda: [])
     out = pr.detect_pci_accelerators()
     assert out["items"] == []
     assert out["unavailable_in_container"] is True
@@ -114,7 +114,7 @@ def test_detect_pci_accelerators_no_flag_on_bare_metal(
     bare_metal: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        pr, "detect_accelerators", lambda: [{"kind": "tpm", "name": "Test"}]
+        pr.detect.hardware, "detect_accelerators", lambda: [{"kind": "tpm", "name": "Test"}]
     )
     out = pr.detect_pci_accelerators()
     assert out["items"] == [{"kind": "tpm", "name": "Test"}]
@@ -128,7 +128,7 @@ def test_detect_pci_accelerators_no_flag_with_host_mount(
     """When --host-mount is in effect the lspci output reflects the host
     (operator runs `chroot /host lspci`-equivalent paths via
     HOST_PREFIX), so no flag."""
-    monkeypatch.setattr(pr, "detect_accelerators", lambda: [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_accelerators", lambda: [])
     out = pr.detect_pci_accelerators()
     assert "unavailable_in_container" not in out
 
@@ -143,7 +143,7 @@ def test_kernel_crypto_hw_annotated_emits_flag_in_container(
     """/proc/crypto inside a container without --host-mount is the
     container's view; an empty driver list must not be mistaken for
     "host has no hardware crypto drivers"."""
-    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: [])
     out = pr.detect_kernel_crypto_hw_annotated()
     assert out["items"] == []
     assert out["unavailable_in_container"] is True
@@ -155,7 +155,7 @@ def test_kernel_crypto_hw_annotated_no_flag_when_trustworthy(
     env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request.getfixturevalue(env)
-    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
     out = pr.detect_kernel_crypto_hw_annotated()
     assert out == {"items": ["aesni_intel"]}
 
@@ -163,7 +163,7 @@ def test_kernel_crypto_hw_annotated_no_flag_when_trustworthy(
 def test_ktls_annotated_emits_flag_in_container(
     container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pr, "detect_ktls", lambda: False)
+    monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: False)
     out = pr.detect_ktls_annotated()
     assert out["supported"] is False
     assert out["unavailable_in_container"] is True
@@ -175,7 +175,7 @@ def test_ktls_annotated_no_flag_when_trustworthy(
     env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request.getfixturevalue(env)
-    monkeypatch.setattr(pr, "detect_ktls", lambda: True)
+    monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: True)
     assert pr.detect_ktls_annotated() == {"supported": True}
 
 
@@ -185,8 +185,8 @@ def test_annotated_notes_match_report_level_map(
     """The per-detection note and the Report-level
     host_fs_detections_unavailable entry come from the same catalogue
     row, so they must be identical — consumers may read either."""
-    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: [])
-    monkeypatch.setattr(pr, "detect_ktls", lambda: None)
+    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: None)
     report_map = pr.build_host_fs_detections_unavailable()
     kc = pr.detect_kernel_crypto_hw_annotated()
     kt = pr.detect_ktls_annotated()
@@ -196,7 +196,7 @@ def test_annotated_notes_match_report_level_map(
 
 def test_host_fs_note_for_unknown_key_raises() -> None:
     with pytest.raises(KeyError):
-        pr._host_fs_note_for("not-a-detection")
+        pr.detect.runtime._host_fs_note_for("not-a-detection")
 
 
 def test_main_report_populates_kernel_flags_in_container(
@@ -211,8 +211,8 @@ def test_main_report_populates_kernel_flags_in_container(
     import json
     import sys
 
-    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
-    monkeypatch.setattr(pr, "detect_ktls", lambda: True)
+    monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: True)
     monkeypatch.setattr(sys, "argv", ["pqc_readiness.py", "--json"])
     pr.main()
     data = json.loads(capsys.readouterr().out)
@@ -246,7 +246,7 @@ def test_detect_os_annotates_inline_in_container(
     # _detect_os_impl to a minimal known result so the test does not
     # depend on the test runner's own /etc/os-release.
     monkeypatch.setattr(
-        pr,
+        pr.detect.osinfo,
         "_detect_os_impl",
         lambda: {
             "family": "rhel", "id": "ubi9", "version_id": "9.6",
@@ -264,7 +264,7 @@ def test_detect_os_no_flag_on_bare_metal(
     bare_metal: None, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        pr,
+        pr.detect.osinfo,
         "_detect_os_impl",
         lambda: {"family": "fedora", "id": "fedora", "version_id": "44"},
     )

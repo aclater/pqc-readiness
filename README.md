@@ -213,13 +213,40 @@ Nothing was renamed or removed. The full field reference is in
 ```
 
 `pqc-readiness` is a shell wrapper that picks a usable Python 3.9+ from
-`PATH` (`python3.13` … `python3.9`, then `python3` / `python`) and
-`exec`s `pqc_readiness.py`. On hosts whose default `python3` is too old
-(RHEL 8 / Rocky 8 / AlmaLinux 8 ship 3.6, and stock EL8 cloud images
-have no `python3` at all) it prints AppStream guidance and exits 127
-instead of failing with a `SyntaxError` or an `env` error. Hosts with Python ≥ 3.9 can invoke
-`./pqc_readiness.py` directly; the two are interchangeable. See
-[Distribution support](#distribution-support) for per-distro notes.
+`PATH` (`python3.13` … `python3.9`, then `python3` / `python`) and runs
+the single-file zipapp `pqc-readiness.pyz` next to it. In a git checkout
+it runs the `pqc_readiness/` package instead (`python -m pqc_readiness`).
+On hosts whose default `python3` is too old (RHEL 8 / Rocky 8 /
+AlmaLinux 8 ship 3.6, and some stock EL8 cloud images have no `python3`
+at all) it prints AppStream guidance and exits 127 instead of failing
+with a `SyntaxError` or an `env` error. Hosts with Python ≥ 3.9 can also
+run `./pqc-readiness.pyz` or `python3 -m pqc_readiness` directly; they
+are interchangeable. See [Distribution support](#distribution-support)
+for per-distro notes.
+
+### Single-file deployment
+
+The tool is a stdlib-only Python package. `make dist` (or
+`python3 scripts/build_zipapp.py`) builds `dist/pqc-readiness.pyz`, one
+executable file with no dependencies. Copy it, with or without the
+`pqc-readiness` wrapper, to any host with Python 3.9+ and run it:
+
+```bash
+make dist
+scp dist/pqc-readiness.pyz pqc-readiness host:/usr/local/bin/
+ssh host /usr/local/bin/pqc-readiness --json
+```
+
+Debugging on a target host: `python3 -m zipfile -l pqc-readiness.pyz`
+lists the modules, and `python3 -m zipfile -e pqc-readiness.pyz /tmp/pqc`
+extracts them for reading or `grep`.
+
+**Migrating from `pqc_readiness.py`.** Releases before the package split
+(#80) shipped one script, `pqc_readiness.py`. It is gone. Replace
+`pqc_readiness.py` with `pqc-readiness.pyz`, the `pqc-readiness` wrapper,
+or `python3 -m pqc_readiness` in scripts, cron jobs and playbooks. Flags,
+output and exit codes are unchanged. The container images and the
+example Ansible playbooks already use the zipapp.
 
 ## Output formats
 
@@ -294,7 +321,7 @@ under [`deploy/ansible/`](deploy/ansible/).
 
 ## CLI flags
 
-`./pqc_readiness.py --help` is the authoritative one-liner reference.
+`pqc-readiness --help` is the authoritative one-liner reference.
 Flags below are grouped by purpose.
 
 ### Probes and benchmarks
@@ -426,7 +453,7 @@ images (RHEL / Rocky / AlmaLinux 8.10 KVM qcow2s) ship no Python 3.9+.
 Depending on the image build there is either no `python3` on `PATH` at
 all (only `/usr/libexec/platform-python`, 3.6) or a `python3` that is
 3.6. The AlmaLinux 8.10 image of 2026-10 ships `/usr/bin/python3` 3.6.8.
-Neither can parse the script: `./pqc_readiness.py` fails with
+Neither can run the tool: `./pqc-readiness.pyz` fails with
 `/usr/bin/env: 'python3': No such file or directory` or a syntax error,
 and the `pqc-readiness` wrapper exits 127 with the guidance below. Install an interpreter once per host (or in your configuration-
 management baseline), then invoke through the wrapper, which finds it
@@ -502,8 +529,8 @@ OS, ISA tier, verdict, runtime environment, and accelerator kind, plus
 unique CPU models and a `replace_required_count`.
 
 ```bash
-pqc_readiness.py --aggregate /var/lib/pqc-readiness                       # JSON
-pqc_readiness.py --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
+pqc-readiness --aggregate /var/lib/pqc-readiness                       # JSON
+pqc-readiness --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
 ```
 
 Files with mismatched `schema_version` land under `skipped` with a
@@ -511,7 +538,7 @@ reason rather than being silently merged.
 
 ## Findings
 
-Reproducible technical findings produced by `pqc_readiness.py`-driven testing. Reference documents — not blog posts — kept in-repo so the underlying claim, the data, and the reproduction steps stay together.
+Reproducible technical findings produced by `pqc-readiness`-driven testing. Reference documents — not blog posts — kept in-repo so the underlying claim, the data, and the reproduction steps stay together.
 
 - [`docs/findings/fips-algorithm-fence.md`](docs/findings/fips-algorithm-fence.md) — kernel `fips=1` and a FIPS-preset crypto-policy do not, by themselves, gate which algorithms the public OpenSSL interface exposes; the gating comes from downstream patches in the OpenSSL build. Distros that rebuild from upstream sources without those patches expose ML-KEM, ML-DSA, and SLH-DSA via the default provider while FIPS is active. Use `--fips-strict` to flag the divergence.
 

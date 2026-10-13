@@ -26,11 +26,11 @@ def test_openssl_version_text_caches_subprocess_result(
         return 0, "OpenSSL 3.5.5 27 Jan 2026\n"
 
     # The autouse conftest fixture cleared the cache before this test.
-    monkeypatch.setattr(pr, "_run", counting_run)
+    monkeypatch.setattr(pr._platform, "_run", counting_run)
 
-    first = pr._openssl_version_text()
-    second = pr._openssl_version_text()
-    third = pr._openssl_version_text()
+    first = pr._platform._openssl_version_text()
+    second = pr._platform._openssl_version_text()
+    third = pr._platform._openssl_version_text()
 
     assert first == second == third == (0, "OpenSSL 3.5.5 27 Jan 2026\n")
     assert len(calls) == 1, (
@@ -53,13 +53,13 @@ def test_openssl_version_text_cache_clear_resets_subprocess(
         calls.append(1)
         return 0, "OpenSSL 3.5.5 27 Jan 2026\n"
 
-    monkeypatch.setattr(pr, "_run", counting_run)
+    monkeypatch.setattr(pr._platform, "_run", counting_run)
 
-    pr._openssl_version_text()
+    pr._platform._openssl_version_text()
     assert len(calls) == 1
-    pr._openssl_version_text()
+    pr._platform._openssl_version_text()
     assert len(calls) == 1  # cached
 
-    pr._openssl_version_text.cache_clear()
-    pr._openssl_version_text()
+    pr._platform._openssl_version_text.cache_clear()
+    pr._platform._openssl_version_text()
     assert len(calls) == 2  # subprocess re-invoked after cache_clear

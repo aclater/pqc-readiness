@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 #
-# Verify that every flag printed by `./pqc_readiness.py --help` is
+# Verify that every flag printed by `pqc-readiness --help` is
 # documented in README.md.  See the "README is part of the feature"
 # section of CONTRIBUTING.md for the policy.
 #
@@ -12,11 +12,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-SCRIPT="$REPO_ROOT/pqc_readiness.py"
+LAUNCHER="$REPO_ROOT/pqc-readiness"
 README="$REPO_ROOT/README.md"
 
-if [[ ! -x "$SCRIPT" ]]; then
-  echo "error: $SCRIPT not found or not executable" >&2
+if [[ ! -x "$LAUNCHER" || ! -f "$REPO_ROOT/pqc_readiness/__main__.py" ]]; then
+  echo "error: $LAUNCHER or the pqc_readiness/ package not found" >&2
   exit 2
 fi
 if [[ ! -f "$README" ]]; then
@@ -26,7 +26,7 @@ fi
 
 # Extract every long-form flag (`--foo`) printed by --help, dedup.
 mapfile -t FLAGS < <(
-  "$SCRIPT" --help \
+  "$LAUNCHER" --help \
     | grep -oE -- '--[a-z][a-z0-9-]+' \
     | sort -u
 )

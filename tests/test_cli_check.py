@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import PQC_CLI, PQC_ENV
 import pqc_readiness as pr
 
 _VERDICT_CODE = 0  # pinned "excellent" so the non-check exit is predictable
@@ -31,12 +31,12 @@ def _run_main(
     argv: list[str],
 ) -> tuple[int, dict[str, Any]]:
     monkeypatch.setattr(
-        pr,
+        pr.verdict,
         "evaluate_cnsa_2_0",
         lambda *_a, **_k: {"status": cnsa_status, "findings": []},
     )
     monkeypatch.setattr(
-        pr,
+        pr.verdict,
         "overall_verdict",
         lambda *_a, **_k: ("EXCELLENT - pinned", "pinned.", _VERDICT_CODE, None),
     )
@@ -84,7 +84,8 @@ def test_check_cnsa_2_0_subprocess_exit_code_matches_report() -> None:
     """Real process, real host: whatever CNSA status this host has, the
     exit code must be 4 iff the reported status is not 'compliant'."""
     proc = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "pqc_readiness.py"), "--check", "cnsa-2.0", "--json"],
+        [*PQC_CLI, "--check", "cnsa-2.0", "--json"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,

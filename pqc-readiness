@@ -3,7 +3,7 @@
 #
 # pqc-readiness wrapper launcher.
 #
-# Why this exists: pqc_readiness.py uses modern Python (3.9+) type-hint
+# Why this exists: pqc-readiness uses modern Python (3.9+) type-hint
 # syntax (PEP 604 unions, builtin generics).  RHEL 8 / Rocky 8 /
 # AlmaLinux 8 ship Python 3.6 as the default `python3`, which cannot
 # parse the script — it fails at import with `SyntaxError: future
@@ -11,22 +11,22 @@
 # fleets need an actionable signal, not a Python traceback.
 #
 # What this does: search PATH for the highest-version python3.x
-# available (3.13 → 3.9, then `python3`, then `python`), exec the .py
-# with that interpreter, and pass all arguments through.  If no Python
+# available (3.13 → 3.9, then `python3`, then `python`), exec the
+# zipapp (or the package from a checkout) with that interpreter, and pass all arguments through.  If no Python
 # 3.9+ is on PATH, print AppStream-aware guidance and exit 127.
 #
-# Co-located with pqc_readiness.py: the wrapper is shipped in the
+# Co-located with pqc-readiness.pyz: the wrapper is shipped in the
 # container images (UBI 10 and Debian 12-slim) at the same path so the
 # user's invocation form does not change between distros.
 #
-# Exit codes: whatever pqc_readiness.py returns under the chosen
+# Exit codes: whatever pqc-readiness returns under the chosen
 # interpreter, or 127 if no usable interpreter is found.  The wrapper
 # itself does not consume any flags; everything after the program name
 # is passed through to the script.
 
 set -e
 
-# Resolve the wrapper's own location so we can find pqc_readiness.py
+# Resolve the wrapper's own location so we can find the zipapp / package
 # next to it.  $0 may be an absolute path, a relative path, or a bare
 # name resolved via PATH; handle all three.
 case $0 in
@@ -39,12 +39,21 @@ esac
 # error from the explicit existence check below rather than a noisy
 # `cd: null directory` from the resolver.
 SCRIPT_DIR=$(cd "$(dirname -- "$self" 2>/dev/null)" 2>/dev/null && pwd) || SCRIPT_DIR=
-PY_SCRIPT="$SCRIPT_DIR/pqc_readiness.py"
 
-if [ -z "$SCRIPT_DIR" ] || [ ! -f "$PY_SCRIPT" ]; then
-    printf 'pqc-readiness: cannot locate pqc_readiness.py next to this launcher\n' >&2
+# What to run (#80): the single-file zipapp next to this launcher (the
+# deployed layout), else the `pqc_readiness/` package next to it (a git
+# checkout), run as `python -m pqc_readiness` with that directory on
+# PYTHONPATH.  The zipapp wins when both are present.
+PYZ="$SCRIPT_DIR/pqc-readiness.pyz"
+PKG="$SCRIPT_DIR/pqc_readiness"
+if [ -n "$SCRIPT_DIR" ] && [ -f "$PYZ" ]; then
+    MODE=pyz
+elif [ -n "$SCRIPT_DIR" ] && [ -f "$PKG/__main__.py" ]; then
+    MODE=package
+else
+    printf 'pqc-readiness: cannot locate pqc-readiness.pyz or the pqc_readiness/ package next to this launcher\n' >&2
     printf '  launcher: %s\n' "$self" >&2
-    printf '  expected: %s\n' "${PY_SCRIPT:-<unresolved>/pqc_readiness.py}" >&2
+    printf '  expected: %s\n' "${SCRIPT_DIR:-<unresolved>}/pqc-readiness.pyz" >&2
     exit 2
 fi
 
@@ -71,7 +80,10 @@ is_py_39_plus() {
 # touching the system `python3` symlink.
 for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python; do
     if is_py_39_plus "$candidate"; then
-        exec "$candidate" "$PY_SCRIPT" "$@"
+        if [ "$MODE" = pyz ]; then
+            exec "$candidate" "$PYZ" "$@"
+        fi
+        PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$candidate" -m pqc_readiness "$@"
     fi
 done
 
@@ -88,8 +100,8 @@ then re-run this launcher:
     sudo dnf module install -y python39
     /path/to/pqc-readiness [flags]
 
-You can also invoke any 3.9+ interpreter directly against the .py:
+You can also invoke any 3.9+ interpreter directly against the zipapp:
 
-    python3.9 /path/to/pqc_readiness.py [flags]
+    python3.9 /path/to/pqc-readiness.pyz [flags]
 EOF
 exit 127

@@ -19,19 +19,20 @@ against `ansible-core 2.20.5`.
 
 ## Ad-hoc invocation
 
-The `script` module from `ansible.builtin` ships the script to each
-target and runs it. The simplest version emits the standard JSON
+The `script` module from `ansible.builtin` ships the single-file zipapp
+(`dist/pqc-readiness.pyz`, built with `make dist`) to each target and
+runs it. The simplest version emits the standard JSON
 schema and registers the result on the controller:
 
 ```bash
 ansible all -i inventory.ini \
   -m ansible.builtin.script \
-  -a "/path/to/pqc_readiness.py --json"
+  -a "/path/to/pqc-readiness.pyz --json"
 ```
 
 If your invocation form on the targets is the
 [`pqc-readiness` wrapper launcher](../README.md#quick-start) (the
-RHEL-8-safe entry point), substitute it for `pqc_readiness.py`. The
+RHEL-8-safe entry point), ship it alongside the zipapp. The
 wrapper finds the highest available Python 3.9+ on the target's PATH.
 
 For a one-shot fact harvest into the controller's variable cache,
@@ -40,7 +41,7 @@ swap `--json` for `--ansible` and feed the result into `set_fact`:
 ```bash
 ansible all -i inventory.ini \
   -m ansible.builtin.script \
-  -a "/path/to/pqc_readiness.py --ansible" \
+  -a "/path/to/pqc-readiness.pyz --ansible" \
   --tree /tmp/pqc/
 ```
 
@@ -61,7 +62,7 @@ host fact. A follow-up task uses the fact to print the verdict.
   tasks:
     - name: Run pqc-readiness with --ansible
       ansible.builtin.script:
-        cmd: ../../pqc_readiness.py --ansible
+        cmd: ../../dist/pqc-readiness.pyz --ansible
       register: pqc_raw
       changed_when: false
 
@@ -104,7 +105,7 @@ ansible-playbook -i deploy/ansible/inventory.example.ini \
 
 [`deploy/ansible/playbook-fleet-aggregate.yml`](../deploy/ansible/playbook-fleet-aggregate.yml)
 runs the probe on every target, fetches the JSON to the controller,
-and runs `pqc_readiness.py --aggregate DIR` over the collection to
+and runs `pqc-readiness --aggregate DIR` over the collection to
 produce the same fleet rollup the OpenShift DaemonSet workflow
 produces. The two phases live in the same playbook:
 
@@ -115,7 +116,7 @@ produces. The two phases live in the same playbook:
   vars:
     rollup_dir: "{{ playbook_dir }}/.rollup"
   tasks:
-    - ansible.builtin.script: { cmd: "../../pqc_readiness.py --json" }
+    - ansible.builtin.script: { cmd: "../../dist/pqc-readiness.pyz --json" }
       register: pqc_raw
       changed_when: false
     - ansible.builtin.copy:
@@ -135,7 +136,7 @@ produces. The two phases live in the same playbook:
     rollup_dir: "{{ playbook_dir }}/.rollup"
   tasks:
     - ansible.builtin.shell:
-        cmd: "{{ playbook_dir }}/../../pqc_readiness.py --aggregate {{ rollup_dir }} > {{ rollup_dir }}/fleet-rollup.json"
+        cmd: "{{ playbook_dir }}/../../pqc-readiness --aggregate {{ rollup_dir }} > {{ rollup_dir }}/fleet-rollup.json"
         changed_when: true
 ```
 

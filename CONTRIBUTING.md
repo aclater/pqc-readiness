@@ -67,8 +67,8 @@ README does not exist as far as a customer reading the repo is
 concerned. PRs that add or change any of the following must update the
 README in the same PR:
 
-- Any new or renamed flag accepted by `pqc_readiness.py` (anything that
-  appears in `./pqc_readiness.py --help`).
+- Any new or renamed flag accepted by `pqc-readiness` (anything that
+  appears in `pqc-readiness --help`).
 - Any new or renamed top-level key in the `--json`, `--ansible`,
   `--cbom`, `--sarif`, `--recommend`, or `--aggregate` outputs.
 - Any new output format (a new `--<something>` that emits a distinct
@@ -89,10 +89,54 @@ must point at it.
 
 Verifying coverage locally:
 
-    ./pqc_readiness.py --help > /tmp/help.txt
-    ./pqc_readiness.py --json > /tmp/sample.json
+    ./pqc-readiness --help > /tmp/help.txt
+    ./pqc-readiness --json > /tmp/sample.json
     # Each flag in /tmp/help.txt must appear in README.md.
     # Each top-level key in /tmp/sample.json must appear in README.md
     # or in a doc the README cross-references.
 
 PR review will reject feature changes whose README delta is empty.
+
+## Code layout
+
+The tool is the `pqc_readiness/` package (stdlib only, Python 3.9+),
+shipped as the single-file zipapp `dist/pqc-readiness.pyz` (`make dist`).
+Modules follow the lanes in the roadmap issue (#137), so parallel work
+touches different files:
+
+| Module | Owns |
+|---|---|
+| `detect/hardware.py` | CPU, memory, ISA tiers, accelerators, TPM, kernel crypto, kTLS |
+| `detect/config.py` | FIPS mode and algorithm fence, OpenSSL capability and TLS groups |
+| `detect/osinfo.py` | OS identity, install hints, kernel info |
+| `detect/protocols.py` | OpenSSH, IPsec, NSS |
+| `detect/certs.py` | trust-store certificates |
+| `detect/runtime.py` | container vs host, host-filesystem availability |
+| `detect/packages.py` | package inventory, rpm database readers |
+| `verdict.py`, `bench.py`, `aggregate.py`, `recommendation.py` | scoring, benchmarks, fleet rollup, recommendations |
+| `render/` | one module per output format (`text`, `cbom`, `sarif`, `spdx`, `json_report`) |
+| `report.py`, `algorithms.py` | the `Report` dataclass, schema version, algorithm tables |
+| `_platform.py` | `_run`, `host_path`, `HOST_PREFIX`: shared runtime primitives |
+| `registry.py`, `cli.py` | flag / output-format registries, CLI entry point |
+
+Rules that keep PRs from colliding:
+
+- **Adding a flag:** decorate an `add_arguments(parser)` function in
+  *your* module with `@registry.register_arguments(order)`; pick an
+  unused slot (see `registry.py`). Never edit `cli.build_parser()`.
+- **Adding an output format:** a new `render/<name>.py` that registers
+  its flag and `registry.register_output(OutputFormat(...))`. Never edit
+  `cli.render_output()`.
+- **Calling another module:** go through the module
+  (`_platform._run(...)`, `_hardware.detect_isa(...)`), as the existing
+  code does, so each name has one binding.
+- **Patching in tests:** patch the module that defines the name
+  (`monkeypatch.setattr(pr.detect.certs, "TRUST_STORE_DIRS", ...)`). The
+  package root only re-exports; `tests/conftest.py` rejects patches on it.
+- **Golden fixture:** after an intended JSON change run `make golden`;
+  resolve fixture conflicts by re-running it, not by hand-merging.
+- **Schema version:** feature PRs add fields and their
+  `docs/json-output.md` rows; the wave's release PR bumps
+  `SCHEMA_VERSION` (#137).
+
+Checks: `make lint typecheck test test-pyz check-readme`.

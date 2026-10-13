@@ -649,7 +649,7 @@ def test_host_path_no_prefix_leaves_path_unchanged() -> None:
 
 
 def test_host_path_prefix_redirects_kernel_namespaces() -> None:
-    saved = pr.HOST_PREFIX
+    saved = pr._platform.HOST_PREFIX
     try:
         pr.set_host_prefix("/host")
         assert str(pr.host_path("/proc/cpuinfo")) == "/host/proc/cpuinfo"
@@ -1020,12 +1020,12 @@ def test_classify_bundled_crypto_unknown_family_is_empty() -> None:
     ("certutil",    "rhel",   "nss-tools"),
 ])
 def test_install_hint_per_family(binary: str, family: str, expected_substring: str) -> None:
-    hint = pr._install_hint(binary, family)
+    hint = pr.detect.osinfo._install_hint(binary, family)
     assert expected_substring in hint
 
 
 def test_install_hint_unknown_family_falls_back() -> None:
-    assert "openssl" in pr._install_hint("openssl", "unknown")
+    assert "openssl" in pr.detect.osinfo._install_hint("openssl", "unknown")
 
 
 # ---------------------------------------------------------------------------
@@ -1086,13 +1086,13 @@ def test_interpret_fips_arch_alpine_explicitly_uncertified() -> None:
 # ---------------------------------------------------------------------------
 
 def test_pkcs11_search_paths_debian_includes_multiarch() -> None:
-    paths = pr._pkcs11_search_paths("debian")
+    paths = pr.detect.hardware._pkcs11_search_paths("debian")
     assert "/usr/lib/x86_64-linux-gnu/pkcs11" in paths
     assert "/usr/lib/softhsm" in paths
 
 
 def test_pkcs11_search_paths_rhel_excludes_debian_specific() -> None:
-    paths = pr._pkcs11_search_paths("rhel")
+    paths = pr.detect.hardware._pkcs11_search_paths("rhel")
     assert "/usr/lib64/pkcs11" in paths
     assert "/usr/lib/x86_64-linux-gnu/pkcs11" not in paths
 
@@ -1101,7 +1101,7 @@ def test_pkcs11_search_paths_always_include_vendor() -> None:
     """Vendor HSM client paths (/opt/cloudhsm, /opt/Thales, /opt/utimaco)
     are searched on every family."""
     for fam in ("rhel", "debian", "suse", "arch", "alpine"):
-        paths = pr._pkcs11_search_paths(fam)
+        paths = pr.detect.hardware._pkcs11_search_paths(fam)
         assert "/opt/cloudhsm/lib" in paths
         assert "/opt/Thales/PKCS11" in paths
         assert "/opt/utimaco/Software/PKCS11" in paths
@@ -1263,12 +1263,12 @@ def test_parse_libreswan_version_no_match() -> None:
 
 def _stub_host(tmp_path, monkeypatch, files):
     """Helper: populate tmp_path with the given {relpath: content} dict
-    and point pr.HOST_PREFIX at it for the duration of one test."""
+    and point pr._platform.HOST_PREFIX at it for the duration of one test."""
     for rel, content in files.items():
         target = tmp_path / rel.lstrip("/")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
-    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
 
 
 def test_detect_os_reads_etc_os_release(tmp_path, monkeypatch) -> None:
@@ -1308,7 +1308,7 @@ def test_detect_os_falls_back_to_debian_version(tmp_path, monkeypatch) -> None:
 
 
 def test_detect_os_unknown_when_nothing_present(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(pr, "HOST_PREFIX", str(tmp_path))
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
     out = pr.detect_os()
     assert out["family"] == "unknown"
     # pretty_name still populated from platform.system() + release().

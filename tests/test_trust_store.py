@@ -22,6 +22,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
+import shutil
 
 import pqc_readiness as pr
 
@@ -95,7 +96,7 @@ def to_pem(der: bytes, label: str = "CERTIFICATE") -> str:
 
 
 def _fixture_der(name: str) -> bytes:
-    return pr._certs_in_file(FIXTURES / name)[0]
+    return pr.detect.certs._certs_in_file(FIXTURES / name)[0]
 
 
 def _no_subprocess(monkeypatch) -> None:
@@ -104,8 +105,8 @@ def _no_subprocess(monkeypatch) -> None:
     def boom(cmd, timeout=None):  # noqa: ARG001 — signature must match _run
         raise AssertionError(f"scan_trust_store must not spawn {cmd}")
 
-    monkeypatch.setattr(pr, "_run", boom)
-    monkeypatch.setattr(pr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(pr._platform, "_run", boom)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +315,7 @@ def test_scan_skips_corrupt_blocks_and_continues(monkeypatch, tmp_path) -> None:
 
 def test_scan_skips_oversized_files(monkeypatch, tmp_path) -> None:
     _no_subprocess(monkeypatch)
-    monkeypatch.setattr(pr, "TRUST_STORE_MAX_FILE_BYTES", 100)
+    monkeypatch.setattr(pr.detect.certs, "TRUST_STORE_MAX_FILE_BYTES", 100)
     (tmp_path / "big.pem").write_bytes((FIXTURES / "ml-dsa-65.pem").read_bytes())
     result = pr.scan_trust_store(dirs=[str(tmp_path)])
     assert result["total_found"] == 0
@@ -469,7 +470,7 @@ def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
 def test_scan_trust_store_all_default_dirs_missing(monkeypatch, tmp_path) -> None:
     # Default-argument path: every TRUST_STORE_DIRS entry is absent.
     monkeypatch.setattr(
-        pr, "TRUST_STORE_DIRS", [str(tmp_path / "a"), str(tmp_path / "b" / "c")]
+        pr.detect.certs, "TRUST_STORE_DIRS", [str(tmp_path / "a"), str(tmp_path / "b" / "c")]
     )
     _no_subprocess(monkeypatch)
     result = pr.scan_trust_store()
@@ -516,6 +517,6 @@ def test_fixture_hashes_are_stable() -> None:
     }
     bundle = {
         hashlib.sha256(d).hexdigest()
-        for d in pr._certs_in_file(FIXTURES / "mixed-bundle.pem")
+        for d in pr.detect.certs._certs_in_file(FIXTURES / "mixed-bundle.pem")
     }
     assert standalone == bundle

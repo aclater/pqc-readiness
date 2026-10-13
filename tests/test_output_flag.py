@@ -5,19 +5,19 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 import pqc_readiness as pr
 
-SCRIPT = Path(__file__).resolve().parent.parent / "pqc_readiness.py"
+from conftest import PQC_CLI, PQC_ENV
 
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
+        [*PQC_CLI, *args],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,
@@ -100,10 +100,10 @@ def test_emit_reports_write_failure(
 ) -> None:
     # A directory path passes no validation here and fails at write time,
     # standing in for a disk-full / permission race after probing.
-    assert pr._emit("x", tmp_path) is False
+    assert pr.cli._emit("x", tmp_path) is False
     assert "cannot write" in capsys.readouterr().err
 
 
 def test_emit_without_path_prints(capsys: pytest.CaptureFixture[str]) -> None:
-    assert pr._emit("hello", None) is True
+    assert pr.cli._emit("hello", None) is True
     assert capsys.readouterr().out == "hello\n"

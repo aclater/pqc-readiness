@@ -11,12 +11,10 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
-from pathlib import Path
 
 import pqc_readiness as pr
 
-SCRIPT = Path(__file__).resolve().parent.parent / "pqc_readiness.py"
+from conftest import PQC_CLI, PQC_ENV
 
 
 def _ns(**kw: object) -> argparse.Namespace:
@@ -44,7 +42,8 @@ def test_warns_for_each_ignored_gate() -> None:
 
 def test_end_to_end_warns_on_stderr_and_keeps_stdout_json() -> None:
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--ansible", "--check", "excellent"],
+        [*PQC_CLI, "--ansible", "--check", "excellent"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=120,
@@ -57,7 +56,8 @@ def test_end_to_end_warns_on_stderr_and_keeps_stdout_json() -> None:
 
 def test_help_documents_precedence() -> None:
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT), "--help"],
+        [*PQC_CLI, "--help"],
+        env=PQC_ENV,
         capture_output=True,
         text=True,
         timeout=30,

@@ -122,7 +122,7 @@ def test_launcher_only_old_python_emits_appstream_guidance(
 
 
 def test_launcher_passes_args_through(launcher_executable: Path) -> None:
-    """Args after the program name flow into pqc_readiness.py
+    """Args after the program name flow into the zipapp / package
     unchanged.  --quiet exercises a different code path than --version
     and confirms multi-flag invocations work."""
     proc = subprocess.run(

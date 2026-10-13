@@ -23,6 +23,8 @@ from typing import Any
 import pytest
 
 from conftest import FIXTURES
+import platform
+import socket
 import pqc_readiness as pr
 
 GOLDEN = FIXTURES / "golden" / "stubbed-host-report.json"
@@ -38,23 +40,23 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
     on any machine.  Values are deliberately mid-range (AVX2 x86, 32 GiB,
     OpenSSL 3.5 with hybrid groups) so most report sections are populated."""
     flags = {"avx2", "aes", "pclmulqdq", "sha_ni", "bmi2", "adx"}
-    monkeypatch.setattr(pr.platform, "machine", lambda: "x86_64")
-    monkeypatch.setattr(pr.socket, "gethostname", lambda: "golden-host")
-    monkeypatch.setattr(pr, "cpu_flags", lambda arch: set(flags))
-    monkeypatch.setattr(pr, "cpu_model", lambda: "Stub CPU @ 3.0GHz")
-    monkeypatch.setattr(pr, "cpu_freq_mhz", lambda: 3000.0)
-    monkeypatch.setattr(pr, "memory_info", lambda: (32.0, 24.0))
-    monkeypatch.setattr(pr, "core_counts", lambda: (16, 8))
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(socket, "gethostname", lambda: "golden-host")
+    monkeypatch.setattr(pr.detect.hardware, "cpu_flags", lambda arch: set(flags))
+    monkeypatch.setattr(pr.detect.hardware, "cpu_model", lambda: "Stub CPU @ 3.0GHz")
+    monkeypatch.setattr(pr.detect.hardware, "cpu_freq_mhz", lambda: 3000.0)
+    monkeypatch.setattr(pr.detect.hardware, "memory_info", lambda: (32.0, 24.0))
+    monkeypatch.setattr(pr.detect.hardware, "core_counts", lambda: (16, 8))
     monkeypatch.setattr(
-        pr,
+        pr.detect.runtime,
         "detect_runtime_environment",
         lambda: {"environment": "bare_metal", "evidence": []},
     )
-    monkeypatch.setattr(pr, "build_host_fs_detections_unavailable", lambda: {})
-    monkeypatch.setattr(pr, "detect_accelerators", lambda: [])
-    monkeypatch.setattr(pr, "detect_network_hsms", lambda: [])
+    monkeypatch.setattr(pr.detect.runtime, "build_host_fs_detections_unavailable", lambda: {})
+    monkeypatch.setattr(pr.detect.hardware, "detect_accelerators", lambda: [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_network_hsms", lambda: [])
     monkeypatch.setattr(
-        pr,
+        pr.detect.osinfo,
         "detect_os",
         lambda: {
             "id": "rhel",
@@ -63,17 +65,17 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
             "pretty_name": "Red Hat Enterprise Linux 10.0 (Stub)",
         },
     )
-    monkeypatch.setattr(pr, "detect_pkcs11_modules", lambda family="unknown": [])
+    monkeypatch.setattr(pr.detect.hardware, "detect_pkcs11_modules", lambda family="unknown": [])
     monkeypatch.setattr(
-        pr, "detect_kernel_crypto_hw_annotated", lambda: {"items": ["aesni_intel"]}
+        pr.detect.hardware, "detect_kernel_crypto_hw_annotated", lambda: {"items": ["aesni_intel"]}
     )
-    monkeypatch.setattr(pr, "detect_ktls_annotated", lambda: {"supported": True})
+    monkeypatch.setattr(pr.detect.hardware, "detect_ktls_annotated", lambda: {"supported": True})
     monkeypatch.setattr(
-        pr, "detect_fips_mode", lambda: {"enabled": False, "sources": []}
+        pr.detect.config, "detect_fips_mode", lambda: {"enabled": False, "sources": []}
     )
-    monkeypatch.setattr(pr, "detect_tpm_pqc", lambda: {"present": False})
+    monkeypatch.setattr(pr.detect.hardware, "detect_tpm_pqc", lambda: {"present": False})
     monkeypatch.setattr(
-        pr,
+        pr.detect.config,
         "openssl_capability",
         lambda os_release=None: {
             "version": "OpenSSL 3.5.0 stub",
@@ -88,18 +90,18 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
         },
     )
     monkeypatch.setattr(
-        pr, "detect_ssh_pqc", lambda family="unknown": {"available": False}
+        pr.detect.protocols, "detect_ssh_pqc", lambda family="unknown": {"available": False}
     )
     monkeypatch.setattr(
-        pr, "detect_ipsec_pqc", lambda family="unknown": {"available": False}
+        pr.detect.protocols, "detect_ipsec_pqc", lambda family="unknown": {"available": False}
     )
-    monkeypatch.setattr(pr, "detect_nss", lambda: {"available": False})
+    monkeypatch.setattr(pr.detect.protocols, "detect_nss", lambda: {"available": False})
     monkeypatch.setattr(
-        pr, "detect_kernel_info", lambda os_release=None: {"release": "6.12.0-stub"}
+        pr.detect.osinfo, "detect_kernel_info", lambda os_release=None: {"release": "6.12.0-stub"}
     )
-    monkeypatch.setattr(pr, "interpret_fips", lambda fips, osinfo, osr: fips)
-    monkeypatch.setattr(pr, "fips_pqc_conflict_check", lambda fips, osinfo: None)
-    monkeypatch.setattr(pr, "is_linux", lambda: False)
+    monkeypatch.setattr(pr.detect.config, "interpret_fips", lambda fips, osinfo, osr: fips)
+    monkeypatch.setattr(pr.detect.config, "fips_pqc_conflict_check", lambda fips, osinfo: None)
+    monkeypatch.setattr(pr._platform, "is_linux", lambda: False)
 
 
 def _report_json_without_timestamp(text: str) -> dict[str, Any]:
@@ -201,9 +203,14 @@ def _args(*argv: str) -> argparse.Namespace:
 @pytest.fixture()
 def stub_renderers(monkeypatch: pytest.MonkeyPatch) -> pr.Report:
     _stub_host(monkeypatch)
-    for name in ("render_cbom", "render_spdx", "render_sarif", "render_markdown",
-                 "render_text"):
-        monkeypatch.setattr(pr, name, lambda r, _n=name: _n)
+    for module, name in (
+        (pr.render.cbom, "render_cbom"),
+        (pr.render.spdx, "render_spdx"),
+        (pr.render.sarif, "render_sarif"),
+        (pr.render.text, "render_markdown"),
+        (pr.render.text, "render_text"),
+    ):
+        monkeypatch.setattr(module, name, lambda r, _n=name: _n)
     return pr.collect_report(_args())
 
 
@@ -336,7 +343,7 @@ def test_exit_code_without_gates_is_verdict_code() -> None:
 def test_set_host_prefix_strips_trailing_slash_and_resets() -> None:
     try:
         pr.set_host_prefix("/host/")
-        assert pr.HOST_PREFIX == "/host"
+        assert pr._platform.HOST_PREFIX == "/host"
         assert pr.host_path("/proc/cpuinfo") == Path("/host/proc/cpuinfo")
         assert pr.host_path("/opt/tool") == Path("/opt/tool")
     finally:

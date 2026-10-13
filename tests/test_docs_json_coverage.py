@@ -159,8 +159,11 @@ def _section(sections: dict[str, str], title: str) -> str:
 
 
 def _function_keys(name: str) -> set[str]:
-    tree = ast.parse(Path(pr.__file__).read_text())
-    for node in tree.body:
+    # The scanner is a package (#80): search every module's source.
+    from conftest import PACKAGE_SRC
+
+    nodes = [n for f in sorted(PACKAGE_SRC.rglob("*.py")) for n in ast.parse(f.read_text()).body]
+    for node in nodes:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             keys: set[str] = set()
             for n in ast.walk(node):

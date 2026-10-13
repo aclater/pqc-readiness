@@ -53,7 +53,7 @@ Run, where `<rebuild-alias>` is the alias for a distro that rebuilds from upstre
   --workdir ./fleet-fips/
 
 ansible -i ./fleet-fips/inventory.ini all -m script \
-  -a "./pqc_readiness.py --json" > raw.json
+  -a "./pqc-readiness.pyz --json" > raw.json
 
 # Then inspect each host's report:
 jq '.fips, [.openssl.kems_pqc | length], [.openssl.signatures_pqc | length]' \
@@ -76,7 +76,7 @@ On a host with the gating patches the diff is empty (or only contains FIPS-valid
 
 Three options, in increasing order of operational invasiveness:
 
-1. **Run `pqc_readiness.py --fips-strict`.** This enumerates the FIPS provider's algorithm list and the default provider's algorithm list with FIPS active and exits non-zero (rc=4) if the latter is a strict superset of the former. Use it as a CI gate or fleet check rather than relying on `fips_enabled=1` alone.
+1. **Run `pqc-readiness --fips-strict`.** This enumerates the FIPS provider's algorithm list and the default provider's algorithm list with FIPS active and exits non-zero (rc=4) if the latter is a strict superset of the former. Use it as a CI gate or fleet check rather than relying on `fips_enabled=1` alone.
 2. **Run on a distribution that ships the downstream FIPS-provider gating patches.** RHEL is the reference; verify per-release before assuming a given build carries them.
 3. **Audit the application's algorithm calls explicitly.** If the application is the only consumer of OpenSSL on the host, gating at the application layer (allowlist of algorithm OIDs / TLS groups) is independent of what the provider exposes. This is the most invasive option and the most reliable; it does not rely on the distribution or OpenSSL build for enforcement.
 
@@ -87,4 +87,4 @@ Whether any of these are required depends on the operator's compliance regime an
 - NIST FIPS 140-3 (validation framework): https://csrc.nist.gov/pubs/fips/140-3/final
 - OpenSSL provider model: https://docs.openssl.org/3.5/man7/provider/
 - IANA TLS Supported Groups (X25519MLKEM768 et al.): https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-8
-- `pqc_readiness.py --fips-strict` design and rationale: tracked in repository issues; see the README's CLI flags section.
+- `pqc-readiness --fips-strict` design and rationale: tracked in repository issues; see the README's CLI flags section.

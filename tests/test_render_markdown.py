@@ -98,7 +98,7 @@ def _make_full_coverage_report() -> pr.Report:
 
 
 # Section labels asserted are the literal `## …` lines emitted by the
-# renderer at lines around pqc_readiness.py:5602+.
+# renderer in pqc_readiness/render/text.py.
 ALWAYS_PRESENT_HEADINGS = (
     "## Host",
     "## ISA tier:",  # the suffix is a tier value, asserted as a prefix only

@@ -62,14 +62,14 @@ def test_run_aggregator_does_not_materialise_report_list(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_fleet(tmp_path, 120)
-    real = pr._aggregate_iter
+    real = pr.aggregate._aggregate_iter
     seen_types: list[type] = []
 
     def spy(reports: Iterable[dict[str, Any]]) -> dict[str, Any]:
         seen_types.append(type(reports))
         return real(reports)
 
-    monkeypatch.setattr(pr, "_aggregate_iter", spy)
+    monkeypatch.setattr(pr.aggregate, "_aggregate_iter", spy)
     pr.run_aggregator(tmp_path)
     assert len(seen_types) == 1
     assert seen_types[0] is not list

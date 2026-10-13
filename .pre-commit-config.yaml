@@ -29,7 +29,7 @@ repos:
         # memory-bandwidth probe; mypy --strict in the isolated hook
         # venv needs it to avoid `import-not-found`.
         additional_dependencies: [numpy]
-        files: ^pqc_readiness\.py$
+        files: ^pqc_readiness/
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0

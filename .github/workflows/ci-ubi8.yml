@@ -39,6 +39,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6.0.2
 
+      - name: Build the zipapp the image ships
+        # Every Containerfile COPYs dist/pqc-readiness.pyz (#80).
+        run: python3 scripts/build_zipapp.py
+
       - name: Build the UBI 8 runtime image
         # podman is preinstalled on ubuntu-latest runners; the same
         # `make container-ubi8` target reproduces this locally.
@@ -58,7 +62,7 @@ jobs:
       - name: Build the test extension image
         # Layers test-only dependencies (python39-pip, pytest,
         # jsonschema, referencing, git) on top of the runtime image and
-        # COPYs tests/ + the script + the wrapper into a working dir.
+        # COPYs tests/, the package, the wrapper and the zipapp into a working dir.
         # Customers never ship this image — it exists only inside CI to
         # validate that the runtime image's Python 3.9 environment can
         # run every test in the suite.
@@ -75,10 +79,11 @@ jobs:
                   pytest \
                   jsonschema \
                   referencing
-          COPY tests/             /tmp/build/tests/
-          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
-          COPY pqc-readiness      /tmp/build/pqc-readiness
-          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          COPY tests/                   /tmp/build/tests/
+          COPY pqc_readiness/           /tmp/build/pqc_readiness/
+          COPY pqc-readiness            /tmp/build/pqc-readiness
+          COPY dist/pqc-readiness.pyz   /tmp/build/dist/pqc-readiness.pyz
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/dist/pqc-readiness.pyz
           CONTAINERFILE
 
       - name: Run pytest under python3.9 inside the test image
@@ -87,4 +92,4 @@ jobs:
             --user 0 \
             --entrypoint /bin/sh \
             pqc-readiness:ubi8-test \
-            -c 'cd /tmp/build && python3.9 -m pytest tests/ -q'
+            -c 'cd /tmp/build && python3.9 -m pytest tests/ -q && PQC_READINESS_PYZ=dist/pqc-readiness.pyz python3.9 -m pytest tests/ -q'
