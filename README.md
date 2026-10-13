@@ -72,6 +72,11 @@ Version **2.1.0**. All JSON changes are additive, so the schema goes to
 - **NIST IR 8547 was presented as final.** It is still a draft (#138,
   #139). The README also wrongly said IR 8547 references CycloneDX; the
   draft never mentions it (#139).
+- **IPsec PQC support was misreported** (#154).
+  - PQC-capable strongSwan showed `pqc: false`; the check never matched
+    `ML_KEM_768`.
+  - Libreswan was hard-coded to no PQC. It now reports PQC from version
+    5.4.
 - **Policy text corrected** (#141).
   - The ANSSI source linked to a quantum-key-distribution paper.
   - The CNSA 2.0 wording on hybrids now matches NSA's FAQ: permitted, not
@@ -104,6 +109,17 @@ Version **2.1.0**. All JSON changes are additive, so the schema goes to
     are valid past 2030 or 2035.
   - Private keys: metadata only. Key bytes never appear in any output
     format; this was checked on VMs across all 7 formats.
+- **Package-signing trust anchors** (`--scan-signing-keys`, #153). It lists
+  the public keys each package manager trusts (rpm, apt, pacman, apk) with
+  their algorithm, including the PQC OpenPGP algorithms from RFC 9980. A
+  new SARIF rule, `pqc-009`, fires when every trusted signing key is
+  classical. RHEL 10.2 already trusts Red Hat's ML-DSA-87+Ed448 release
+  key, while packages in the UBI 10 image were still RSA-signed.
+- **Configured IKEv2 proposals** (`ipsec_pqc.configured`, #154). Each
+  configured strongSwan and Libreswan proposal is classified for ML-KEM and
+  RFC 9370 additional key exchanges. `capability_mismatch` flags ML-KEM
+  connections the installed stack can't negotiate. RFC 9370 is final;
+  ML-KEM in IKEv2 is still a draft.
 - **RFC-assigned names and codepoints** for PQC TLS groups and SSH key
   exchanges (RFC 10024, RFC 10042), with draft/final status
   (`openssl.tls_group_references`, `ssh_pqc.kex_references`, #139).
@@ -141,10 +157,10 @@ Version **2.1.0**. All JSON changes are additive, so the schema goes to
 #### Upgrade notes for JSON consumers (schema 1.5)
 
 - **New top-level objects:** `crypto_policy`, `crypto_material`,
-  `service_crypto_linkage`, `inventory_metadata`.
+  `service_crypto_linkage`, `signing_keys`, `inventory_metadata`.
 - **New nested fields:** `openssl.config`, `openssl.tls_group_references`,
   `ssh_pqc.kex_references`, `cnsa_2_0.tls_key_exchange`,
-  `trust_store.certificates`.
+  `trust_store.certificates`, `ipsec_pqc.configured`, `ipsec_pqc.note`.
 - **New values:** `packages.source` can now also be `rpmdb-bdb` or
   `rpmdb-ndb`.
 
@@ -162,7 +178,9 @@ Nothing was renamed, removed or re-typed. See the
 - **SARIF help links point to rule pages that don't exist yet** (#179).
 - **`--scan-services` can't see other users' processes** in the non-root
   DaemonSet without `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`.
-  Unreadable processes are counted, not guessed (#111).
+  Unreadable processes are counted, not guessed (#111). The default
+  DaemonSet stays least-privilege. An opt-in DaemonSet variant with those
+  two capabilities is tracked in a platform-docs issue linked from #143.
 - **The SIEM recipes haven't been run against live tenants** (#146).
 
 #### Under the hood
@@ -173,7 +191,7 @@ Nothing was renamed, removed or re-typed. See the
   suite in CI, including inside the UBI 8/10 and Debian images.
 - **Formatting enforced** (#122): repo-wide `ruff format`, and every
   pre-commit hook runs in CI.
-- **Tests:** from 688 to 1,146.
+- **Tests:** from 688 to 1,229.
 
 ### 2026-10-13: accuracy fixes, faster scans, schema 1.4
 

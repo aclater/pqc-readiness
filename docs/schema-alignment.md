@@ -351,7 +351,7 @@ refactor, or introduce abstractions beyond what the task requires".
 No rename-driven bump: `SCHEMA_VERSION` stays on the `1.x` line and no
 follow-up rename PR is required. It is currently `"1.5"` through
 additive minor bumps (`1.1`: role-aware `memory`; `1.2`: null
-normalisation of not-run benchmark fields and trust-store cap fields; `1.3`: benchmark skip reasons and RSA KEM/signature baseline rows; `1.4`: rpm database source fields; `1.5`: crypto policy, OpenSSL config, crypto material, service linkage and inventory metadata).
+normalisation of not-run benchmark fields and trust-store cap fields; `1.3`: benchmark skip reasons and RSA KEM/signature baseline rows; `1.4`: rpm database source fields; `1.5`: crypto policy, OpenSSL config, crypto material, service linkage, signing keys, configured IKEv2 proposals and inventory metadata).
 See the version table in [json-output.md](json-output.md).
 
 If a future patch *does* introduce a rename, the bump rule is:
