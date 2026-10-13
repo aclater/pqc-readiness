@@ -1,22 +1,22 @@
 # SPDX-License-Identifier: Apache-2.0
-# CI: build the UBI 10 and Debian runtime images and smoke-test --help on
-# each.  Companion to ci-ubi8.yml, which already builds + tests the UBI 8
-# image under python3.9.
+# CI: build the UBI 10 and Debian runtime images, smoke-test --help on
+# each, then run the full pytest suite inside a test extension image
+# layered on each one.  Companion to ci-ubi8.yml, which does the same for
+# the UBI 8 image under python3.9.
 #
 # Why a separate workflow per base image: each `podman build` is the
 # slow step (a base-image pull + microdnf/apt-get layers) and the three
 # images are independent — running them as parallel jobs keeps total
 # wall-clock close to the slowest single build instead of the sum.
 #
-# Why only --help (not the full pytest suite) here: the script is
-# OS-portable Python; ci.yml already runs pytest across Python
-# 3.11/3.12/3.13 on ubuntu-latest, and ci-ubi8.yml runs pytest under the
-# UBI 8 / python3.9 combination that is not expressible via setup-python.
-# This workflow's job is narrower: catch container-build regressions
-# (microdnf/apt flag rename, dropped package on a base-image bump,
-# broken multi-stage pattern) before merge.  --help is the cheapest
-# round-trip through ENTRYPOINT + the wrapper that proves the image
-# starts and the script is reachable on PATH.
+# Why --help *and* pytest: --help is the cheapest round-trip through
+# ENTRYPOINT + the wrapper and proves the image starts, so a broken
+# build fails fast with an unambiguous message.  The pytest step then
+# runs the whole suite under each image's own interpreter and OpenSSL
+# (UBI 10: the RHEL 10 python3 + OpenSSL 3.5; Debian 12: python 3.11 +
+# OpenSSL 3.0), which ci.yml's setup-python matrix on ubuntu-latest
+# cannot reproduce (#84).  The test image is CI-only: pytest and the
+# fixtures are never shipped in the runtime image.
 #
 # Action versions verified against upstream releases at the time of
 # writing (per CLAUDE.md "Always verify current versions before using
@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   build-ubi10:
-    name: build + smoke (UBI 10)
+    name: build + test (UBI 10)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -56,8 +56,38 @@ jobs:
         run: |
           podman run --rm pqc-readiness:ubi10 --help >/dev/null
 
+      - name: Build the UBI 10 test extension image
+        # Same pattern as ci-ubi8.yml: layer pytest + schema validators on
+        # the runtime image and COPY tests/ + the script into a work dir.
+        run: |
+          cat <<'CONTAINERFILE' | podman build --format=docker -t pqc-readiness:ubi10-test -f - .
+          FROM pqc-readiness:ubi10
+          USER 0
+          WORKDIR /tmp/build
+          RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 \
+                  python3-pip \
+                  git \
+              && microdnf clean all
+          RUN python3 -m pip install --no-cache-dir \
+                  pytest \
+                  jsonschema \
+                  referencing
+          COPY tests/             /tmp/build/tests/
+          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
+          COPY pqc-readiness      /tmp/build/pqc-readiness
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          CONTAINERFILE
+
+      - name: Run pytest inside the UBI 10 test image
+        run: |
+          podman run --rm \
+            --user 0 \
+            --entrypoint /bin/sh \
+            pqc-readiness:ubi10-test \
+            -c 'cd /tmp/build && python3 -m pytest tests/ -q'
+
   build-debian:
-    name: build + smoke (Debian)
+    name: build + test (Debian)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6.0.2
@@ -71,3 +101,32 @@ jobs:
       - name: Smoke-test the wrapper launcher
         run: |
           podman run --rm pqc-readiness:debian --help >/dev/null
+
+      - name: Build the Debian test extension image
+        # Debian 12's python3 is "externally managed" (PEP 668), so the
+        # test deps come from apt rather than pip.
+        run: |
+          cat <<'CONTAINERFILE' | podman build --format=docker -t pqc-readiness:debian-test -f - .
+          FROM pqc-readiness:debian
+          USER 0
+          WORKDIR /tmp/build
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends \
+                  python3-pytest \
+                  python3-jsonschema \
+                  git \
+              && apt-get clean \
+              && rm -rf /var/lib/apt/lists/*
+          COPY tests/             /tmp/build/tests/
+          COPY pqc_readiness.py   /tmp/build/pqc_readiness.py
+          COPY pqc-readiness      /tmp/build/pqc-readiness
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/pqc_readiness.py
+          CONTAINERFILE
+
+      - name: Run pytest inside the Debian test image
+        run: |
+          podman run --rm \
+            --user 0 \
+            --entrypoint /bin/sh \
+            pqc-readiness:debian-test \
+            -c 'cd /tmp/build && python3 -m pytest tests/ -q'

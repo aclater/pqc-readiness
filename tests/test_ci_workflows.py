@@ -131,3 +131,17 @@ def test_ci_runs_detect_secrets_with_precommit_version() -> None:
     )
     assert m, "detect-secrets hook not found in .pre-commit-config.yaml"
     assert f"detect-secrets=={m.group(1)}" in body
+
+
+@pytest.mark.parametrize("image", ["ubi10", "debian"])
+def test_containers_workflow_runs_pytest_inside_image(image: str) -> None:
+    """ci-containers.yml must run the full pytest suite inside the UBI 10
+    and Debian images, not just smoke `--help` (#84).
+
+    The suite exercises each image's own interpreter and OpenSSL, which
+    the setup-python matrix in ci.yml cannot reproduce.
+    """
+    body = _read_workflow("ci-containers.yml")
+    assert f"FROM pqc-readiness:{image}" in body
+    assert f"pqc-readiness:{image}-test" in body
+    assert "python3 -m pytest tests/ -q" in body

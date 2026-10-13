@@ -213,7 +213,7 @@ older builds report `openssl.pqc_native: false` and a no-bench caveat.
 `openssl.upgrade_path` is a family-aware hint for getting a PQC-capable
 OpenSSL on the specific host.
 
-**What "every change" actually means.** Two workflows run on every PR:
+**What "every change" actually means.** Three workflows run on every PR:
 
 - `.github/workflows/ci.yml` — `ruff check`, `mypy --strict`,
   `pytest tests/ -q`, and the `--help` ↔ README cross-check on the
@@ -224,6 +224,9 @@ OpenSSL on the specific host.
   Podman, smoke-tests the wrapper launcher, and runs `pytest` under
   AppStream `python3.9` inside the resulting image. The Red Hat
   UBI 8 entry point therefore *is* boot-tested on every PR.
+- `.github/workflows/ci-containers.yml` — the same build + smoke +
+  in-image `pytest` sequence for `Containerfile.ubi10` (RHEL 10
+  userspace, OpenSSL 3.5) and `Containerfile.debian` (Debian 12).
 
 Per-OS validation against stock cloud images for the remaining Tier 1
 targets (RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12) and the Tier 2
