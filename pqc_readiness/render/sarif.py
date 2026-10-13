@@ -186,6 +186,24 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-008-crypto-policy-blocks-pqc.md",
     ),
+    RuleSpec(
+        id="pqc-009-classical-package-signing-keys",
+        short_description=(
+            "Every package-signing key the package manager trusts is classical."
+        ),
+        full_description=(
+            "No trusted package-signing key (rpm gpg-pubkey, apt keyring, "
+            "pacman keyring, apk key) uses a post-quantum or composite "
+            "signature algorithm.  Package signing keys are long-lived "
+            "trust anchors; CNSA 2.0 expects software and firmware signing "
+            "to use ML-DSA-87 or LMS/XMSS by 2030, and OpenPGP defines "
+            "ML-DSA and SLH-DSA keys in RFC 9980.  Informational: the fix "
+            "belongs to the distribution or repository owner, but the host "
+            "has to trust the new key before PQC-signed packages verify."
+        ),
+        default_level="note",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-009-classical-package-signing-keys.md",
+    ),
 )
 
 
@@ -230,6 +248,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-003-no-pqc-isa-support": "4.0",
     # Future trust-store rotation work: low.
     "pqc-004-classical-only-trust-store": "3.1",
+    # Package-signing trust anchors need rotating to PQC keys; the fix is
+    # upstream's, the host only has to trust the new key: low.
+    "pqc-009-classical-package-signing-keys": "3.1",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
 }
@@ -454,6 +475,30 @@ def build_findings(r: _report.Report) -> list[Finding]:
                     "crypto_policy:active": cp.get("active"),
                     "crypto_policy:available_subpolicies": cp.get(
                         "available_subpolicies"
+                    ),
+                },
+            )
+        )
+
+    sk = r.signing_keys
+    if sk.get("available") and (sk.get("summary") or {}).get("all_classical"):
+        algos = sorted({str(k.get("algorithm")) for k in sk.get("keys") or []})
+        findings.append(
+            Finding(
+                rule_id="pqc-009-classical-package-signing-keys",
+                level="note",
+                message=(
+                    f"All {sk['summary']['total']} trusted package-signing keys "
+                    f"are classical ({', '.join(algos)}); none uses ML-DSA or "
+                    "SLH-DSA (RFC 9980)."
+                ),
+                properties={
+                    "signing_keys:total": sk["summary"]["total"],
+                    "signing_keys:algorithms": algos,
+                    "signing_keys:key_ids": sorted(
+                        str(k.get("key_id"))
+                        for k in sk.get("keys") or []
+                        if k.get("key_id")
                     ),
                 },
             )

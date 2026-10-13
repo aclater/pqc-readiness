@@ -1,0 +1,12 @@
+[baseos]
+name=BaseOS
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-redhat-release
+
+[disabled]
+enabled=0
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-not-there
+
+[missing]
+enabled=1
+gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-missing

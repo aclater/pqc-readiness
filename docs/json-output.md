@@ -71,6 +71,7 @@ nothing was found.
 | `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
+| `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` plus the derived distro `family` and `package_manager`. See [`os_release`](#os_release). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -405,6 +406,39 @@ Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc
 | `total_packages` | int | Installed packages counted (on RPM hosts this includes `gpg-pubkey` entries, as `rpm -qa` does). |
 | `bundled_crypto` | list[object] | Packages that embed their own crypto stack, each `{package, version, note}` where `note` names the stack (e.g. `Go runtime (crypto/tls embedded)`). |
 | `reason` | string | Present when `available` is false, or with `unavailable_in_container`. |
+
+### `signing_keys`
+
+`{}` unless `--scan-signing-keys`. The keys a package manager trusts to verify package signatures: on RPM families the keys imported into the rpm database (`gpg-pubkey`, read in-process from sqlite / Berkeley DB / ndb, with `rpm -q gpg-pubkey` as the fallback) plus the local files enabled repositories reference with `gpgkey=file://`; on Debian/Ubuntu `/etc/apt/trusted.gpg`, `/etc/apt/trusted.gpg.d/*` and every `signed-by` / `Signed-By` keyring (including inline deb822 keys); on Arch the keys in `/usr/share/pacman/keyrings` listed as trusted; on Alpine `/etc/apk/keys/*.pub`. OpenPGP keys are parsed per RFC 9580 (v4 and v6); post-quantum algorithm IDs 30–36 are the RFC 9980 assignments.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | A trust store for the family was found. When false only `family` and `reason` follow. |
+| `family` | string | `os_release.family` the scan used. |
+| `reason` | string | Why the scan is unavailable, or with `unavailable_in_container`. |
+| `sources` | list[object] | One entry per place keys were read from: `{origin, source, keys, error?}`. `origin` is `rpmdb`, `repo-gpgkey`, `apt-trusted`, `apt-signed-by`, `pacman-keyring` or `apk-keys`; `source` is the host path (for `rpmdb`, the database directory plus `(rpmdb-<format>)` or `(rpm-cli)`); `keys` is how many keys it held; `error` is set when it could not be read, including an enabled repo whose `gpgkey` file is missing. |
+| `keys` | list[object] | Unique keys, de-duplicated by fingerprint and sorted by it. |
+| `summary` | object | `{total, classical, hybrid, pure_pqc, all_classical}`. `all_classical` is true when at least one key was found and none can make a post-quantum signature; it drives SARIF rule `pqc-009-classical-package-signing-keys`. |
+
+Each `keys[]` entry:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `fingerprint` | string \| null | Upper-case hex: SHA-1 for v4 OpenPGP keys, SHA-256 for v6 (and v5); SHA-256 of the DER SubjectPublicKeyInfo for apk keys; `null` for v3 keys. |
+| `key_id` | string \| null | OpenPGP key ID (last 16 hex of a v4 fingerprint, first 16 of a v6 one); `null` for apk keys. rpm names imported keys `gpg-pubkey-<last 8 hex>`. |
+| `version` | int \| null | OpenPGP key version (3, 4, 5 or 6); `null` for apk keys. |
+| `algorithm` | string | e.g. `RSA`, `EdDSALegacy`, `Ed25519`, `ML-DSA-87+Ed448`, `SLH-DSA-SHAKE-128s`, `ML-DSA-65` (apk). |
+| `algorithm_id` | int | OpenPGP public-key algorithm ID (IANA registry). OpenPGP keys only. |
+| `algorithm_oid` | string | apk keys only: SubjectPublicKeyInfo algorithm OID. |
+| `bits` | int | RSA / DSA / Elgamal modulus size. |
+| `curve` | string | ECC curve for ECDSA / ECDH / EdDSALegacy (OpenPGP) or ECDSA (apk). |
+| `capability` | string | `sign`, `encrypt`, `both` or `unknown`, from the algorithm. |
+| `pqc_category` | string | `classical`, `hybrid` (RFC 9980 composites: ML-DSA+EdDSA, ML-KEM+X25519/X448) or `pure_pqc` (SLH-DSA, ML-DSA) for the primary key's own algorithm. |
+| `signing_pqc_category` | string | The most post-quantum category among the primary key and any signing-capable subkey; what a package signature can actually be made with. An ML-KEM encryption subkey does not count. Summary counts use this. |
+| `created` | string | Key creation time, ISO 8601 UTC. OpenPGP keys only. |
+| `uid` | string | First User ID packet, e.g. `Red Hat, Inc. (release key 4) <security@redhat.com>`. |
+| `subkeys` | list[object] | Subkeys, each with `fingerprint`, `key_id`, `version`, `algorithm`, `algorithm_id`, `capability`, `pqc_category`, `created` and `bits` / `curve` where they apply. |
+| `origins` | list[object] | Every `{origin, source}` that carries this key. |
 
 ### `os_release`
 
