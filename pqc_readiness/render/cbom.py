@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from .. import report as _report
 from .. import registry as _registry
@@ -962,16 +964,215 @@ def _inventory_host_props(meta: dict[str, Any] | None) -> list[dict[str, str]]:
     return out
 
 
+# Interop with SBOM-oriented consumers (--cbom-interop, #175) ----------------
+#
+# Observed with real uploads (#147, docs/integrations/dependency-track.md):
+# Dependency-Track 5.x stores cryptographic-asset components but drops
+# their `cryptoProperties`, keeping free-form `properties`; 4.x rejects
+# the whole BOM because it has no CRYPTOGRAPHIC_ASSET classifier.  These
+# modes are opt-in so the default 1.6 / 1.7 output stays unchanged.
+
+INTEROP_NONE = "none"
+INTEROP_DEPENDENCY_TRACK = "dependency-track"
+INTEROP_SBOM_ONLY = "sbom-only"
+INTEROP_MODES: tuple[str, ...] = (
+    INTEROP_NONE,
+    INTEROP_DEPENDENCY_TRACK,
+    INTEROP_SBOM_ONLY,
+)
+_MIRROR_PREFIX = "pqc-readiness:crypto:"
+
+# cryptoProperties fields mirrored into properties: (path, property name).
+_MIRRORED_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("assetType",), "assetType"),
+    (("algorithmProperties", "primitive"), "primitive"),
+    (("algorithmProperties", "algorithmFamily"), "algorithmFamily"),
+    (("algorithmProperties", "parameterSetIdentifier"), "parameterSetIdentifier"),
+    (("algorithmProperties", "nistQuantumSecurityLevel"), "nistQuantumSecurityLevel"),
+    (("algorithmProperties", "executionEnvironment"), "executionEnvironment"),
+    (("algorithmProperties", "implementationPlatform"), "implementationPlatform"),
+    (("protocolProperties", "type"), "protocolType"),
+    (("relatedCryptoMaterialProperties", "type"), "relatedCryptoMaterialType"),
+    (("certificateProperties", "fingerprint", "content"), "certificateSha256"),
+    (("certificateProperties", "subjectName"), "subjectName"),
+    (("certificateProperties", "issuerName"), "issuerName"),
+    (("certificateProperties", "notValidAfter"), "notValidAfter"),
+)
+# Trust-store / discovered certificate categories -> classification.
+_CERT_CLASSIFICATION = {
+    "classical": "classical",
+    "hybrid_composite": "hybrid",
+    "pure_pqc": "pure-pqc",
+}
+
+
+def _asset_classification(asset: CryptoAsset) -> str | None:
+    """pure-pqc / hybrid / classical where the detection bucket says so;
+    None for hardware and other assets with no such meaning."""
+    if "hybrid" in asset.category:
+        return "hybrid"
+    if "classical" in asset.category:
+        return "classical"
+    if asset.category.endswith("_pqc") or (
+        asset.asset_type == "algorithm" and asset.nist_category is not None
+    ):
+        return "pure-pqc"
+    return None
+
+
+def _mirror_crypto_facts(
+    components: list[dict[str, Any]], assets: list[CryptoAsset]
+) -> None:
+    """Copy the key `cryptoProperties` facts into namespaced component
+    `properties`, in place, so they survive consumers that keep
+    properties but drop `cryptoProperties`.  `cryptoProperties` stays the
+    authoritative field."""
+    by_ref = {a.key: a for a in assets}
+    for comp in components:
+        crypto = comp.get("cryptoProperties")
+        if not isinstance(crypto, dict):
+            continue
+        props = comp.setdefault("properties", [])
+        for path, name in _MIRRORED_FIELDS:
+            value: Any = crypto
+            for part in path:
+                value = value.get(part) if isinstance(value, dict) else None
+            if value is not None and value != "":
+                props.append({"name": _MIRROR_PREFIX + name, "value": str(value)})
+        states = (crypto.get("certificateProperties") or {}).get("certificateState")
+        if states:
+            props.append(
+                {
+                    "name": _MIRROR_PREFIX + "certificateState",
+                    "value": str(states[0]["state"]),
+                }
+            )
+        asset = by_ref.get(comp.get("bom-ref", ""))
+        classification = _asset_classification(asset) if asset else None
+        if classification is None:
+            for p in props:
+                if p["name"] in ("trust_store:category", "crypto_material:category"):
+                    classification = _CERT_CLASSIFICATION.get(p["value"])
+                    break
+        if classification:
+            props.append(
+                {"name": _MIRROR_PREFIX + "classification", "value": classification}
+            )
+
+
+# `openssl version` prints the CLI build, then "(Library: …)" when the
+# loaded libcrypto differs; the library is what actually runs.
+_OPENSSL_LIBRARY_VERSION = re.compile(r"Library:\s*OpenSSL\s+(\S+)")
+_OPENSSL_CLI_VERSION = re.compile(r"OpenSSL\s+(\S+)")
+# os-release family -> purl type (https://github.com/package-url/purl-spec).
+_PURL_TYPE_BY_FAMILY = {
+    "rhel": "rpm",
+    "suse": "rpm",
+    "debian": "deb",
+    "arch": "alpm",
+    "alpine": "apk",
+}
+
+
+def _purl_part(value: str) -> str:
+    return quote(value, safe=".+-_~")
+
+
+def _library_from_source(source: str) -> tuple[str, str] | None:
+    """(name, version) from an asset `source` such as `openssh@10.2p1` or
+    `openssl@OpenSSL 3.5.9 … (Library: OpenSSL 3.5.9 …)`."""
+    name, _, rest = source.partition("@")
+    if not name or not rest or rest == "unknown":
+        return None
+    if name == "openssl":
+        m = _OPENSSL_LIBRARY_VERSION.search(rest) or _OPENSSL_CLI_VERSION.search(rest)
+        if m:
+            rest = m.group(1)
+        elif not rest[:1].isdigit():  # a bare version such as "3.5.5" is fine
+            return None
+    return name, rest.strip()
+
+
+def _library_components(
+    r: _report.Report, assets: list[CryptoAsset]
+) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
+    """Library components with purls, plus which crypto-asset bom-refs each
+    provides.  Stacks the scanner probed (OpenSSL, OpenSSH, …) get a
+    `pkg:generic` purl with the detected version; crypto-bearing distro
+    packages from `--scan-packages` get a distro purl.  Versions are
+    upstream versions only (no distro release), so treat the purls as
+    identification, not as input for exact-build vulnerability matching."""
+    libs: dict[str, dict[str, Any]] = {}
+    provides: dict[str, list[str]] = {}
+    for asset in assets:
+        lib = _library_from_source(asset.source) if asset.source else None
+        if lib is None:
+            continue
+        name, version = lib
+        purl = f"pkg:generic/{_purl_part(name)}@{_purl_part(version)}"
+        if purl not in libs:
+            libs[purl] = {
+                "type": "library",
+                "bom-ref": purl,
+                "name": name,
+                "version": version,
+                "purl": purl,
+                "properties": _cbom_provenance()
+                + [{"name": "pqc-readiness:library:basis", "value": "probed-stack"}],
+            }
+        provides.setdefault(purl, []).append(asset.key)
+    osr = r.os_release or {}
+    ptype = _PURL_TYPE_BY_FAMILY.get(str(osr.get("family")))
+    pkgs = (r.packages or {}).get("bundled_crypto") or []
+    if ptype and osr.get("id"):
+        namespace = _purl_part(str(osr["id"]))
+        distro = f"{osr['id']}-{osr.get('version_id') or ''}".rstrip("-")
+        for entry in pkgs:
+            name, version = str(entry.get("package", "")), str(entry.get("version", ""))
+            if not name or not version:
+                continue
+            purl = (
+                f"pkg:{ptype}/{namespace}/{_purl_part(name)}@{_purl_part(version)}"
+                f"?distro={_purl_part(distro)}"
+            )
+            if purl in libs:
+                continue
+            props = _cbom_provenance() + [
+                {
+                    "name": "pqc-readiness:library:basis",
+                    "value": "bundled-crypto-package",
+                }
+            ]
+            if entry.get("note"):
+                props.append(
+                    {"name": "pqc-readiness:library:note", "value": str(entry["note"])}
+                )
+            libs[purl] = {
+                "type": "library",
+                "bom-ref": purl,
+                "name": name,
+                "version": version,
+                "purl": purl,
+                "properties": props,
+            }
+    return list(libs.values()), provides
+
+
 def render_cbom(
     r: _report.Report,
     spec_version: str = CBOM_DEFAULT_VERSION,
     profile: str = _profiles.PROFILE_NONE,
+    interop: str = INTEROP_NONE,
 ) -> str:
     """Render the report as a CycloneDX CBOM (JSON), specVersion 1.7 by
     default or 1.6.  Both are schema-conformant — see tests/test_cbom.py.
     The 1.6 projection is unchanged from earlier releases; 1.7 enriches
     the same assets and adds protocol / certificate components.
-    `profile` (see cbom_profiles.PROFILES) adds regime annotations."""
+    `profile` (see cbom_profiles.PROFILES) adds regime annotations.
+    `interop` (see INTEROP_MODES) shapes the BOM for SBOM-oriented
+    consumers (#175); the default leaves output unchanged."""
+    if interop not in INTEROP_MODES:
+        raise ValueError(f"unsupported CBOM interop mode {interop!r}")
     if spec_version not in CBOM_VERSIONS:
         raise ValueError(f"unsupported CycloneDX version {spec_version!r}")
     if profile not in _profiles.PROFILES:
@@ -988,6 +1189,18 @@ def render_cbom(
         components += _cbom17_certificate_components(r)
     if prof is not None:
         _apply_profile_to_components(prof, assets, components)
+    libraries: list[dict[str, Any]] = []
+    provides: dict[str, list[str]] = {}
+    if interop != INTEROP_NONE:
+        libraries, provides = _library_components(r, assets)
+    if interop == INTEROP_DEPENDENCY_TRACK:
+        _mirror_crypto_facts(components, assets)
+        components += libraries
+    elif interop == INTEROP_SBOM_ONLY:
+        # Consumers without a cryptographic-asset classifier reject the
+        # whole BOM, so only the library components are emitted.
+        components = libraries
+        provides = {}
 
     timestamp = r.generated_at or datetime.now(timezone.utc).isoformat(
         timespec="seconds"
@@ -1035,6 +1248,16 @@ def render_cbom(
         },
         "components": components,
     }
+    if interop != INTEROP_NONE:
+        deps: list[dict[str, Any]] = [
+            {"ref": host_bom_ref, "dependsOn": [lib["bom-ref"] for lib in libraries]}
+        ]
+        for lib in libraries:
+            entry: dict[str, Any] = {"ref": lib["bom-ref"]}
+            if provides.get(lib["bom-ref"]):
+                entry["provides"] = provides[lib["bom-ref"]]
+            deps.append(entry)
+        bom["dependencies"] = deps
     if prof is not None:
         bom["metadata"]["properties"] = _profile_metadata_props(prof, r, components)
     return json.dumps(bom, indent=2)
@@ -1046,6 +1269,7 @@ def render_cbom(
 # previous invocation in the same process never leaks into the next.
 _selected_version = CBOM_DEFAULT_VERSION
 _selected_profile = _profiles.PROFILE_NONE
+_selected_interop = INTEROP_NONE
 
 
 class _CbomProfileAction(argparse.Action):
@@ -1058,6 +1282,19 @@ class _CbomProfileAction(argparse.Action):
     ) -> None:
         global _selected_profile
         _selected_profile = str(values)
+        setattr(namespace, self.dest, values)
+
+
+class _CbomInteropAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        global _selected_interop
+        _selected_interop = str(values)
         setattr(namespace, self.dest, values)
 
 
@@ -1088,10 +1325,11 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
 # stay together at the top of --help.
 @_registry.register_arguments(19)
 def add_version_argument(ap: argparse.ArgumentParser) -> None:
-    """--cbom-version and --cbom-profile."""
-    global _selected_version, _selected_profile
+    """--cbom-version, --cbom-profile and --cbom-interop."""
+    global _selected_version, _selected_profile, _selected_interop
     _selected_version = CBOM_DEFAULT_VERSION
     _selected_profile = _profiles.PROFILE_NONE
+    _selected_interop = INTEROP_NONE
     ap.add_argument(
         "--cbom-version",
         choices=list(CBOM_VERSIONS),
@@ -1110,10 +1348,22 @@ def add_version_argument(ap: argparse.ArgumentParser) -> None:
             "publish the minimum CBOM elements)"
         ),
     )
+    ap.add_argument(
+        "--cbom-interop",
+        choices=list(INTEROP_MODES),
+        default=INTEROP_NONE,
+        action=_CbomInteropAction,
+        help=(
+            "shape --cbom for SBOM-oriented tools: dependency-track mirrors "
+            "crypto details into properties and adds library components "
+            "with purls; sbom-only emits just the library components (for "
+            "consumers that reject cryptographic assets)"
+        ),
+    )
 
 
 def _render_selected(r: _report.Report) -> str:
-    return render_cbom(r, _selected_version, _selected_profile)
+    return render_cbom(r, _selected_version, _selected_profile, _selected_interop)
 
 
 _registry.register_output(_registry.OutputFormat("cbom", 10, _render_selected))
