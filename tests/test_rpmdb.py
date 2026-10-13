@@ -471,3 +471,113 @@ def test_detect_nss_bare_metal_falls_back_to_rpmdb(monkeypatch, tmp_path) -> Non
     assert out["tool"] == "rpmdb (sqlite)"
     assert out["version"] == "3.90.0"
     assert out["pqc_capable"] is False
+
+
+# ---------------------------------------------------------------------------
+# Named lookups (#128): NSS detection must not read the whole inventory
+# ---------------------------------------------------------------------------
+
+
+def _make_indexed_sqlite_db(path: Path, pkgs: list[tuple[str, str]]) -> None:
+    """Like _make_sqlite_db, plus rpm's Name index table."""
+    _make_sqlite_db(path, [_header(n, v) for n, v in pkgs])
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE 'Name' (key 'TEXT' NOT NULL, hnum INTEGER NOT NULL, "
+        "idx INTEGER NOT NULL)"
+    )
+    con.executemany(
+        "INSERT INTO Name(key, hnum, idx) VALUES (?, ?, 0)",
+        [(n, i) for i, (n, _v) in enumerate(pkgs, start=1)],
+    )
+    con.commit()
+    con.close()
+
+
+def _forbid_full_read(monkeypatch) -> None:
+    def boom(db_file):  # noqa: ARG001
+        raise AssertionError("full inventory read on a named lookup")
+
+    monkeypatch.setattr(pr, "read_rpmdb_sqlite", boom)
+
+
+def test_detect_nss_uses_name_index_not_full_read(host, monkeypatch, tmp_path) -> None:
+    host(tmp_path)
+    _make_indexed_sqlite_db(
+        tmp_path / "var/lib/rpm/rpmdb.sqlite",
+        [("bash", "5.1.8"), ("nss", "3.112.0"), ("openssl", "3.5.5")],
+    )
+    _forbid_full_read(monkeypatch)
+    out = pr.detect_nss()
+    assert out["tool"] == "rpmdb (sqlite)"
+    assert out["version"] == "3.112.0"
+
+
+def test_named_lookup_without_name_table_falls_back_to_full_read(host, tmp_path) -> None:
+    host(tmp_path)
+    _make_sqlite_db(tmp_path / "var/lib/rpm/rpmdb.sqlite", [_header("nss", "3.90.0")])
+    out = pr.query_rpm_named(("nss",))
+    assert out["source"] == "rpmdb-sqlite"
+    assert [p["version"] for p in out["packages"]] == ["3.90.0"]
+
+
+def test_named_lookup_reuses_inventory_already_read(host, monkeypatch, tmp_path) -> None:
+    host(tmp_path)
+    _make_indexed_sqlite_db(
+        tmp_path / "var/lib/rpm/rpmdb.sqlite", [("nss", "3.112.0"), ("bash", "5.1.8")]
+    )
+    pr.query_rpm_packages()  # --scan-packages already paid for the full read
+
+    def no_index(db_file, names):  # noqa: ARG001
+        raise AssertionError("indexed query despite cached inventory")
+
+    monkeypatch.setattr(pr, "read_rpmdb_sqlite_named", no_index)
+    out = pr.query_rpm_named(("nss",))
+    assert [p["name"] for p in out["packages"]] == ["nss"]
+
+
+def test_named_lookup_still_rejects_empty_database(host, tmp_path) -> None:
+    # Oracle Linux 9's stray empty rpmdb.sqlite must not read as "no NSS".
+    host(tmp_path)
+    _make_indexed_sqlite_db(tmp_path / "var/lib/rpm/rpmdb.sqlite", [])
+    with pytest.raises(pr.RpmdbError, match="0 packages"):
+        pr.read_rpmdb_sqlite_named(tmp_path / "var/lib/rpm/rpmdb.sqlite", ("nss",))
+
+
+@pytest.mark.parametrize("magic_file", ["Packages", "Packages.db"])
+def test_named_lookup_on_cli_backends_uses_rpm_q(host, monkeypatch, tmp_path, magic_file) -> None:
+    # EL8 (bdb) and SUSE (ndb): one `rpm -q`, never a full `rpm -qa`.
+    host(tmp_path)
+    db = tmp_path / "var/lib/rpm" / magic_file
+    db.parent.mkdir(parents=True)
+    db.write_bytes(
+        b"RpmP" + b"\0" * 12 if magic_file == "Packages.db"
+        else b"\0" * 12 + b"\x61\x15\x06\x00"
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, timeout=None):  # noqa: ARG001
+        calls.append(cmd)
+        return 1, "nss 3.112.0 1.el8 x86_64\npackage mozilla-nss is not installed\n"
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    out = pr.query_rpm_named(pr.NSS_RPM_PACKAGE_NAMES)
+    assert out["available"] is True
+    assert [p["version"] for p in out["packages"]] == ["3.112.0"]
+    (cmd,) = calls
+    assert cmd[:6] == ["rpm", "--root", str(tmp_path), "--dbpath", "/var/lib/rpm", "-q"]
+    assert "-qa" not in cmd
+    assert cmd[-2:] == list(pr.NSS_RPM_PACKAGE_NAMES)
+
+
+def test_named_cli_lookup_reports_real_failure(host, monkeypatch, tmp_path) -> None:
+    host(tmp_path)
+    db = tmp_path / "var/lib/rpm/Packages.db"
+    db.parent.mkdir(parents=True)
+    db.write_bytes(b"RpmP" + b"\0" * 12)
+    monkeypatch.setattr(pr, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages database"))
+    monkeypatch.setattr(pr.shutil, "which", lambda name: f"/usr/bin/{name}")
+    out = pr.query_rpm_named(("nss",))
+    assert out["available"] is False
+    assert "rpm -q failed" in out["reason"]
