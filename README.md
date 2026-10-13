@@ -589,6 +589,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/scope.md`](docs/scope.md) — where this project fits in the wider PQC tooling ecosystem; how host-level scanning composes with network, source-code, dependency, and TLS-handshake categories.
 - [`docs/json-output.md`](docs/json-output.md) — full `--json` top-level field reference, `--ansible` wrapper, and `--recommend --json` variant.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
+- [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF).
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party-product reference policy, the README ↔ `--help` rule.
