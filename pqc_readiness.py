@@ -3055,8 +3055,15 @@ def parse_classical_speed(text: str) -> dict[str, dict[str, float]]:
             continue
         rates = [float(x) for x in nums[-len(pending) :]]
         # The same algorithm appears under several header sections in
-        # `openssl speed` (e.g., RSA shows up under the legacy block, the
-        # KEM block, and the signature block).  Keep the first reading.
+        # `openssl speed` (OpenSSL 3.5 runs RSA as a legacy block, then as
+        # a KEM, then as a signature scheme, with no flag to narrow it).
+        # The legacy block keeps the bare key so existing consumers see the
+        # same numbers; the KEM / signature blocks (marked by a keygens/s
+        # column) land under `<name>_kem` / `<name>_signature` rather than
+        # being discarded — RSA keygen/s is the classical counterpart to
+        # ML-KEM / ML-DSA keygen (#117).
+        if "keygens/s" in pending:
+            name += "_kem" if "encaps/s" in pending else "_signature"
         out.setdefault(name, dict(zip(pending, rates)))
         pending = []
     return out
