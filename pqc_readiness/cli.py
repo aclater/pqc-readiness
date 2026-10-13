@@ -38,8 +38,6 @@ log = logging.getLogger("pqc-readiness")
 # ---------------------------------------------------------------------------
 
 
-
-
 def ansible_ignored_flag_warnings(args: argparse.Namespace) -> list[str]:
     """Explain flags that --ansible silently overrides.
 
@@ -143,7 +141,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         "reason": mem_reason,
         "tier_basis": {
             "role": role_for_memory,
-            "threshold_gib_good": _hardware.MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE[role_for_memory],
+            "threshold_gib_good": _hardware.MEMORY_TIER_GOOD_THRESHOLD_BY_ROLE[
+                role_for_memory
+            ],
             "role_supplied": args.role is not None,
         },
     }
@@ -272,8 +272,6 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     return r
 
 
-
-
 def render_output(r: _report.Report, args: argparse.Namespace) -> str:
     """Render the per-host result in the format the flags select.
 
@@ -284,7 +282,9 @@ def render_output(r: _report.Report, args: argparse.Namespace) -> str:
         # ansible_facts wrapper.
         return json.dumps({"ansible_facts": {"pqc_readiness": asdict(r)}}, indent=2)
     if args.recommend:
-        rec = _recommendation.recommend(r, policy=args.policy, role=args.role or "tls-server")
+        rec = _recommendation.recommend(
+            r, policy=args.policy, role=args.role or "tls-server"
+        )
         if args.json:
             return json.dumps(rec, indent=2)
         if args.markdown:
@@ -313,8 +313,10 @@ def exit_code_for(r: _report.Report, args: argparse.Namespace) -> int:
     Otherwise --fips-strict and --check can turn the verdict code into 4."""
     if args.ansible or args.recommend:
         return 0
-    if args.fips_strict and r.fips.get("fence_check_active") and not r.fips.get(
-        "algorithm_fence_engaged"
+    if (
+        args.fips_strict
+        and r.fips.get("fence_check_active")
+        and not r.fips.get("algorithm_fence_engaged")
     ):
         return 4
     if args.check == "cnsa-2.0":
@@ -342,7 +344,9 @@ def _use_color(args: argparse.Namespace, out_path: Path | None) -> bool:
         sys.stdout.isatty()
         and out_path is None
         and not args.no_color
-        and not any(getattr(args, f.dest) for f in _registry.outputs() if f.machine_readable)
+        and not any(
+            getattr(args, f.dest) for f in _registry.outputs() if f.machine_readable
+        )
     )
 
 

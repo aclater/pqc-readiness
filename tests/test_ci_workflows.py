@@ -32,6 +32,7 @@ the repo layout is visible — local `make check` and the ci.yml
 ubuntu-latest matrix — which is where it would catch a missing
 workflow before push.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -99,9 +100,7 @@ def test_every_shipped_containerfile_is_built_in_ci() -> None:
     if not WORKFLOWS.exists():
         pytest.skip(f"workflow dir not present in this checkout: {WORKFLOWS}")
 
-    all_workflow_text = "\n".join(
-        wf.read_text() for wf in WORKFLOWS.glob("*.yml")
-    )
+    all_workflow_text = "\n".join(wf.read_text() for wf in WORKFLOWS.glob("*.yml"))
 
     missing = [name for name in shipped if name not in all_workflow_text]
     # Containerfile.ubuntu-fips is documented as out-of-band (FIPS

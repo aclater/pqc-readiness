@@ -277,9 +277,9 @@ def test_render_spdx_pqc_algorithm_metadata_is_preserved() -> None:
     # ML-KEM-768 is NIST PQC category 3 with parameter set "768"
     assert ml_kem["software_packageVersion"] == "768"
     ext_ids = ml_kem.get("externalIdentifier") or []
-    assert any(
-        ei.get("identifier") == "nist-pqc-category-3" for ei in ext_ids
-    ), "expected NIST category 3 externalIdentifier on ML-KEM-768"
+    assert any(ei.get("identifier") == "nist-pqc-category-3" for ei in ext_ids), (
+        "expected NIST category 3 externalIdentifier on ML-KEM-768"
+    )
 
 
 def test_render_spdx_findings_become_security_vulnerabilities() -> None:
@@ -422,13 +422,19 @@ def test_cli_spdx_flag_routes_to_render_spdx(monkeypatch, capsys) -> None:
     monkeypatch.setattr(pr.detect.hardware, "memory_info", lambda: (1.0, 1.0))
     monkeypatch.setattr(pr.detect.hardware, "core_counts", lambda: (1, 1))
     monkeypatch.setattr(pr.detect.hardware, "detect_isa", lambda *_a, **_k: ({}, 0))
-    monkeypatch.setattr(pr.detect.hardware, "isa_tier", lambda *_a, **_k: ("poor", "no SIMD"))
-    monkeypatch.setattr(pr.detect.hardware, "memory_tier", lambda *_a, **_k: ("poor", "low RAM"))
+    monkeypatch.setattr(
+        pr.detect.hardware, "isa_tier", lambda *_a, **_k: ("poor", "no SIMD")
+    )
+    monkeypatch.setattr(
+        pr.detect.hardware, "memory_tier", lambda *_a, **_k: ("poor", "low RAM")
+    )
     monkeypatch.setattr(pr.detect.runtime, "detect_runtime_environment", lambda: {})
     monkeypatch.setattr(pr.detect.hardware, "detect_accelerators", lambda: [])
     monkeypatch.setattr(pr.detect.hardware, "detect_network_hsms", lambda: [])
     monkeypatch.setattr(pr.detect.osinfo, "detect_os", lambda: {"family": "fedora"})
-    monkeypatch.setattr(pr.detect.hardware, "detect_pkcs11_modules", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        pr.detect.hardware, "detect_pkcs11_modules", lambda *_a, **_k: []
+    )
     monkeypatch.setattr(pr.detect.hardware, "detect_kernel_crypto_hw", lambda: [])
     monkeypatch.setattr(pr.detect.hardware, "detect_ktls", lambda: None)
     monkeypatch.setattr(pr.detect.config, "detect_fips_mode", lambda: {})
@@ -442,10 +448,16 @@ def test_cli_spdx_flag_routes_to_render_spdx(monkeypatch, capsys) -> None:
     monkeypatch.setattr(pr.detect.protocols, "detect_ipsec_pqc", lambda *_a, **_k: {})
     monkeypatch.setattr(pr.detect.protocols, "detect_nss", lambda: {})
     monkeypatch.setattr(pr.detect.osinfo, "detect_kernel_info", lambda *_a, **_k: {})
-    monkeypatch.setattr(pr.detect.config, "interpret_fips", lambda *_a, **_k: {"kernel": False})
-    monkeypatch.setattr(pr.detect.config, "fips_pqc_conflict_check", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        pr.detect.config, "interpret_fips", lambda *_a, **_k: {"kernel": False}
+    )
+    monkeypatch.setattr(
+        pr.detect.config, "fips_pqc_conflict_check", lambda *_a, **_k: {}
+    )
     monkeypatch.setattr(pr.verdict, "evaluate_cnsa_2_0", lambda *_a, **_k: {})
-    monkeypatch.setattr(pr.detect.hardware, "has_dedicated_pqc_silicon", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        pr.detect.hardware, "has_dedicated_pqc_silicon", lambda *_a, **_k: False
+    )
     monkeypatch.setattr(
         pr.verdict, "overall_verdict", lambda *_a, **_k: ("poor", "low", 3, "")
     )

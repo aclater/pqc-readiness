@@ -27,7 +27,10 @@ import pqc_readiness as pr
 
 
 def test_pick_classical_group_prefers_x25519() -> None:
-    assert pr.bench._tls_pick_classical_group(["secp256r1", "x25519", "secp384r1"]) == "x25519"
+    assert (
+        pr.bench._tls_pick_classical_group(["secp256r1", "x25519", "secp384r1"])
+        == "x25519"
+    )
 
 
 def test_pick_classical_group_falls_back_to_secp256r1() -> None:
@@ -44,7 +47,10 @@ def test_pick_classical_group_empty_returns_none() -> None:
 
 def test_find_composite_signature_alg_matches_mldsa_rsa() -> None:
     sigs = ["ML-DSA-65", "RSA-PSS", "id-MLDSA65-RSA3072-PSS-SHA512"]
-    assert pr.bench._tls_find_composite_signature_alg(sigs) == "id-MLDSA65-RSA3072-PSS-SHA512"
+    assert (
+        pr.bench._tls_find_composite_signature_alg(sigs)
+        == "id-MLDSA65-RSA3072-PSS-SHA512"
+    )
 
 
 def test_find_composite_signature_alg_matches_oqs_naming() -> None:
@@ -53,7 +59,9 @@ def test_find_composite_signature_alg_matches_oqs_naming() -> None:
 
 
 def test_find_composite_signature_alg_returns_none_for_pure_pqc() -> None:
-    assert pr.bench._tls_find_composite_signature_alg(["ML-DSA-65", "ML-DSA-87"]) is None
+    assert (
+        pr.bench._tls_find_composite_signature_alg(["ML-DSA-65", "ML-DSA-87"]) is None
+    )
 
 
 def test_build_suites_picks_classical_hybrid_pure_pqc() -> None:
@@ -189,10 +197,14 @@ def _has_pqc_openssl() -> bool:
         return False
     cap = pr.openssl_capability()
     groups = cap.get("tls_groups") or {}
-    return bool(groups.get("hybrid") or groups.get("pure_pqc") or groups.get("classical"))
+    return bool(
+        groups.get("hybrid") or groups.get("pure_pqc") or groups.get("classical")
+    )
 
 
-@pytest.mark.skipif(not _has_pqc_openssl(), reason="OpenSSL 3.5+ with TLS groups required")
+@pytest.mark.skipif(
+    not _has_pqc_openssl(), reason="OpenSSL 3.5+ with TLS groups required"
+)
 def test_run_tls_handshake_bench_end_to_end() -> None:
     out = pr.run_tls_handshake_bench(seconds=1)
     assert out["available"] is True
@@ -218,7 +230,9 @@ def test_run_tls_handshake_bench_end_to_end() -> None:
     assert seen_classical, "classical baseline must always be measurable"
 
 
-@pytest.mark.skipif(not _has_pqc_openssl(), reason="OpenSSL 3.5+ with TLS groups required")
+@pytest.mark.skipif(
+    not _has_pqc_openssl(), reason="OpenSSL 3.5+ with TLS groups required"
+)
 def test_bench_tls_handshake_attaches_to_report_json(tmp_path: Any) -> None:
     """Smoke-test the `--bench-tls` CLI flag end-to-end.
 

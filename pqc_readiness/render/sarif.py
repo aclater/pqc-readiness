@@ -94,9 +94,7 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
     ),
     RuleSpec(
         id="pqc-003-no-pqc-isa-support",
-        short_description=(
-            "ISA tier is poor and no PQC accelerator is present."
-        ),
+        short_description=("ISA tier is poor and no PQC accelerator is present."),
         full_description=(
             "The host's ISA feature score is below the threshold for "
             "software PQC, and no PQC-capable accelerator (HSM, network "
@@ -218,18 +216,12 @@ def build_findings(r: _report.Report) -> list[Finding]:
             Finding(
                 rule_id="pqc-002-fips-pqc-conflict",
                 level="error",
-                message=str(
-                    fc.get("explanation") or "FIPS / PQC provider conflict."
-                ),
+                message=str(fc.get("explanation") or "FIPS / PQC provider conflict."),
                 properties={
                     "fips:kernel": r.fips.get("kernel"),
                     "fips:openssl_provider": r.fips.get("openssl_provider"),
-                    "openssl:kem_algorithms": list(
-                        osinfo.get("kem_algorithms") or []
-                    ),
-                    "openssl:sig_algorithms": list(
-                        osinfo.get("sig_algorithms") or []
-                    ),
+                    "openssl:kem_algorithms": list(osinfo.get("kem_algorithms") or []),
+                    "openssl:sig_algorithms": list(osinfo.get("sig_algorithms") or []),
                 },
             )
         )
@@ -278,18 +270,14 @@ def build_findings(r: _report.Report) -> list[Finding]:
                     "trust_store:total_certs": ts.get("total_certs"),
                     "trust_store:pqc_certs": ts.get("pqc_certs"),
                     "trust_store:hybrid_certs": ts.get("hybrid_certs"),
-                    "trust_store:scanned_dirs": list(
-                        ts.get("scanned_dirs") or []
-                    ),
+                    "trust_store:scanned_dirs": list(ts.get("scanned_dirs") or []),
                     "trust_store:truncated": bool(ts.get("truncated")),
                 },
             )
         )
 
     sigs = list(osinfo.get("sig_algorithms") or [])
-    slh_dsa = sorted(
-        s for s in sigs if isinstance(s, str) and s.startswith("SLH-DSA")
-    )
+    slh_dsa = sorted(s for s in sigs if isinstance(s, str) and s.startswith("SLH-DSA"))
     if slh_dsa:
         findings.append(
             Finding(
@@ -309,9 +297,7 @@ def build_findings(r: _report.Report) -> list[Finding]:
         if a.get("kind") == "network_hsm" and not a.get("pqc_capable")
     ]
     if network_hsms_no_pqc:
-        names = sorted(
-            {str(a.get("name") or "unknown") for a in network_hsms_no_pqc}
-        )
+        names = sorted({str(a.get("name") or "unknown") for a in network_hsms_no_pqc})
         findings.append(
             Finding(
                 rule_id="pqc-006-no-network-hsm-pqc-firmware",
@@ -325,9 +311,7 @@ def build_findings(r: _report.Report) -> list[Finding]:
             )
         )
 
-    if r.fips.get("fence_check_active") and not r.fips.get(
-        "algorithm_fence_engaged"
-    ):
+    if r.fips.get("fence_check_active") and not r.fips.get("algorithm_fence_engaged"):
         outside = r.fips.get("algorithms_reachable_outside_fence") or {}
         kems = outside.get("kems") or []
         sigs = outside.get("signatures") or []
@@ -346,7 +330,8 @@ def build_findings(r: _report.Report) -> list[Finding]:
                 message=(
                     "FIPS mode is active but the default OpenSSL provider "
                     "exposes algorithms outside the FIPS provider's set: "
-                    + "; ".join(msg_parts) + ".  See "
+                    + "; ".join(msg_parts)
+                    + ".  See "
                     "docs/findings/fips-algorithm-fence.md."
                 ),
                 properties={
@@ -402,9 +387,7 @@ def render_sarif(r: _report.Report) -> str:
                     "driver": {
                         "name": "pqc-readiness",
                         "version": _report.SCRIPT_VERSION,
-                        "informationUri": (
-                            "https://github.com/aclater/pqc-readiness"
-                        ),
+                        "informationUri": ("https://github.com/aclater/pqc-readiness"),
                         "rules": rules,
                     }
                 },

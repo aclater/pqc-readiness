@@ -140,7 +140,13 @@ def test_empty_sqlite_db_falls_back_to_cli(host, monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     inv = pr.query_rpm_packages()
     assert inv["source"] == "rpm-cli"
-    assert calls and calls[0][:5] == ["rpm", "--root", str(tmp_path), "--dbpath", "/var/lib/rpm"]
+    assert calls and calls[0][:5] == [
+        "rpm",
+        "--root",
+        str(tmp_path),
+        "--dbpath",
+        "/var/lib/rpm",
+    ]
     assert [p["name"] for p in inv["packages"]] == ["bash"]
 
 
@@ -167,8 +173,14 @@ def test_resolve_under_prefix_handles_relative_and_dotdot(tmp_path) -> None:
     (tmp_path / "usr/lib/sysimage/rpm").mkdir(parents=True)
     (tmp_path / "var/lib").mkdir(parents=True)
     os.symlink("../../usr/lib/sysimage/rpm", tmp_path / "var/lib/rpm")
-    assert pr.resolve_under_prefix("/var/lib/rpm", str(tmp_path)) == "/usr/lib/sysimage/rpm"
-    assert pr.resolve_under_prefix("/var/./lib/../lib/rpm", str(tmp_path)) == "/usr/lib/sysimage/rpm"
+    assert (
+        pr.resolve_under_prefix("/var/lib/rpm", str(tmp_path))
+        == "/usr/lib/sysimage/rpm"
+    )
+    assert (
+        pr.resolve_under_prefix("/var/./lib/../lib/rpm", str(tmp_path))
+        == "/usr/lib/sysimage/rpm"
+    )
 
 
 def test_resolve_under_prefix_rejects_symlink_loops(tmp_path) -> None:
@@ -251,7 +263,9 @@ def test_bdb_and_ndb_use_cli_rooted_at_host(
     assert "arch" not in inv["packages"][1]
 
 
-def test_host_mount_without_rpmdb_never_reads_the_image(host, monkeypatch, tmp_path) -> None:
+def test_host_mount_without_rpmdb_never_reads_the_image(
+    host, monkeypatch, tmp_path
+) -> None:
     host(tmp_path)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     inv = pr.query_rpm_packages()
@@ -261,7 +275,9 @@ def test_host_mount_without_rpmdb_never_reads_the_image(host, monkeypatch, tmp_p
 
 def test_bare_metal_cli_fallback_has_no_root(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
-    monkeypatch.setattr(pr.detect.packages, "RPMDB_DIRS", (str(tmp_path / "nothing-here"),))
+    monkeypatch.setattr(
+        pr.detect.packages, "RPMDB_DIRS", (str(tmp_path / "nothing-here"),)
+    )
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     calls: list[list[str]] = []
 
@@ -290,7 +306,12 @@ def test_missing_sqlite3_module_falls_back_to_cli(host, monkeypatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     inv = pr.query_rpm_packages()
     assert inv["source"] == "rpm-cli"
-    assert calls[0][1:5] == ["--root", str(FIXTURES / "el9"), "--dbpath", "/var/lib/rpm"]
+    assert calls[0][1:5] == [
+        "--root",
+        str(FIXTURES / "el9"),
+        "--dbpath",
+        "/var/lib/rpm",
+    ]
 
 
 @pytest.mark.skipif(
@@ -322,7 +343,12 @@ def test_wal_db_without_shm_on_readonly_dir_uses_immutable(tmp_path) -> None:
 
 def test_parse_rpm_header_reads_synthetic_header() -> None:
     h = pr.parse_rpm_header(_header("nss", "3.112.0", "2.el9", "x86_64"))
-    assert h == {"name": "nss", "version": "3.112.0", "release": "2.el9", "arch": "x86_64"}
+    assert h == {
+        "name": "nss",
+        "version": "3.112.0",
+        "release": "2.el9",
+        "arch": "x86_64",
+    }
 
 
 @pytest.mark.parametrize(
@@ -348,7 +374,9 @@ def test_parse_rpm_header_rejects_malformed(blob: bytes) -> None:
         pr.parse_rpm_header(blob)
 
 
-def test_one_corrupt_header_discards_the_whole_direct_read(host, monkeypatch, tmp_path) -> None:
+def test_one_corrupt_header_discards_the_whole_direct_read(
+    host, monkeypatch, tmp_path
+) -> None:
     # A partial inventory would under-report bundled crypto; the reader
     # must fall back to the CLI instead of returning the readable rows.
     host(tmp_path)
@@ -357,7 +385,9 @@ def test_one_corrupt_header_discards_the_whole_direct_read(host, monkeypatch, tm
         [_header("bash", "5.1.8"), _header("openssl-libs", "3.5.8")[:-4]],
     )
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(pr._platform, "_run", lambda cmd, timeout=None: (0, "bash 5.1.8 9.el9 x86_64\n"))
+    monkeypatch.setattr(
+        pr._platform, "_run", lambda cmd, timeout=None: (0, "bash 5.1.8 9.el9 x86_64\n")
+    )
     inv = pr.query_rpm_packages()
     assert inv["source"] == "rpm-cli"
 
@@ -381,7 +411,9 @@ def test_direct_read_is_cached_per_prefix(host, monkeypatch) -> None:
     host(FIXTURES / "el9")
     reads: list[Path] = []
     real = pr.read_rpmdb_sqlite
-    monkeypatch.setattr(pr.detect.packages, "read_rpmdb_sqlite", lambda p: reads.append(p) or real(p))
+    monkeypatch.setattr(
+        pr.detect.packages, "read_rpmdb_sqlite", lambda p: reads.append(p) or real(p)
+    )
     pr.query_rpm_packages()
     pr.query_rpm_packages()
     assert len(reads) == 1
@@ -403,12 +435,18 @@ def test_scan_packages_reads_host_db_without_forking(host) -> None:
     assert "unavailable_in_container" not in out
 
 
-def test_scan_packages_in_container_without_host_mount_is_annotated(monkeypatch) -> None:
+def test_scan_packages_in_container_without_host_mount_is_annotated(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
-    monkeypatch.setattr(pr.detect.packages, "RPMDB_DIRS", (str(FIXTURES / "el9/var/lib/rpm"),))
+    monkeypatch.setattr(
+        pr.detect.packages, "RPMDB_DIRS", (str(FIXTURES / "el9/var/lib/rpm"),)
+    )
     monkeypatch.setattr(pr._platform, "_run", _no_subprocess)
     monkeypatch.setattr(
-        pr.detect.runtime, "detect_runtime_environment", lambda: {"environment": "container"}
+        pr.detect.runtime,
+        "detect_runtime_environment",
+        lambda: {"environment": "container"},
     )
     pr.detect.packages._query_rpm_packages_cached.cache_clear()
     out = pr.scan_packages({"family": "rhel"})
@@ -449,9 +487,13 @@ def test_detect_nss_under_host_mount_prefers_host_rpmdb(
 def test_detect_nss_bare_metal_still_prefers_certutil(monkeypatch) -> None:
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", "")
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(pr._platform, "_run", lambda cmd, timeout=None: (0, "NSS version 3.112.0"))
     monkeypatch.setattr(
-        pr.detect.runtime, "detect_runtime_environment", lambda: {"environment": "bare-metal"}
+        pr._platform, "_run", lambda cmd, timeout=None: (0, "NSS version 3.112.0")
+    )
+    monkeypatch.setattr(
+        pr.detect.runtime,
+        "detect_runtime_environment",
+        lambda: {"environment": "bare-metal"},
     )
     out = pr.detect_nss()
     assert out["tool"] == "certutil --version"
@@ -464,7 +506,9 @@ def test_detect_nss_bare_metal_falls_back_to_rpmdb(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(shutil, "which", lambda name: None)
     monkeypatch.setattr(pr._platform, "_run", _no_subprocess)
     monkeypatch.setattr(
-        pr.detect.runtime, "detect_runtime_environment", lambda: {"environment": "bare-metal"}
+        pr.detect.runtime,
+        "detect_runtime_environment",
+        lambda: {"environment": "bare-metal"},
     )
     pr.detect.packages._query_rpm_packages_cached.cache_clear()
     out = pr.detect_nss()
@@ -513,7 +557,9 @@ def test_detect_nss_uses_name_index_not_full_read(host, monkeypatch, tmp_path) -
     assert out["version"] == "3.112.0"
 
 
-def test_named_lookup_without_name_table_falls_back_to_full_read(host, tmp_path) -> None:
+def test_named_lookup_without_name_table_falls_back_to_full_read(
+    host, tmp_path
+) -> None:
     host(tmp_path)
     _make_sqlite_db(tmp_path / "var/lib/rpm/rpmdb.sqlite", [_header("nss", "3.90.0")])
     out = pr.query_rpm_named(("nss",))
@@ -521,7 +567,9 @@ def test_named_lookup_without_name_table_falls_back_to_full_read(host, tmp_path)
     assert [p["version"] for p in out["packages"]] == ["3.90.0"]
 
 
-def test_named_lookup_reuses_inventory_already_read(host, monkeypatch, tmp_path) -> None:
+def test_named_lookup_reuses_inventory_already_read(
+    host, monkeypatch, tmp_path
+) -> None:
     host(tmp_path)
     _make_indexed_sqlite_db(
         tmp_path / "var/lib/rpm/rpmdb.sqlite", [("nss", "3.112.0"), ("bash", "5.1.8")]
@@ -545,13 +593,16 @@ def test_named_lookup_still_rejects_empty_database(host, tmp_path) -> None:
 
 
 @pytest.mark.parametrize("magic_file", ["Packages", "Packages.db"])
-def test_named_lookup_on_cli_backends_uses_rpm_q(host, monkeypatch, tmp_path, magic_file) -> None:
+def test_named_lookup_on_cli_backends_uses_rpm_q(
+    host, monkeypatch, tmp_path, magic_file
+) -> None:
     # EL8 (bdb) and SUSE (ndb): one `rpm -q`, never a full `rpm -qa`.
     host(tmp_path)
     db = tmp_path / "var/lib/rpm" / magic_file
     db.parent.mkdir(parents=True)
     db.write_bytes(
-        b"RpmP" + b"\0" * 12 if magic_file == "Packages.db"
+        b"RpmP" + b"\0" * 12
+        if magic_file == "Packages.db"
         else b"\0" * 12 + b"\x61\x15\x06\x00"
     )
     calls: list[list[str]] = []
@@ -576,7 +627,11 @@ def test_named_cli_lookup_reports_real_failure(host, monkeypatch, tmp_path) -> N
     db = tmp_path / "var/lib/rpm/Packages.db"
     db.parent.mkdir(parents=True)
     db.write_bytes(b"RpmP" + b"\0" * 12)
-    monkeypatch.setattr(pr._platform, "_run", lambda cmd, timeout=None: (1, "error: cannot open Packages database"))
+    monkeypatch.setattr(
+        pr._platform,
+        "_run",
+        lambda cmd, timeout=None: (1, "error: cannot open Packages database"),
+    )
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     out = pr.query_rpm_named(("nss",))
     assert out["available"] is False

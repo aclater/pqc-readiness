@@ -171,7 +171,9 @@ def _detect_os_impl() -> dict[str, Any]:
         return out
     # Legacy fallbacks — only triggered when /etc/os-release is missing.
     if _platform.host_path("/etc/redhat-release").exists():
-        rh = parse_redhat_release(_platform.host_path("/etc/redhat-release").read_text())
+        rh = parse_redhat_release(
+            _platform.host_path("/etc/redhat-release").read_text()
+        )
         return {
             "family": "rhel",
             "id": rh.get("distro", "").lower().split()[0] or "rhel",
@@ -182,7 +184,9 @@ def _detect_os_impl() -> dict[str, Any]:
         }
     if _platform.host_path("/etc/debian_version").exists():
         try:
-            deb_ver: str | None = _platform.host_path("/etc/debian_version").read_text().strip()
+            deb_ver: str | None = (
+                _platform.host_path("/etc/debian_version").read_text().strip()
+            )
         except OSError as e:
             log.debug("detect_os: cannot read /etc/debian_version: %s", e)
             deb_ver = None

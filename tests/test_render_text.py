@@ -13,6 +13,7 @@ field without guarding it surfaces here. Section headings are asserted
 literally so a heading rename in one renderer (without the matching
 docs / aggregator update) fails fast.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -185,7 +186,9 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
         f"f-string is missing a guard:\n{out}"
     )
     for heading in ALWAYS_PRESENT_HEADINGS:
-        assert heading in out, f"unconditional heading missing on empty Report: {heading}"
+        assert heading in out, (
+            f"unconditional heading missing on empty Report: {heading}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -197,7 +200,9 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
         pytest.param(lambda r: setattr(r, "benchmark", None), id="benchmark-not-run"),
         pytest.param(lambda r: setattr(r, "benchmark", {}), id="benchmark-empty"),
         pytest.param(
-            lambda r: setattr(r, "benchmark", {"available": False, "reason": "openssl missing"}),
+            lambda r: setattr(
+                r, "benchmark", {"available": False, "reason": "openssl missing"}
+            ),
             id="benchmark-unavailable-with-reason",
         ),
         pytest.param(
@@ -220,7 +225,11 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
             id="membw-not-run",
         ),
         pytest.param(
-            lambda r: setattr(r, "benchmark_tls_handshake", {"available": False, "reason": "loopback failed"}),
+            lambda r: setattr(
+                r,
+                "benchmark_tls_handshake",
+                {"available": False, "reason": "loopback failed"},
+            ),
             id="bench-tls-unavailable-with-reason",
         ),
         pytest.param(
@@ -238,7 +247,9 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
             id="trust-store-absent",
         ),
         pytest.param(
-            lambda r: setattr(r, "openssl", {"available": False, "reason": "openssl not installed"}),
+            lambda r: setattr(
+                r, "openssl", {"available": False, "reason": "openssl not installed"}
+            ),
             id="openssl-unavailable",
         ),
         pytest.param(

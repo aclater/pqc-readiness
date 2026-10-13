@@ -87,12 +87,16 @@ def test_fence_check_skipped_when_only_kernel_fips() -> None:
 def test_fence_parse_extracts_kem_names() -> None:
     """Parser extracts canonical ML-KEM names from openssl list output
     regardless of ordering, dedupes, and ignores noise."""
-    extracted = pr.detect.config._fence_parse_algos(REBUILD_FIPS_KEMS_DEFAULT, pr.detect.config._FENCE_KEM_RE)
+    extracted = pr.detect.config._fence_parse_algos(
+        REBUILD_FIPS_KEMS_DEFAULT, pr.detect.config._FENCE_KEM_RE
+    )
     assert extracted == ["ML-KEM-1024", "ML-KEM-512", "ML-KEM-768"]
 
 
 def test_fence_parse_extracts_signature_names() -> None:
-    extracted = pr.detect.config._fence_parse_algos(REBUILD_FIPS_SIGS_DEFAULT, pr.detect.config._FENCE_SIG_RE)
+    extracted = pr.detect.config._fence_parse_algos(
+        REBUILD_FIPS_SIGS_DEFAULT, pr.detect.config._FENCE_SIG_RE
+    )
     # 3 ML-DSA + 6 SLH-DSA-SHA2 + 6 SLH-DSA-SHAKE = 15
     assert len(extracted) == 15
     assert "ML-DSA-87" in extracted
@@ -131,13 +135,21 @@ def test_fence_absent_when_default_strict_superset(monkeypatch: Any) -> None:
         ("-kem-algorithms", "default"): ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"],
         ("-signature-algorithms", "fips"): [],
         ("-signature-algorithms", "default"): [
-            "ML-DSA-44", "ML-DSA-65", "ML-DSA-87",
-            "SLH-DSA-SHA2-128f", "SLH-DSA-SHA2-128s",
-            "SLH-DSA-SHA2-192f", "SLH-DSA-SHA2-192s",
-            "SLH-DSA-SHA2-256f", "SLH-DSA-SHA2-256s",
-            "SLH-DSA-SHAKE-128f", "SLH-DSA-SHAKE-128s",
-            "SLH-DSA-SHAKE-192f", "SLH-DSA-SHAKE-192s",
-            "SLH-DSA-SHAKE-256f", "SLH-DSA-SHAKE-256s",
+            "ML-DSA-44",
+            "ML-DSA-65",
+            "ML-DSA-87",
+            "SLH-DSA-SHA2-128f",
+            "SLH-DSA-SHA2-128s",
+            "SLH-DSA-SHA2-192f",
+            "SLH-DSA-SHA2-192s",
+            "SLH-DSA-SHA2-256f",
+            "SLH-DSA-SHA2-256s",
+            "SLH-DSA-SHAKE-128f",
+            "SLH-DSA-SHAKE-128s",
+            "SLH-DSA-SHAKE-192f",
+            "SLH-DSA-SHAKE-192s",
+            "SLH-DSA-SHAKE-256f",
+            "SLH-DSA-SHAKE-256s",
         ],
     }
 
@@ -154,7 +166,9 @@ def test_fence_absent_when_default_strict_superset(monkeypatch: Any) -> None:
     assert out["active"] is True
     assert out["algorithm_fence_engaged"] is False
     assert out["algorithms_reachable_outside_fence"]["kems"] == [
-        "ML-KEM-1024", "ML-KEM-512", "ML-KEM-768"
+        "ML-KEM-1024",
+        "ML-KEM-512",
+        "ML-KEM-768",
     ]
     sigs_outside = out["algorithms_reachable_outside_fence"]["signatures"]
     assert len(sigs_outside) == 15
@@ -169,7 +183,9 @@ def test_fence_absent_when_default_partial_overlap(monkeypatch: Any) -> None:
         ("-kem-algorithms", "default"): [],
         ("-signature-algorithms", "fips"): ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"],
         ("-signature-algorithms", "default"): [
-            "ML-DSA-44", "ML-DSA-65", "ML-DSA-87",
+            "ML-DSA-44",
+            "ML-DSA-65",
+            "ML-DSA-87",
             "SLH-DSA-SHAKE-256f",  # only this is "outside the fence"
         ],
     }

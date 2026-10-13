@@ -171,7 +171,9 @@ def test_cert_algorithm_oids_real_openssl_certs(name: str, expected: list[str]) 
 
 @pytest.mark.parametrize("key_bytes", [8, 200, 70000])
 def test_cert_algorithm_oids_short_and_long_form_lengths(key_bytes: int) -> None:
-    der = build_cert(COMPOSITE_MLDSA44_P256, COMPOSITE_MLDSA44_P256, key_bytes=key_bytes)
+    der = build_cert(
+        COMPOSITE_MLDSA44_P256, COMPOSITE_MLDSA44_P256, key_bytes=key_bytes
+    )
     assert pr.cert_algorithm_oids(der) == [COMPOSITE_MLDSA44_P256] * 2
 
 
@@ -274,7 +276,9 @@ def test_scan_counts_composite_certs(monkeypatch, tmp_path) -> None:
 
 def test_scan_counts_legacy_hybrid_oids(monkeypatch, tmp_path) -> None:
     _no_subprocess(monkeypatch)
-    (tmp_path / "oqs.pem").write_text(to_pem(build_cert("1.3.9999.6.4.13", "1.3.9999.6.4.13")))
+    (tmp_path / "oqs.pem").write_text(
+        to_pem(build_cert("1.3.9999.6.4.13", "1.3.9999.6.4.13"))
+    )
     result = pr.scan_trust_store(dirs=[str(tmp_path)])
     assert result["hybrid_certs"] == 1
     assert result["cert_categories"]["classical"] == 1
@@ -289,7 +293,9 @@ def test_scan_reads_der_encoded_crt(monkeypatch, tmp_path) -> None:
 
 def test_scan_ignores_private_keys_and_non_cert_pem(monkeypatch, tmp_path) -> None:
     _no_subprocess(monkeypatch)
-    (tmp_path / "key.pem").write_text(to_pem(b"\x30\x03\x02\x01\x00", label="PRIVATE KEY"))
+    (tmp_path / "key.pem").write_text(
+        to_pem(b"\x30\x03\x02\x01\x00", label="PRIVATE KEY")
+    )
     (tmp_path / "notes.pem").write_text("hello")
     result = pr.scan_trust_store(dirs=[str(tmp_path)])
     assert result["total_found"] == 0
@@ -362,7 +368,13 @@ def _write_distinct_certs(directory: Path, n: int, per_file: int = 1) -> None:
 )
 @pytest.mark.parametrize("per_file", [1, 3])
 def test_scan_trust_store_max_certs_boundary(
-    monkeypatch, tmp_path, n_certs: int, cap: int, scanned: int, truncated: bool, per_file: int
+    monkeypatch,
+    tmp_path,
+    n_certs: int,
+    cap: int,
+    scanned: int,
+    truncated: bool,
+    per_file: int,
 ) -> None:
     _no_subprocess(monkeypatch)
     _write_distinct_certs(tmp_path, n_certs, per_file=per_file)
@@ -448,7 +460,9 @@ def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
 
     cbom = json.loads(pr.render_cbom(r))
     ts_comp = [
-        c for c in cbom["components"] if c.get("name") == "Trust store certificate inventory"
+        c
+        for c in cbom["components"]
+        if c.get("name") == "Trust store certificate inventory"
     ][0]
     props = {p["name"]: p["value"] for p in ts_comp["properties"]}
     assert props["trust_store:truncated"] == "true"
@@ -456,7 +470,9 @@ def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
 
     sarif = json.loads(pr.render_sarif(r))
     results = sarif["runs"][0]["results"]
-    ts_res = [x for x in results if x["ruleId"] == "pqc-004-classical-only-trust-store"][0]
+    ts_res = [
+        x for x in results if x["ruleId"] == "pqc-004-classical-only-trust-store"
+    ][0]
     assert "capped at 500 of 1200" in ts_res["message"]["text"]
     assert ts_res["properties"]["trust_store:truncated"] is True
 
@@ -470,7 +486,9 @@ def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
 def test_scan_trust_store_all_default_dirs_missing(monkeypatch, tmp_path) -> None:
     # Default-argument path: every TRUST_STORE_DIRS entry is absent.
     monkeypatch.setattr(
-        pr.detect.certs, "TRUST_STORE_DIRS", [str(tmp_path / "a"), str(tmp_path / "b" / "c")]
+        pr.detect.certs,
+        "TRUST_STORE_DIRS",
+        [str(tmp_path / "a"), str(tmp_path / "b" / "c")],
     )
     _no_subprocess(monkeypatch)
     result = pr.scan_trust_store()
@@ -513,7 +531,12 @@ def test_fixture_hashes_are_stable() -> None:
     # four certs (EC in TRUSTED form).
     standalone = {
         hashlib.sha256(_fixture_der(n)).hexdigest()
-        for n in ("rsa-2048.pem", "ml-dsa-65.pem", "slh-dsa-sha2-128s.pem", "ec-p256.pem")
+        for n in (
+            "rsa-2048.pem",
+            "ml-dsa-65.pem",
+            "slh-dsa-sha2-128s.pem",
+            "ec-p256.pem",
+        )
     }
     bundle = {
         hashlib.sha256(d).hexdigest()

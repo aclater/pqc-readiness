@@ -11,6 +11,7 @@ that exists in the repo. Drift in either direction (a tier added to the
 "every change" promise without a workflow, or a workflow renamed
 without updating the README) is caught here before it ships.
 """
+
 from __future__ import annotations
 
 import re
@@ -47,7 +48,10 @@ def _tier_rows() -> list[tuple[str, str, str]]:
         r"\n\|\s*\*\*([^*|]+)\*\*\s*\|([^|\n]+)\|([^|\n]+)\|",
         text,
     )
-    return [(tier.strip(), distros.strip(), cadence.strip()) for tier, distros, cadence in rows]
+    return [
+        (tier.strip(), distros.strip(), cadence.strip())
+        for tier, distros, cadence in rows
+    ]
 
 
 def test_distribution_support_table_is_present() -> None:
@@ -55,7 +59,9 @@ def test_distribution_support_table_is_present() -> None:
     actually exists. If someone drops the table the other assertions
     would silently pass on an empty list."""
     text = README.read_text(encoding="utf-8")
-    assert "## Distribution support" in text, "Distribution support § missing from README"
+    assert "## Distribution support" in text, (
+        "Distribution support § missing from README"
+    )
     rows = _tier_rows()
     tier_labels = {tier for tier, _, _ in rows}
     assert {"1", "2", "3"}.issubset(tier_labels), (
@@ -127,7 +133,9 @@ def test_weekly_cadence_claims_reference_scheduled_workflow() -> None:
             name
             for name in WORKFLOW_REF.findall(cadence)
             if (WORKFLOWS_DIR / name).is_file()
-            and re.search(r"^\s*schedule:", (WORKFLOWS_DIR / name).read_text(), re.MULTILINE)
+            and re.search(
+                r"^\s*schedule:", (WORKFLOWS_DIR / name).read_text(), re.MULTILINE
+            )
         ]
         if not scheduled:
             offenders.append((tier, cadence))
@@ -169,7 +177,10 @@ def test_tier2_ubuntu_matches_weekly_workflow_and_fixture() -> None:
     )
 
     fixture = (
-        REPO_ROOT / "tests" / "fixtures" / "os-release"
+        REPO_ROOT
+        / "tests"
+        / "fixtures"
+        / "os-release"
         / f"ubuntu-{version.replace('.', '')}.txt"
     )
     assert fixture.is_file(), f"missing os-release fixture {fixture.name}"

@@ -80,7 +80,9 @@ class Report:
     # a single JSON value (null) rather than {} vs null vs "" (#82).
     benchmark: dict[str, Any] | None = None
     benchmark_tls_handshake: dict[str, Any] | None = None
-    pqc_sizes: dict[str, dict[str, Any]] = field(default_factory=lambda: _algorithms.PQC_SIZES)
+    pqc_sizes: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: _algorithms.PQC_SIZES
+    )
     per_algo: dict[str, dict[str, Any]] = field(default_factory=dict)
     production_estimate: dict[str, Any] = field(default_factory=dict)
     verdict: str = ""

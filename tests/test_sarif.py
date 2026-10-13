@@ -253,9 +253,7 @@ def test_pqc_004_silent_when_trust_store_has_pqc() -> None:
         "hybrid_certs": 0,
     }
     findings = pr.build_findings(r)
-    assert all(
-        f.rule_id != "pqc-004-classical-only-trust-store" for f in findings
-    )
+    assert all(f.rule_id != "pqc-004-classical-only-trust-store" for f in findings)
 
 
 def test_pqc_004_silent_when_trust_store_not_scanned() -> None:
@@ -265,9 +263,7 @@ def test_pqc_004_silent_when_trust_store_not_scanned() -> None:
     r = _empty_report()
     r.trust_store = {}
     findings = pr.build_findings(r)
-    assert all(
-        f.rule_id != "pqc-004-classical-only-trust-store" for f in findings
-    )
+    assert all(f.rule_id != "pqc-004-classical-only-trust-store" for f in findings)
 
 
 def test_pqc_004_silent_when_trust_store_empty() -> None:
@@ -282,9 +278,7 @@ def test_pqc_004_silent_when_trust_store_empty() -> None:
         "hybrid_certs": 0,
     }
     findings = pr.build_findings(r)
-    assert all(
-        f.rule_id != "pqc-004-classical-only-trust-store" for f in findings
-    )
+    assert all(f.rule_id != "pqc-004-classical-only-trust-store" for f in findings)
 
 
 def test_pqc_005_fires_when_slh_dsa_exposed() -> None:
@@ -340,9 +334,7 @@ def test_pqc_006_silent_when_network_hsm_is_pqc_capable() -> None:
         },
     ]
     findings = pr.build_findings(r)
-    assert all(
-        f.rule_id != "pqc-006-no-network-hsm-pqc-firmware" for f in findings
-    )
+    assert all(f.rule_id != "pqc-006-no-network-hsm-pqc-firmware" for f in findings)
 
 
 def test_pqc_006_silent_when_local_hsm_only() -> None:
@@ -353,9 +345,7 @@ def test_pqc_006_silent_when_local_hsm_only() -> None:
         {"kind": "hsm", "name": "Local HSM", "pqc_capable": False},
     ]
     findings = pr.build_findings(r)
-    assert all(
-        f.rule_id != "pqc-006-no-network-hsm-pqc-firmware" for f in findings
-    )
+    assert all(f.rule_id != "pqc-006-no-network-hsm-pqc-firmware" for f in findings)
 
 
 def test_findings_are_deterministic() -> None:

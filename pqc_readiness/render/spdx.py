@@ -242,9 +242,7 @@ def _spdx_vulnerability(
         creator_id,
     )
     elem["summary"] = rule_spec.short_description
-    elem["description"] = (
-        f"{rule_spec.full_description}\n\nDetected: {finding.message}"
-    )
+    elem["description"] = f"{rule_spec.full_description}\n\nDetected: {finding.message}"
     elem["comment"] = SPDX_FINDING_LEVEL_TO_NOTE.get(
         finding.level, f"severity: {finding.level}"
     )
@@ -395,6 +393,4 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
 
 
-_registry.register_output(
-    _registry.OutputFormat("spdx", 20, lambda r: render_spdx(r))
-)
+_registry.register_output(_registry.OutputFormat("spdx", 20, lambda r: render_spdx(r)))

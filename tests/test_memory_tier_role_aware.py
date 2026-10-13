@@ -24,11 +24,11 @@ EXPECTED_TIERS_BY_ROLE: dict[str, tuple[str, str, str]] = {
     # (2 GiB).  6 GiB clears tls-client (4) and firmware-signing (2) but
     # not signing-service (8) or tls-server/generic (16).  18 GiB clears
     # all roles' good thresholds.
-    "tls-server":       ("poor", "marginal", "good"),     # threshold 16
-    "tls-client":       ("poor", "good",     "good"),     # threshold 4
-    "signing-service":  ("poor", "marginal", "good"),     # threshold 8
-    "firmware-signing": ("good", "good",     "good"),     # threshold 2
-    "generic":          ("poor", "marginal", "good"),     # threshold 16
+    "tls-server": ("poor", "marginal", "good"),  # threshold 16
+    "tls-client": ("poor", "good", "good"),  # threshold 4
+    "signing-service": ("poor", "marginal", "good"),  # threshold 8
+    "firmware-signing": ("good", "good", "good"),  # threshold 2
+    "generic": ("poor", "marginal", "good"),  # threshold 16
 }
 
 

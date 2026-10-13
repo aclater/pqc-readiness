@@ -92,7 +92,12 @@ def parse_proc_crypto_cnsa(text: str) -> dict[str, Any]:
                 if int(b.get("max keysize", "0")) >= 32:
                     aes_256 = True
             except ValueError as e:
-                log.debug("parse_proc_crypto_cnsa: unparseable max keysize %r for %s: %s", b.get("max keysize"), name, e)
+                log.debug(
+                    "parse_proc_crypto_cnsa: unparseable max keysize %r for %s: %s",
+                    b.get("max keysize"),
+                    name,
+                    e,
+                )
         if name == "sha384" and sha_384_hw is None:
             if any(s in driver for s in _HW_DRIVER_SUFFIXES):
                 sha_384_hw = driver

@@ -5,6 +5,7 @@ Audit option C1 introduced `_openssl_version_text` — a memoized wrapper
 over `_run(['openssl', 'version'])` that avoids three redundant
 subprocess invocations on every default scan. The contract under test
 here is the cache itself, not the underlying binary's output."""
+
 from __future__ import annotations
 
 from typing import Any

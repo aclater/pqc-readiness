@@ -19,8 +19,14 @@ import pqc_readiness as pr
 # + bw/vaes (4) = 17.  avx512vl (+1) tips it to 18.  aes + pclmulqdq keep
 # the below-boundary case in "good" rather than falling to "marginal".
 _X86_AVX512_17 = {
-    "avx512f", "avx512vbmi", "avx512ifma",
-    "avx2", "aes", "pclmulqdq", "avx512bw", "vaes",
+    "avx512f",
+    "avx512vbmi",
+    "avx512ifma",
+    "avx2",
+    "aes",
+    "pclmulqdq",
+    "avx512bw",
+    "vaes",
 }
 _X86_AVX512_18 = _X86_AVX512_17 | {"avx512vl"}
 
@@ -67,9 +73,18 @@ def test_x86_score_18_without_avx512_pqc_core_is_not_excellent() -> None:
     instruction core (f+vbmi+ifma or f+vaes+vpclmulqdq) stays below
     excellent."""
     flags = {
-        "avx2", "aes", "pclmulqdq", "avx512bw", "avx512vbmi2", "gfni",
-        "sha_ni", "avx512vl", "avx512_vpopcntdq", "avx512_bitalg",
-        "vaes", "avx512vbmi",
+        "avx2",
+        "aes",
+        "pclmulqdq",
+        "avx512bw",
+        "avx512vbmi2",
+        "gfni",
+        "sha_ni",
+        "avx512vl",
+        "avx512_vpopcntdq",
+        "avx512_bitalg",
+        "vaes",
+        "avx512vbmi",
     }
     _, score = pr.detect_isa("x86_64", flags)
     assert score >= 18
@@ -81,10 +96,16 @@ def test_x86_alternate_avx512_core_reaches_excellent_at_18() -> None:
     """The second AVX-512 PQC core (f + vaes + vpclmulqdq, no VBMI/IFMA)
     is accepted at exactly score 18."""
     flags = {
-        "avx512f", "vaes", "vpclmulqdq",  # 7
-        "avx2", "aes", "pclmulqdq",       # 4  -> 11
-        "avx512bw", "gfni", "sha_ni",     # 6  -> 17
-        "avx512vl",                       # 1  -> 18
+        "avx512f",
+        "vaes",
+        "vpclmulqdq",  # 7
+        "avx2",
+        "aes",
+        "pclmulqdq",  # 4  -> 11
+        "avx512bw",
+        "gfni",
+        "sha_ni",  # 6  -> 17
+        "avx512vl",  # 1  -> 18
     }
     _, score = pr.detect_isa("x86_64", flags)
     assert score == 18

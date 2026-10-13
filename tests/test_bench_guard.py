@@ -4,6 +4,7 @@ OpenSSL does not provide.  Given an unknown name, `openssl speed
 -signature-algorithms NAME` benchmarks every signature algorithm instead,
 burning the whole timeout.  These tests stub `_run`, so no real
 benchmark ever runs."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -92,9 +93,7 @@ def test_run_benchmarks_reuses_capability_lists(fake: FakeOpenSSL) -> None:
     }
     out = pr.run_benchmarks(seconds=1, threads=1, osinfo=osinfo)
     assert fake.list_calls() == []  # no second `openssl list` round
-    assert out["pqc"]["SLH-DSA-SHA2-128s"] == {
-        "skipped": pr.BENCH_SKIPPED_NOT_PROVIDED
-    }
+    assert out["pqc"]["SLH-DSA-SHA2-128s"] == {"skipped": pr.BENCH_SKIPPED_NOT_PROVIDED}
 
 
 def test_run_benchmarks_standalone_looks_up_lists(

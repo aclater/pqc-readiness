@@ -15,6 +15,7 @@ The current `render_markdown` implementation does not emit any
 triple-backtick fences; the assertion is in place so a future addition
 that opens one without closing it fails the suite immediately.
 """
+
 from __future__ import annotations
 
 import re
@@ -159,7 +160,9 @@ def test_render_markdown_tables_are_balanced() -> None:
     for block in _table_row_blocks(out.splitlines()):
         header = block[0]
         expected = header.count("|")
-        offenders = [(i, row) for i, row in enumerate(block) if row.count("|") != expected]
+        offenders = [
+            (i, row) for i, row in enumerate(block) if row.count("|") != expected
+        ]
         assert not offenders, (
             f"Markdown table block has unbalanced rows. Header={header!r} "
             f"(|-count={expected}); offenders={offenders}; full block:\n"
@@ -192,7 +195,9 @@ def test_render_markdown_empty_report_is_non_empty_and_safe() -> None:
         f"f-string is missing a guard:\n{out}"
     )
     for heading in ALWAYS_PRESENT_HEADINGS:
-        assert heading in out, f"unconditional heading missing on empty Report: {heading}"
+        assert heading in out, (
+            f"unconditional heading missing on empty Report: {heading}"
+        )
 
 
 @pytest.mark.parametrize(
@@ -243,7 +248,9 @@ def test_render_markdown_partial_population_does_not_raise_or_leak_none(
     for block in _table_row_blocks(out.splitlines()):
         header = block[0]
         expected = header.count("|")
-        offenders = [(i, row) for i, row in enumerate(block) if row.count("|") != expected]
+        offenders = [
+            (i, row) for i, row in enumerate(block) if row.count("|") != expected
+        ]
         assert not offenders, (
             f"Markdown table unbalanced after mutation. header={header!r}; "
             f"offenders={offenders}"
