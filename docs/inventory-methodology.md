@@ -173,7 +173,7 @@ M-26-15 does not apply to National Security Systems. For those systems,
 | EO 14412 | **In force** (22 Jun 2026); CBOM minimum elements **not yet published** | [White House](https://www.whitehouse.gov/presidential-actions/2026/06/securing-the-nation-against-advanced-cryptographic-attacks/) |
 | CISA automated discovery strategy | **Published** (15 Aug 2024) | [CISA](https://cisa.gov/sites/default/files/2024-09/Strategy-for-Migrating-to-Automated-PQC-Discovery-and-Inventory-Tools.pdf) |
 | NSA CNSA 2.0 | **In force**; latest FAQ found is v2.1 (Dec 2024) | [NSA CNSA 2.0 FAQ](https://media.defense.gov/2022/Sep/07/2003071836/-1/-1/1/CSI_CNSA_2.0_FAQ_.PDF) |
-| CycloneDX cryptographic assets (CBOM) | 1.6 emitted today; 1.7 **final** (Oct 2025) and planned (#138) | [CycloneDX](https://cyclonedx.org/capabilities/cbom/) |
+| CycloneDX cryptographic assets (CBOM) | 1.7 **final** (Oct 2025; 1.7.2 Sep 2026), emitted by default; 1.6 with `--cbom-version 1.6` (#138) | [CycloneDX](https://cyclonedx.org/capabilities/cbom/) |
 
 Statuses are as of October 2026. Check the sources before relying on
 them, since drafts in this list are expected to change.

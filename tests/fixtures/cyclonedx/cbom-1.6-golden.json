@@ -1,0 +1,519 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:00000000-0000-0000-0000-000000000000",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-04-28T12:00:00+00:00",
+    "tools": {
+      "components": [
+        {
+          "type": "application",
+          "bom-ref": "tool/pqc-readiness@2.0.0",
+          "name": "pqc-readiness",
+          "version": "2.0.0"
+        }
+      ]
+    },
+    "component": {
+      "type": "device",
+      "bom-ref": "host/testhost.example",
+      "name": "testhost.example",
+      "properties": [
+        {
+          "name": "host:os",
+          "value": "Fedora Linux 44 (Workstation Edition)"
+        },
+        {
+          "name": "host:arch",
+          "value": "x86_64"
+        },
+        {
+          "name": "host:cpu_model",
+          "value": "Test CPU"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "isa/avx512ifma",
+      "name": "AVX-512 IFMA",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "other",
+          "executionEnvironment": "hardware",
+          "implementationPlatform": "x86_64"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "isa:flag",
+          "value": "avx512ifma"
+        },
+        {
+          "name": "isa:purpose",
+          "value": "52-bit FMA; lattice multiplication"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "isa/avx512vbmi",
+      "name": "AVX-512 VBMI",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "other",
+          "executionEnvironment": "hardware",
+          "implementationPlatform": "x86_64"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "isa:flag",
+          "value": "avx512vbmi"
+        },
+        {
+          "name": "isa:purpose",
+          "value": "Permute-bytes; major Keccak speedup"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "accel/0/hsm",
+      "name": "Test HSM",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "other",
+          "executionEnvironment": "hardware",
+          "implementationPlatform": "x86_64"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "accelerator:kind",
+          "value": "hsm"
+        },
+        {
+          "name": "accelerator:detail",
+          "value": "PCI vendor:device"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "accel/1/tpm",
+      "name": "TPM 2.0",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "other",
+          "executionEnvironment": "hardware",
+          "implementationPlatform": "x86_64"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "accelerator:kind",
+          "value": "tpm"
+        },
+        {
+          "name": "accelerator:detail",
+          "value": "/dev/tpm0"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "tpm/pqc",
+      "name": "TPM PQC capability",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "other",
+          "executionEnvironment": "hardware",
+          "implementationPlatform": "x86_64"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "tpm:pqc_advertised",
+          "value": "false"
+        },
+        {
+          "name": "tpm:note",
+          "value": "TPM 2.0 PQC algorithms not advertised"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "pkcs11/0",
+      "name": "libfoo.so",
+      "cryptoProperties": {
+        "assetType": "protocol",
+        "protocolProperties": {
+          "type": "other"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "pkcs11:module_path",
+          "value": "/usr/lib64/pkcs11/libfoo.so"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/kem/ML-KEM-512",
+      "name": "ML-KEM-512",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "kem",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "512",
+          "nistQuantumSecurityLevel": 1
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/kem/ML-KEM-768",
+      "name": "ML-KEM-768",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "kem",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "768",
+          "nistQuantumSecurityLevel": 3
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/kem/ML-KEM-1024",
+      "name": "ML-KEM-1024",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "kem",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "1024",
+          "nistQuantumSecurityLevel": 5
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/sig/ML-DSA-65",
+      "name": "ML-DSA-65",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "65",
+          "nistQuantumSecurityLevel": 3
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/sig/ML-DSA-87",
+      "name": "ML-DSA-87",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "87",
+          "nistQuantumSecurityLevel": 5
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/sig/SLH-DSA-SHA2-128s",
+      "name": "SLH-DSA-SHA2-128s",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "signature",
+          "executionEnvironment": "software-plain-ram",
+          "parameterSetIdentifier": "SHA2-128s",
+          "nistQuantumSecurityLevel": 1
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/tls-hybrid/X25519MLKEM768",
+      "name": "X25519MLKEM768",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "combiner",
+          "executionEnvironment": "software-plain-ram"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        },
+        {
+          "name": "tls:role",
+          "value": "hybrid-group"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "openssl/tls-pure-pqc/MLKEM768",
+      "name": "MLKEM768",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "kem",
+          "executionEnvironment": "software-plain-ram"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssl@3.5.5"
+        },
+        {
+          "name": "tls:role",
+          "value": "pure-pqc-group"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "ssh/kex/hybrid/mlkem768x25519-sha256",
+      "name": "mlkem768x25519-sha256",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "executionEnvironment": "software-plain-ram"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssh@9.9p1"
+        },
+        {
+          "name": "ssh:role",
+          "value": "hybrid-kex"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "ssh/kex/hybrid/sntrup761x25519-sha512",
+      "name": "sntrup761x25519-sha512",
+      "cryptoProperties": {
+        "assetType": "algorithm",
+        "algorithmProperties": {
+          "primitive": "key-agree",
+          "executionEnvironment": "software-plain-ram"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "source",
+          "value": "openssh@9.9p1"
+        },
+        {
+          "name": "ssh:role",
+          "value": "hybrid-kex"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "ipsec/strongswan",
+      "name": "IPsec (strongswan)",
+      "cryptoProperties": {
+        "assetType": "protocol",
+        "protocolProperties": {
+          "type": "ipsec"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "ipsec:implementation",
+          "value": "strongswan"
+        },
+        {
+          "name": "ipsec:evidence",
+          "value": "ML-KEM"
+        },
+        {
+          "name": "ipsec:pqc_advertised",
+          "value": "true"
+        }
+      ]
+    },
+    {
+      "type": "cryptographic-asset",
+      "bom-ref": "trust-store/summary",
+      "name": "Trust store certificate inventory",
+      "cryptoProperties": {
+        "assetType": "related-crypto-material",
+        "relatedCryptoMaterialProperties": {
+          "type": "other"
+        }
+      },
+      "properties": [
+        {
+          "name": "detectedBy",
+          "value": "pqc-readiness@2.0.0"
+        },
+        {
+          "name": "trust_store:total_certs",
+          "value": "142"
+        },
+        {
+          "name": "trust_store:pqc_certs",
+          "value": "0"
+        },
+        {
+          "name": "trust_store:hybrid_certs",
+          "value": "0"
+        },
+        {
+          "name": "trust_store:cert_categories:classical",
+          "value": "0"
+        },
+        {
+          "name": "trust_store:cert_categories:hybrid_composite",
+          "value": "0"
+        },
+        {
+          "name": "trust_store:cert_categories:pure_pqc",
+          "value": "0"
+        },
+        {
+          "name": "trust_store:scanned_dir",
+          "value": "/etc/pki/ca-trust/extracted/pem"
+        }
+      ]
+    }
+  ]
+}

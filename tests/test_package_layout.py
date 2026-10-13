@@ -104,9 +104,9 @@ def test_every_registered_output_has_its_flag() -> None:
 
 def test_output_precedence_matches_the_cli_contract() -> None:
     order = [f.dest for f in registry.outputs()]
-    assert order == ["json", "cbom", "spdx", "sarif", "markdown", "quiet"]
+    assert order == ["json", "cbom", "spdx", "sarif", "prometheus", "markdown", "quiet"]
     machine = {f.dest for f in registry.outputs() if f.machine_readable}
-    assert machine == {"json", "cbom", "spdx", "sarif", "markdown"}
+    assert machine == {"json", "cbom", "spdx", "sarif", "prometheus", "markdown"}
 
 
 def test_registry_rejects_duplicate_registrations() -> None:
