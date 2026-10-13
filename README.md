@@ -307,11 +307,12 @@ property is a term in the canonical SPDX 3.0.1 context, and every
 reference resolves within the document.
 
 **SARIF.** `--sarif` emits [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
-findings under stable rule IDs (`pqc-001-…` through `pqc-006-…`),
+findings under stable rule IDs (`pqc-001-…` through `pqc-007-…`),
 each with `helpUri`, severity (`warning` / `error`), and short / full
 descriptions. Findings cover OpenSSL pre-3.5, kernel-FIPS / PQC
 provider conflicts, missing hybrid TLS groups, and HSMs without PQC
 firmware. Validates against the official SARIF 2.1.0 schema.
+For code-scanning platforms, add `--sarif-anchor` ([recipe](docs/sarif-code-scanning.md)).
 
 **Recommendations.** `--recommend` produces a host-specific PQC
 algorithm recommendation under one of four policies (`cnsa-2.0`,
@@ -366,6 +367,7 @@ Flags below are grouped by purpose.
 | --- | --- |
 | `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ansible` | See [Output formats](#output-formats). |
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
+| `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
 | `--cbom-profile {none,federal-draft}` | Regime annotations for `--cbom` (default `none`, unchanged output). `federal-draft` adds OMB M-23-02 / M-26-15 / EO 14412 fields: key-establishment vs signature, quantum-vulnerable flag and deadline per asset, the classical groups a host offers, a TLS 1.3 status, and M-23-02 item coverage. Draft until CISA/NIST publish the minimum CBOM elements (~March 2027). |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
