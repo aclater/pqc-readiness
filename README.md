@@ -180,7 +180,7 @@ Nothing was renamed, removed or re-typed. See the
   DaemonSet without `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`.
   Unreadable processes are counted, not guessed (#111). The default
   DaemonSet stays least-privilege. An opt-in DaemonSet variant with those
-  two capabilities is tracked in a platform-docs issue linked from #143.
+  two capabilities is tracked in #181.
 - **The SIEM recipes haven't been run against live tenants** (#146).
 
 #### Under the hood
