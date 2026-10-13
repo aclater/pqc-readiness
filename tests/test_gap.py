@@ -298,7 +298,14 @@ def test_service_verdicts_and_collapsing() -> None:
     assert svc["listeners_without_crypto_library"] == 1
     assert svc["listeners_unattributed"] == 1
     assert svc["by_state"] == {"capable_not_configured": 2, "not_capable": 1}
-    assert "service:httpd/tcp/443:capable_not_configured" in gap.compute_gap(r)["gaps"]
+    # httpd and sshd only follow the host defaults: not gaps of their own.
+    assert items[("httpd", 443)]["follows_host_default"] is True
+    assert items[("sshd", 22)]["follows_host_default"] is True
+    # legacyd's bundled OpenSSL 3.0 differs from the host's verdict.
+    assert items[("legacyd", 8443)]["follows_host_default"] is False
+    assert svc["differing_from_host"] == 1
+    g = gap.compute_gap(r)
+    assert g["gaps"] == ["tls:capable_not_configured", "ssh:capable_not_configured"]
 
 
 def test_go_service_ignores_system_policy() -> None:
@@ -379,10 +386,19 @@ def test_pqc020_is_a_note_when_only_tls_ssh_gaps() -> None:
 
 
 def test_pqc020_is_a_warning_for_services_or_ipsec() -> None:
+    # A service following the host default restates the TLS gap: note only.
     raw = _with_services(_rocky98_default(), [_listener("httpd", 443, [_OPENSSL_35])])
     (f,) = _pqc020(_report_with_gap(raw))
+    assert (f.level, f.properties["gap:services"]) == ("note", [])
+    # An app bundling a PQC-capable OpenSSL on a host whose own OpenSSL
+    # can't: the service differs from the host verdict, so it is listed.
+    raw = _with_services(_rocky98_default(), [_listener("app", 8443, [_OPENSSL_35])])
+    raw["openssl"] = _openssl(False)
+    raw["sshd"]["openssh_supports_pqc_kex"] = False
+    raw["ssh_pqc"]["kex_groups"] = {"hybrid": [], "pure_pqc": [], "classical": ["x"]}
+    (f,) = _pqc020(_report_with_gap(raw))
     assert f.level == "warning"
-    assert f.properties["gap:services"] == ["httpd tcp/443"]
+    assert f.properties == {"gap:protocols": [], "gap:services": ["app tcp/8443"]}
 
     raw = _fedora44()
     raw["ipsec_pqc"] = {

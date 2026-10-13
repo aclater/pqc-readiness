@@ -670,12 +670,19 @@ def _render_text_deployment_gap(r: _report.Report) -> list[str]:
         L.append(line)
     services = g.get("services") or {}
     for svc in services.get("items") or []:
+        if svc.get("follows_host_default"):
+            continue
         state = str(svc.get("state", "unknown"))
         fams = ",".join(svc.get("crypto_families") or [])
         L.append(
             f"   {str(svc.get('process')):<14} {svc.get('protocol')}/{svc.get('port'):<6} "
             f"[{fams}] {_GAP_LABELS.get(state, state)}"
         )
+    same = sum(
+        1 for svc in services.get("items") or [] if svc.get("follows_host_default")
+    )
+    if same:
+        L.append(f"   ({same} more service(s) follow the host defaults above)")
     L.append("")
     return L
 

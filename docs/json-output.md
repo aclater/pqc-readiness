@@ -594,7 +594,7 @@ join](#--aggregate-observations-join)).
 | --- | --- | --- |
 | `protocols` | object | `tls`, `ssh` and `ipsec`, each a verdict (below). |
 | `services` | object | Per-service verdicts; `{available: false}` without `--scan-services`. |
-| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) and service (`service:<process>/<protocol>/<port>:<state>`) in `capable_not_configured` or `configured_not_capable`. Empty when there is nothing to fix. |
+| `gaps` | list[string] | Every protocol (`tls:capable_not_configured`) in `capable_not_configured` or `configured_not_capable`, plus every service in those states whose verdict *differs* from its host's (`service:<process>/<protocol>/<port>:<state>`; see `follows_host_default`). Empty when there is nothing to fix. |
 
 A verdict (each `protocols.*` entry, and each service item):
 
@@ -613,6 +613,7 @@ A verdict (each `protocols.*` entry, and each service item):
 | `available` | bool | `--scan-services` ran (`service_crypto_linkage.available`). |
 | `items` | list[object] | One verdict per process / transport / port / state; instances that share all four (IPv4 and IPv6 sockets, or one daemon per systemd scope) are collapsed. |
 | `by_state` | object | Item count per `state`. |
+| `differing_from_host` | int | Items with `follows_host_default: false`. |
 | `listeners_without_crypto_library` | int | Attributed listeners whose process maps no crypto library and isn't a Go binary (no verdict). |
 | `listeners_unattributed` | int | Listeners whose owning process couldn't be read (no verdict). |
 
@@ -626,11 +627,12 @@ Each `services.items[]` entry adds to the verdict keys:
 | `port` | int | Listening port. |
 | `kind` | string | `ssh` for sshd, which takes the host's SSH verdict; otherwise `tls`, meaning the process maps a TLS library (or is a Go binary). The port itself may not speak TLS (for example mDNS on `udp/5353` in a process that links a TLS library). |
 | `crypto_families` | list[string] | Library families the process maps, plus `go`. |
+| `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, or a Go binary using its own default; only those count in `gaps` and `pqc-020`. |
 | `listeners` | list[string] | JSON paths of the `service_crypto_linkage.listeners[]` entries behind this item. |
 
 SARIF / NDJSON: rule `pqc-020-pqc-capable-not-configured` reports one
-host-level result listing every protocol and service in
-`capable_not_configured` (a warning when it covers IPsec or services, a note
+host-level result listing every protocol, and every service that differs
+from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
 when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`).
 
 ### `os_release`

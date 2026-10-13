@@ -17,10 +17,14 @@ configuration keeps it classical.
 - **IPsec:** the installed strongSwan / Libreswan supports ML-KEM, but no
   configured connection proposes it (or, without configured connections,
   the policy's IKE setting excludes it).
-- **Services** (with `--scan-services`): a listening process maps a
-  PQC-capable library, but the host's TLS default keeps PQC out. Go
-  binaries are judged by their own crypto/tls default, which ignores the
-  system policy.
+- **Services** (with `--scan-services`): a listening process whose
+  verdict differs from its host's, e.g. it bundles a PQC-capable library
+  the system OpenSSL isn't, and the TLS default keeps PQC out. Services
+  that merely follow the host default (`follows_host_default`) are not
+  listed again: on Rocky Linux 9.8 and Fedora 44, `httpd` on port 80,
+  `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS
+  on those ports. Go binaries are judged by their own crypto/tls default,
+  which ignores the system policy.
 
 One result per host lists everything in that state
 (`properties.gap:protocols`, `properties.gap:services`). It is a **note**

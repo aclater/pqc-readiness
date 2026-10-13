@@ -265,6 +265,7 @@ def _services(
             no_crypto += 1
             continue
         kind = _service_kind(ln)
+        own_default = False
         if kind == "ssh":
             v = dict(protocols["ssh"])
         else:
@@ -274,6 +275,7 @@ def _services(
                 # the configuration.
                 configured: bool | None = True
                 conf_from = [f"service_crypto_linkage.listeners[{i}].go"]
+                own_default = True
             else:
                 configured, conf_from = tls_configured(report)
             v = _verdict(
@@ -305,6 +307,15 @@ def _services(
             "kind": kind,
             "crypto_families": cap["crypto_families"],
             **v,
+            # Same state as the host's protocol verdict, reached through the
+            # host default: the service adds nothing to that verdict.  Many
+            # daemons map a TLS library without speaking TLS on the port
+            # (rpcbind, httpd :80, a DNS stub), so only services that differ
+            # (a bundled old library, a Go binary's own default) are gaps
+            # in their own right.
+            "follows_host_default": (
+                not own_default and v["state"] == protocols[kind]["state"]
+            ),
             "listeners": [f"service_crypto_linkage.listeners[{i}]"],
         }
     services = sorted(
@@ -318,6 +329,9 @@ def _services(
         "available": True,
         "items": services,
         "by_state": dict(sorted(by_state.items())),
+        "differing_from_host": sum(
+            1 for s in services if not s["follows_host_default"]
+        ),
         "listeners_without_crypto_library": no_crypto,
         "listeners_unattributed": unattributed,
     }
@@ -332,6 +346,8 @@ def compute_gap(report: Mapping[str, Any]) -> dict[str, Any]:
         if v["state"] in ("capable_not_configured", "configured_not_capable"):
             gaps.append(f"{name}:{v['state']}")
     for s in services.get("items") or []:
+        if s["follows_host_default"]:
+            continue
         if s["state"] in ("capable_not_configured", "configured_not_capable"):
             gaps.append(
                 f"service:{s['process']}/{s['protocol']}/{s['port']}:{s['state']}"

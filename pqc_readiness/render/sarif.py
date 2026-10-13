@@ -610,7 +610,10 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
     services = [
         f"{s.get('process')} {s.get('protocol')}/{s.get('port')}"
         for s in (g.get("services") or {}).get("items") or []
+        # Services that only follow the host default restate the TLS / SSH
+        # verdict; list the ones that differ.
         if s.get("state") == "capable_not_configured"
+        and not s.get("follows_host_default")
     ]
     if not protocols and not services:
         return None
