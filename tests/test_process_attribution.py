@@ -307,3 +307,18 @@ def test_scanner_excludes_its_own_process(host: FakeHost) -> None:
     os.symlink("4321", host.root / "proc" / "self")
     out = rp.scan_processes()
     assert out["groups"] == [] and out["summary"]["processes_with_crypto"] == 0
+
+
+def test_local_pid_is_not_used_under_a_host_prefix(
+    host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # In a container the scanner can be PID 1 locally; with a host prefix
+    # and no /proc/self there, the host's PID 1 must not be dropped.
+    monkeypatch.setattr(os, "getpid", lambda: 1)
+    host.file("/usr/lib64/libcrypto.so.3.5.9", LIBCRYPTO)
+    exe = host.file("/usr/lib/systemd/systemd", _elf(interp=True, buildinfo=None))
+    init = host.root / "proc" / "1"
+    (init / "maps").write_text(_maps("/usr/lib64/libcrypto.so.3.5.9"))
+    os.symlink(exe, init / "exe")
+    (g,) = rp.scan_processes()["groups"]
+    assert g["sample_pids"] == [1]

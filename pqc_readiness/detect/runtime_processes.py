@@ -147,10 +147,14 @@ def scan_processes(
     # The scanner maps libcrypto itself (hashlib); it is not part of the
     # host's inventory.  /proc/self under the host prefix resolves to this
     # process's PID in that /proc's PID namespace (hostPID DaemonSets too).
+    # Without a host prefix /proc is our own, so os.getpid() is a safe
+    # fallback; under --host-mount our local PID belongs to another PID
+    # namespace and must not be used to drop a host process.
+    own_pid: int | None
     try:
         own_pid = int(os.readlink(_platform.host_path("/proc/self")))
     except (OSError, ValueError):
-        own_pid = os.getpid()
+        own_pid = None if _platform.HOST_PREFIX else os.getpid()
     pids = [p for p in pids if p != own_pid]
     truncated = len(pids) > max_pids
     pids = pids[:max_pids]
