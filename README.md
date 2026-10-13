@@ -342,6 +342,11 @@ Nothing was renamed or removed. The full field reference is in
    and the system-wide crypto policy: whether it actually lets PQC
    through to OpenSSL, GnuTLS, NSS, OpenSSH and libreswan (EL9 DEFAULT
    does not; EL10, Fedora and SUSE 16 DEFAULT do).
+   IPsec configuration is read too: every IKEv2 proposal in `swanctl.conf`
+   / `ipsec.conf` is classified as classical, hybrid (RFC 9370 additional
+   key exchange with ML-KEM) or pure ML-KEM, and connections that ask for
+   ML-KEM on a stack without it are flagged (ML-KEM in IKEv2 is still an
+   IETF draft, `draft-ietf-ipsecme-ikev2-mlkem`).
 4. **Production suitability** — per-algorithm tier with measured
    throughput, host capacity estimate, and a top-level
    `replace_required` flag for fleet planning.

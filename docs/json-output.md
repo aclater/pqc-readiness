@@ -220,11 +220,37 @@ Each list item describes one detected device or HSM client configuration:
 | --- | --- | --- |
 | `available` | bool | A strongSwan (`swanctl`) or Libreswan (`ipsec`) installation answered. |
 | `implementation` | string | `strongswan` or `libreswan`. |
-| `pqc` | bool | strongSwan: `swanctl --list-algs` lists ML-KEM / Kyber. Libreswan: always false (PQC is pre-release there). |
+| `pqc` | bool | strongSwan: `swanctl --list-algs` lists ML-KEM / Kyber. Libreswan: version ≥ 5.4, the upstream release that added ML-KEM-768 (RFC 9370 additional key exchanges); distribution builds may backport. |
 | `evidence` | string \| null | strongSwan only: the matching algorithm token. |
 | `version` | string \| null | Libreswan only: version from `ipsec --version`. |
-| `note` | string | Libreswan only: pre-release caveat. |
+| `note` | string | Libreswan only: the version basis of `pqc`. |
 | `reason` | string | Why `swanctl --list-algs` failed (kept even if Libreswan then answered), or that neither tool is on PATH. |
+| `configured` | object | What the IPsec configuration asks IKEv2 to negotiate (#154), read whether or not a daemon is installed. See below. |
+
+`configured` classifies every IKE and child-SA proposal in strongSwan `swanctl.conf` (`/etc/swanctl/` or `/etc/strongswan/swanctl/`, with `include`s) and `ipsec.conf` (`/etc/ipsec.conf`, `/etc/strongswan/ipsec.conf`, with Libreswan `include /etc/ipsec.d/*.conf`). Both dialects are understood: strongSwan `-` separated keywords with `keX_<method>` additional key exchanges (`keX_none` = optional), and Libreswan `;` separated `ke=` / `addkeN=` with `+` alternatives.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `files` | list[string] | Top-level config files found (host paths). |
+| `proposals` | list[object] | One entry per configured proposal (fields below). |
+| `summary` | object | `{ike_proposals, classical, hybrid, pure_pqc, unclassified, connections, connections_offering_pqc, connections_requiring_pqc}` over IKE (not child) proposals. A connection *offers* PQC when any of its IKE proposals can negotiate ML-KEM, and *requires* it when one has `pqc_mandatory`. |
+| `capability_mismatch` | object | Present when an installed stack answered with no ML-KEM support (`pqc` false) but connections configure ML-KEM: `{connections, reason}`. Such connections fail to load rather than falling back (Libreswan 5.3.2 rejects `ke=ml_kem_768` and `addke1=`). `%default` templates are not counted as connections. |
+| `standards` | list[object] | `{mechanism, reference, status, note?}`: RFC 9370 (`final`) and ML-KEM in IKEv2, `draft-ietf-ipsecme-ikev2-mlkem-09` (`draft`: IESG-approved, in the RFC Editor queue; IANA Transform Type 4 IDs 35/36/37). |
+
+Each `proposals[]` entry:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `proposal` | string | The proposal as configured (trailing `!` removed). |
+| `connection` | string \| null | Connection name (`connections.<name>` / `conn <name>`). |
+| `child` | string \| null | strongSwan child SA name for `esp_proposals`. |
+| `kind` | string | `ike` (IKE SA) or `child` (`esp_proposals`, `esp=`, `phase2alg=`, `ah`: the key exchange there is PFS). |
+| `source` | string | Host path of the file the proposal came from. |
+| `primary` | list[string] | Key-exchange methods offered for the main exchange (alternatives), e.g. `Curve25519`, `ECP-384`, `MODP-3072`, `ML-KEM-768`. Empty when none is named. |
+| `additional` | object | RFC 9370 Additional Key Exchange slots: `{"1": [...], ...}`; `none` marks a slot as optional. |
+| `category` | string \| null | `classical`, `hybrid` or `pure_pqc` for the most post-quantum combination the proposal can negotiate; `null` when no key exchange is named. |
+| `pqc_mandatory` | bool | Every acceptable negotiation includes ML-KEM. False when a classical alternative or an optional slot lets a peer avoid it. |
+| `note` | string | Present when `category` is null: the implementation default applies. |
 
 ### `nss`
 
