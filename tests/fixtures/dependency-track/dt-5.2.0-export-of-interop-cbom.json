@@ -2,7 +2,7 @@
  "bomFormat": "CycloneDX",
  "components": [
   {
-   "bom-ref": "311193cd-5324-448c-b7da-796f59cf7e98",
+   "bom-ref": "3d9c0762-b2b4-4aa6-8f49-9a1e5c6f7828",
    "name": "AVX-512 IFMA",
    "properties": [
     {
@@ -37,7 +37,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "30910e08-98ab-4227-88d1-d691454bb90f",
+   "bom-ref": "ad3688d0-d9bb-49ff-850d-fa72efc2bdc7",
    "name": "AVX-512 VBMI",
    "properties": [
     {
@@ -72,7 +72,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "3271da7f-1b63-45cf-8fb2-6aac8a2e3536",
+   "bom-ref": "60d824d8-cfeb-45e2-bf56-aa0f58492e97",
    "name": "CN=Fixture Root",
    "properties": [
     {
@@ -123,7 +123,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "277302fb-22bd-49a1-a1e5-4ab24a86791d",
+   "bom-ref": "82d62532-c1b8-4d18-a01b-9530ec8ed6c8",
    "name": "IPsec (strongswan)",
    "properties": [
     {
@@ -154,7 +154,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "8e4b2fda-2672-42fc-a330-ba3a8122ad79",
+   "bom-ref": "e460b228-09ca-4576-aff1-f938c5822db8",
    "name": "ML-DSA-65",
    "properties": [
     {
@@ -186,6 +186,10 @@
      "value": "signature"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -197,7 +201,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "81e699cb-7943-4c6b-9b2d-bb3704bf6642",
+   "bom-ref": "4ea9f794-4bdd-43ff-a412-45d49296479b",
    "name": "ML-DSA-87",
    "properties": [
     {
@@ -229,6 +233,10 @@
      "value": "signature"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -240,7 +248,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "8f6a361d-68a6-45f8-b4d6-6c52e7b1d9d3",
+   "bom-ref": "d082d993-fbb2-42b6-97b7-2745d8778342",
    "name": "ML-KEM-1024",
    "properties": [
     {
@@ -272,6 +280,10 @@
      "value": "kem"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -283,7 +295,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "e986750c-d2c2-429c-8a9c-f9f4016d3740",
+   "bom-ref": "a7baaa04-55ca-492f-a6e4-de42800df342",
    "name": "ML-KEM-512",
    "properties": [
     {
@@ -315,6 +327,10 @@
      "value": "kem"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -326,7 +342,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "12729c59-8d76-4dcd-b6a8-2f0a150a2eb1",
+   "bom-ref": "d03bd37a-999e-49d7-aa0f-7610de1377d5",
    "name": "ML-KEM-768",
    "properties": [
     {
@@ -358,6 +374,10 @@
      "value": "kem"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -369,7 +389,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "7df4fd64-2abc-4a22-bb75-461739f418ba",
+   "bom-ref": "e4694177-0d49-4880-98c4-c0a53731aa54",
    "name": "MLKEM768",
    "properties": [
     {
@@ -393,6 +413,10 @@
      "value": "kem"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "tls:role",
      "value": "pure-pqc-group"
     },
@@ -408,7 +432,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "08f86924-c4fa-4682-b187-12e531bb1f2f",
+   "bom-ref": "b47a3e07-6723-4a66-ab6b-07b576aff0b4",
    "name": "SLH-DSA-SHA2-128s",
    "properties": [
     {
@@ -440,6 +464,10 @@
      "value": "signature"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "detectedBy",
      "value": "pqc-readiness@2.1.0"
     },
@@ -451,7 +479,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "5ea7e375-87bc-4c6c-9002-32fc6eb64da4",
+   "bom-ref": "4508a547-d86a-4ebe-8b68-618aa0e47da2",
    "name": "SSH (OpenSSH key exchange)",
    "properties": [
     {
@@ -474,7 +502,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "32e227a5-4b27-4ab4-89bc-3dd32b6020a7",
+   "bom-ref": "4596f33a-b40a-4887-95e7-fb71c1d796af",
    "name": "TLS 1.3 (OpenSSL key-exchange groups)",
    "properties": [
     {
@@ -497,7 +525,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "60139231-d0fa-4f2b-9df5-fe6695f8dbf7",
+   "bom-ref": "8d9f8768-2f63-45c5-b1d2-f53905b24930",
    "name": "TPM 2.0",
    "properties": [
     {
@@ -532,7 +560,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "4be553cf-4dc5-4592-a4ab-cfdfa5da1b7a",
+   "bom-ref": "4ae21332-6104-43c1-8052-e486484844cc",
    "name": "TPM PQC capability",
    "properties": [
     {
@@ -567,7 +595,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "254cc60f-7ac8-497a-8466-2203cdad9ce7",
+   "bom-ref": "92b22bb1-a132-48b4-994c-c20993c1286a",
    "name": "Test HSM",
    "properties": [
     {
@@ -602,7 +630,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "4498b6fb-3b70-4ba2-b05e-d1d99aa75f10",
+   "bom-ref": "766d6e4e-fd6c-48f7-add6-f13635150c59",
    "name": "Trust store certificate inventory",
    "properties": [
     {
@@ -649,7 +677,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "6f9b3ec4-d13c-4429-86a2-2f113b7e7fa4",
+   "bom-ref": "10d491ec-4cb2-431c-a360-9e9539e99740",
    "name": "X25519MLKEM768",
    "properties": [
     {
@@ -669,6 +697,10 @@
      "value": "combiner"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssl@3.5.5"
+    },
+    {
      "name": "tls:role",
      "value": "hybrid-group"
     },
@@ -684,7 +716,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "766e17a4-d6d0-4cd0-bfab-2dcb19c11a52",
+   "bom-ref": "ad07c3e5-7337-4d1f-8420-1371e004bb74",
    "name": "libfoo.so",
    "properties": [
     {
@@ -707,7 +739,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "424c1ef9-a4c4-40ff-aa25-6e32b58cd20b",
+   "bom-ref": "abc23482-2c75-4a15-9145-d200814a9805",
    "name": "mlkem768x25519-sha256",
    "properties": [
     {
@@ -727,6 +759,10 @@
      "value": "key-agree"
     },
     {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssh@9.9p1"
+    },
+    {
      "name": "ssh:role",
      "value": "hybrid-kex"
     },
@@ -742,7 +778,7 @@
    "type": "cryptographic-asset"
   },
   {
-   "bom-ref": "eaaac9a7-b875-4db9-aa0a-fc52f4b4911e",
+   "bom-ref": "3d21ffac-6a3e-498c-95ed-ad5eb96e5d6e",
    "name": "openssh",
    "properties": [
     {
@@ -759,7 +795,7 @@
    "version": "9.9p1"
   },
   {
-   "bom-ref": "d0783a33-6294-439a-96fc-6a859ffe8b64",
+   "bom-ref": "b46a5996-b149-4a55-83be-b721e9a687ef",
    "name": "openssl",
    "properties": [
     {
@@ -776,7 +812,7 @@
    "version": "3.5.5"
   },
   {
-   "bom-ref": "b247619e-5a4c-4485-880a-20ec81dda83c",
+   "bom-ref": "b1aa2a53-f268-4b26-a109-145a898779b3",
    "name": "sntrup761x25519-sha512",
    "properties": [
     {
@@ -794,6 +830,10 @@
     {
      "name": "pqc-readiness:crypto:primitive",
      "value": "key-agree"
+    },
+    {
+     "name": "pqc-readiness:crypto:providedBy",
+     "value": "pkg:generic/openssh@9.9p1"
     },
     {
      "name": "ssh:role",
@@ -814,111 +854,112 @@
  "dependencies": [
   {
    "dependsOn": [
-    "eaaac9a7-b875-4db9-aa0a-fc52f4b4911e",
-    "d0783a33-6294-439a-96fc-6a859ffe8b64"
+    "3d21ffac-6a3e-498c-95ed-ad5eb96e5d6e",
+    "b46a5996-b149-4a55-83be-b721e9a687ef"
    ],
-   "ref": "fc3811f3-af82-4fcc-958c-df6d5c4e874a"
+   "ref": "47818ca0-6f00-438c-985d-976dc184d8d5"
   },
   {
    "dependsOn": [],
-   "ref": "311193cd-5324-448c-b7da-796f59cf7e98"
+   "ref": "3d9c0762-b2b4-4aa6-8f49-9a1e5c6f7828"
   },
   {
    "dependsOn": [],
-   "ref": "30910e08-98ab-4227-88d1-d691454bb90f"
+   "ref": "ad3688d0-d9bb-49ff-850d-fa72efc2bdc7"
   },
   {
    "dependsOn": [],
-   "ref": "3271da7f-1b63-45cf-8fb2-6aac8a2e3536"
+   "ref": "60d824d8-cfeb-45e2-bf56-aa0f58492e97"
   },
   {
    "dependsOn": [],
-   "ref": "277302fb-22bd-49a1-a1e5-4ab24a86791d"
+   "ref": "82d62532-c1b8-4d18-a01b-9530ec8ed6c8"
   },
   {
    "dependsOn": [],
-   "ref": "8e4b2fda-2672-42fc-a330-ba3a8122ad79"
+   "ref": "e460b228-09ca-4576-aff1-f938c5822db8"
   },
   {
    "dependsOn": [],
-   "ref": "81e699cb-7943-4c6b-9b2d-bb3704bf6642"
+   "ref": "4ea9f794-4bdd-43ff-a412-45d49296479b"
   },
   {
    "dependsOn": [],
-   "ref": "8f6a361d-68a6-45f8-b4d6-6c52e7b1d9d3"
+   "ref": "d082d993-fbb2-42b6-97b7-2745d8778342"
   },
   {
    "dependsOn": [],
-   "ref": "e986750c-d2c2-429c-8a9c-f9f4016d3740"
+   "ref": "a7baaa04-55ca-492f-a6e4-de42800df342"
   },
   {
    "dependsOn": [],
-   "ref": "12729c59-8d76-4dcd-b6a8-2f0a150a2eb1"
+   "ref": "d03bd37a-999e-49d7-aa0f-7610de1377d5"
   },
   {
    "dependsOn": [],
-   "ref": "7df4fd64-2abc-4a22-bb75-461739f418ba"
+   "ref": "e4694177-0d49-4880-98c4-c0a53731aa54"
   },
   {
    "dependsOn": [],
-   "ref": "08f86924-c4fa-4682-b187-12e531bb1f2f"
+   "ref": "b47a3e07-6723-4a66-ab6b-07b576aff0b4"
   },
   {
    "dependsOn": [],
-   "ref": "5ea7e375-87bc-4c6c-9002-32fc6eb64da4"
+   "ref": "4508a547-d86a-4ebe-8b68-618aa0e47da2"
   },
   {
    "dependsOn": [],
-   "ref": "32e227a5-4b27-4ab4-89bc-3dd32b6020a7"
+   "ref": "4596f33a-b40a-4887-95e7-fb71c1d796af"
   },
   {
    "dependsOn": [],
-   "ref": "60139231-d0fa-4f2b-9df5-fe6695f8dbf7"
+   "ref": "8d9f8768-2f63-45c5-b1d2-f53905b24930"
   },
   {
    "dependsOn": [],
-   "ref": "4be553cf-4dc5-4592-a4ab-cfdfa5da1b7a"
+   "ref": "4ae21332-6104-43c1-8052-e486484844cc"
   },
   {
    "dependsOn": [],
-   "ref": "254cc60f-7ac8-497a-8466-2203cdad9ce7"
+   "ref": "92b22bb1-a132-48b4-994c-c20993c1286a"
   },
   {
    "dependsOn": [],
-   "ref": "4498b6fb-3b70-4ba2-b05e-d1d99aa75f10"
+   "ref": "766d6e4e-fd6c-48f7-add6-f13635150c59"
   },
   {
    "dependsOn": [],
-   "ref": "6f9b3ec4-d13c-4429-86a2-2f113b7e7fa4"
+   "ref": "10d491ec-4cb2-431c-a360-9e9539e99740"
   },
   {
    "dependsOn": [],
-   "ref": "766e17a4-d6d0-4cd0-bfab-2dcb19c11a52"
+   "ref": "ad07c3e5-7337-4d1f-8420-1371e004bb74"
   },
   {
    "dependsOn": [],
-   "ref": "424c1ef9-a4c4-40ff-aa25-6e32b58cd20b"
+   "ref": "abc23482-2c75-4a15-9145-d200814a9805"
   },
   {
    "dependsOn": [],
-   "ref": "eaaac9a7-b875-4db9-aa0a-fc52f4b4911e"
+   "ref": "3d21ffac-6a3e-498c-95ed-ad5eb96e5d6e"
   },
   {
    "dependsOn": [],
-   "ref": "d0783a33-6294-439a-96fc-6a859ffe8b64"
+   "ref": "b46a5996-b149-4a55-83be-b721e9a687ef"
   },
   {
    "dependsOn": [],
-   "ref": "b247619e-5a4c-4485-880a-20ec81dda83c"
+   "ref": "b1aa2a53-f268-4b26-a109-145a898779b3"
   }
  ],
  "metadata": {
   "component": {
-   "bom-ref": "fc3811f3-af82-4fcc-958c-df6d5c4e874a",
-   "name": "pqc175-fixture-v2",
+   "bom-ref": "47818ca0-6f00-438c-985d-976dc184d8d5",
+   "name": "pqc194-fixture",
    "type": "device",
-   "version": "test"
+   "version": "cbom"
   },
+  "timestamp": "2026-10-13T18:28:58Z",
   "tools": {
    "components": [
     {
@@ -932,6 +973,7 @@
    ]
   }
  },
+ "serialNumber": "urn:uuid:7221c3e9-3118-4d4a-86c0-61eaff35360a",
  "specVersion": "1.5",
  "version": 1
 }
