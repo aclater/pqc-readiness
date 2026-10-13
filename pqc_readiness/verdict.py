@@ -111,6 +111,24 @@ def parse_proc_crypto_cnsa(text: str) -> dict[str, Any]:
     }
 
 
+def _cnsa_tls_key_exchange(openssl: dict[str, Any]) -> dict[str, list[str]]:
+    """Split the PQC TLS groups OpenSSL offers into CNSA 2.0-compliant
+    (ML-KEM-1024 component) and not.  X25519MLKEM768, the IANA-recommended
+    default, is *not* compliant: CNSA 2.0 approves ML-KEM-1024 only (NSA
+    CNSA 2.0 FAQ v2.1).  Hybrids are permitted but not required, so
+    SecP384r1MLKEM1024 counts.  Informational: `status` is decided by the
+    algorithm checks, not by which groups are configured."""
+    groups = openssl.get("tls_groups") or {}
+    offered = [*(groups.get("pure_pqc") or []), *(groups.get("hybrid") or [])]
+    refs = _algorithms.tls_group_references(offered)
+    return {
+        "compliant_groups": sorted(n for n, r in refs.items() if r["cnsa_2_0"]),
+        "non_compliant_pqc_groups": sorted(
+            n for n in offered if not (refs.get(n) or {}).get("cnsa_2_0")
+        ),
+    }
+
+
 def evaluate_cnsa_2_0(
     openssl: dict[str, Any],
     proc_crypto_text: str | None,
@@ -185,6 +203,16 @@ def evaluate_cnsa_2_0(
             "or hardware-accelerated SHA-384/SHA-512 (hash)."
         )
 
+    tls_kex = _cnsa_tls_key_exchange(openssl)
+    if tls_kex["non_compliant_pqc_groups"] and not tls_kex["compliant_groups"]:
+        notes.append(
+            "TLS offers PQC key exchange only through groups that do not meet "
+            f"CNSA 2.0 ({', '.join(tls_kex['non_compliant_pqc_groups'])}): their "
+            "ML-KEM component is not ML-KEM-1024.  A CNSA 2.0 TLS deployment "
+            "needs SecP384r1MLKEM1024 (RFC 10024) or pure MLKEM1024 "
+            "(draft-ietf-tls-mlkem)."
+        )
+
     fields = (kem, sig, sym, hash_ok)
     if not openssl_known and not proc_known:
         status = "unknown"
@@ -201,6 +229,7 @@ def evaluate_cnsa_2_0(
         "signature_compliant": sig,
         "symmetric_compliant": sym,
         "hash_compliant": hash_ok,
+        "tls_key_exchange": tls_kex,
         "notes": notes,
         "requirements": {k: list(v) for k, v in CNSA_2_0_REQUIREMENTS.items()},
     }
