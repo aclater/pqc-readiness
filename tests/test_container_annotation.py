@@ -134,6 +134,96 @@ def test_detect_pci_accelerators_no_flag_with_host_mount(
 
 
 # ---------------------------------------------------------------------------
+# detect_kernel_crypto_hw_annotated / detect_ktls_annotated — issue #70
+# ---------------------------------------------------------------------------
+
+def test_kernel_crypto_hw_annotated_emits_flag_in_container(
+    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """/proc/crypto inside a container without --host-mount is the
+    container's view; an empty driver list must not be mistaken for
+    "host has no hardware crypto drivers"."""
+    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: [])
+    out = pr.detect_kernel_crypto_hw_annotated()
+    assert out["items"] == []
+    assert out["unavailable_in_container"] is True
+    assert "/proc/crypto" in out["reason"]
+
+
+@pytest.mark.parametrize("env", ["bare_metal", "container_with_host_mount"])
+def test_kernel_crypto_hw_annotated_no_flag_when_trustworthy(
+    env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request.getfixturevalue(env)
+    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    out = pr.detect_kernel_crypto_hw_annotated()
+    assert out == {"items": ["aesni_intel"]}
+
+
+def test_ktls_annotated_emits_flag_in_container(
+    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pr, "detect_ktls", lambda: False)
+    out = pr.detect_ktls_annotated()
+    assert out["supported"] is False
+    assert out["unavailable_in_container"] is True
+    assert "/sys/module/tls" in out["reason"]
+
+
+@pytest.mark.parametrize("env", ["bare_metal", "container_with_host_mount"])
+def test_ktls_annotated_no_flag_when_trustworthy(
+    env: str, request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request.getfixturevalue(env)
+    monkeypatch.setattr(pr, "detect_ktls", lambda: True)
+    assert pr.detect_ktls_annotated() == {"supported": True}
+
+
+def test_annotated_notes_match_report_level_map(
+    container_no_host_mount: None, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The per-detection note and the Report-level
+    host_fs_detections_unavailable entry come from the same catalogue
+    row, so they must be identical — consumers may read either."""
+    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: [])
+    monkeypatch.setattr(pr, "detect_ktls", lambda: None)
+    report_map = pr.build_host_fs_detections_unavailable()
+    kc = pr.detect_kernel_crypto_hw_annotated()
+    kt = pr.detect_ktls_annotated()
+    assert kc["reason"] == report_map["kernel_crypto_hw"]["reason"]
+    assert kt["reason"] == report_map["ktls"]["reason"]
+
+
+def test_host_fs_note_for_unknown_key_raises() -> None:
+    with pytest.raises(KeyError):
+        pr._host_fs_note_for("not-a-detection")
+
+
+def test_main_report_populates_kernel_flags_in_container(
+    container_no_host_mount: None,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """End-to-end: inside a container without --host-mount, --json keeps
+    the existing field types (kernel_crypto_hw list, ktls_supported
+    bool|null) and lists both probes under
+    host_fs_detections_unavailable."""
+    import json
+    import sys
+
+    monkeypatch.setattr(pr, "detect_kernel_crypto_hw", lambda: ["aesni_intel"])
+    monkeypatch.setattr(pr, "detect_ktls", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["pqc_readiness.py", "--json"])
+    pr.main()
+    data = json.loads(capsys.readouterr().out)
+    assert data["kernel_crypto_hw"] == ["aesni_intel"]
+    assert data["ktls_supported"] is True
+    unavailable = data["host_fs_detections_unavailable"]
+    assert unavailable["kernel_crypto_hw"]["unavailable_in_container"] is True
+    assert unavailable["ktls"]["unavailable_in_container"] is True
+
+
+# ---------------------------------------------------------------------------
 # Inline annotation on dict-returning probes — detect_os
 # ---------------------------------------------------------------------------
 

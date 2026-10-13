@@ -204,6 +204,10 @@ def test_render_markdown_empty_report_is_non_empty_and_safe() -> None:
             id="prod-estimate-empty",
         ),
         pytest.param(
+            lambda r: setattr(r, "benchmark_tls_handshake", None),
+            id="bench-tls-not-run",
+        ),
+        pytest.param(
             lambda r: setattr(r, "benchmark_tls_handshake", {}),
             id="bench-tls-empty",
         ),

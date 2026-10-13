@@ -194,6 +194,7 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
         # Each entry is a (label, callable) pair where the callable mutates
         # the synthetic Report to remove or null-shape one optional field.
         # Property-style: render must still succeed and not surface 'None'.
+        pytest.param(lambda r: setattr(r, "benchmark", None), id="benchmark-not-run"),
         pytest.param(lambda r: setattr(r, "benchmark", {}), id="benchmark-empty"),
         pytest.param(
             lambda r: setattr(r, "benchmark", {"available": False, "reason": "openssl missing"}),
@@ -204,8 +205,19 @@ def test_render_text_empty_report_is_non_empty_and_safe() -> None:
             id="benchmark-unavailable-without-reason",
         ),
         pytest.param(
+            lambda r: setattr(r, "benchmark_tls_handshake", None),
+            id="bench-tls-not-run",
+        ),
+        pytest.param(
             lambda r: setattr(r, "benchmark_tls_handshake", {}),
             id="bench-tls-empty",
+        ),
+        pytest.param(
+            lambda r: (
+                setattr(r, "memory_bandwidth_gb_s", None),
+                setattr(r, "memory_bandwidth_method", None),
+            ),
+            id="membw-not-run",
         ),
         pytest.param(
             lambda r: setattr(r, "benchmark_tls_handshake", {"available": False, "reason": "loopback failed"}),

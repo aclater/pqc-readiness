@@ -99,8 +99,9 @@ def test_memory_tier_poor_is_role_independent() -> None:
 
 
 def test_schema_version_bumped_for_role_aware_memory() -> None:
-    """Adding role-aware memory fields is additive but bumps the schema
-    minor version — the aggregator rejects mismatched schemas, so this
-    bump is what causes 1.0 reports to be skipped rather than silently
-    merged with reports that have memory.tier_by_role populated."""
-    assert pr.SCHEMA_VERSION == "1.1"
+    """Adding role-aware memory fields was an additive minor bump (1.1);
+    the aggregator rejects mismatched schemas, so 1.0 reports are
+    skipped rather than silently merged.  Later additive bumps keep the
+    1.x major and must not regress below 1.1."""
+    major, minor = (int(x) for x in pr.SCHEMA_VERSION.split("."))
+    assert major == 1 and minor >= 1

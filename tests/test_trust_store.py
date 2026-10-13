@@ -202,6 +202,130 @@ def test_scan_trust_store_empty_when_no_dirs_match(monkeypatch, tmp_path) -> Non
 
 
 # ---------------------------------------------------------------------------
+# max_certs cap (issue #87)
+# ---------------------------------------------------------------------------
+
+
+def _stub_openssl(monkeypatch, calls: list[str]) -> None:
+    monkeypatch.setattr(pr.shutil, "which", lambda name: "/usr/bin/openssl")
+
+    def fake_run(cmd, timeout=None):  # noqa: ARG001
+        calls.append(cmd[cmd.index("-in") + 1])
+        return 0, CLASSICAL_DUMP
+
+    monkeypatch.setattr(pr, "_run", fake_run)
+
+
+@pytest.mark.parametrize(
+    ("n_files", "cap", "scanned", "truncated"),
+    [
+        (4, 5, 4, False),  # under the cap
+        (5, 5, 5, False),  # exactly at the cap — nothing skipped
+        (6, 5, 5, True),  # one over the cap
+    ],
+)
+def test_scan_trust_store_max_certs_boundary(
+    monkeypatch, tmp_path, n_files: int, cap: int, scanned: int, truncated: bool
+) -> None:
+    for i in range(n_files):
+        _write_pem(tmp_path / f"c{i:02d}.pem")
+    calls: list[str] = []
+    _stub_openssl(monkeypatch, calls)
+
+    result = pr.scan_trust_store(dirs=[str(tmp_path)], max_certs=cap)
+
+    assert len(calls) == scanned, "openssl must not run past the cap"
+    assert result["total_found"] == n_files
+    assert result["scanned_count"] == scanned
+    assert result["total_certs"] == scanned
+    assert result["max_certs"] == cap
+    assert result["truncated"] is truncated
+
+
+def test_scan_trust_store_cap_is_deterministic(monkeypatch, tmp_path) -> None:
+    """A capped scan always covers the same files (sorted order), so two
+    runs on the same host produce comparable reports."""
+    for name in ("b.pem", "a.crt", "c.pem"):
+        _write_pem(tmp_path / name)
+    first: list[str] = []
+    _stub_openssl(monkeypatch, first)
+    pr.scan_trust_store(dirs=[str(tmp_path)], max_certs=2)
+    assert [Path(p).name for p in first] == ["a.crt", "b.pem"]
+
+
+def test_scan_trust_store_cap_counts_symlinks_once(monkeypatch, tmp_path) -> None:
+    """Distro trust stores are symlink farms; a hash-named symlink to an
+    already-seen cert must not consume cap budget or total_found."""
+    real = tmp_path / "real.pem"
+    _write_pem(real)
+    (tmp_path / "abcd1234.pem").symlink_to(real)
+    calls: list[str] = []
+    _stub_openssl(monkeypatch, calls)
+    result = pr.scan_trust_store(dirs=[str(tmp_path)], max_certs=1)
+    assert result["total_found"] == 1
+    assert result["truncated"] is False
+
+
+def test_scan_trust_store_default_cap_is_500() -> None:
+    assert pr.TRUST_STORE_MAX_CERTS_DEFAULT == 500
+    import inspect
+
+    sig = inspect.signature(pr.scan_trust_store)
+    assert sig.parameters["max_certs"].default == 500
+
+
+def test_scan_trust_store_rejects_nonpositive_cap(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        pr.scan_trust_store(dirs=[str(tmp_path)], max_certs=0)
+
+
+@pytest.mark.parametrize("bad", ["0", "-3", "many"])
+def test_cli_rejects_bad_trust_store_max_certs(monkeypatch, bad: str) -> None:
+    import sys
+
+    monkeypatch.setattr(
+        sys, "argv", ["pqc_readiness.py", "--trust-store-max-certs", bad]
+    )
+    with pytest.raises(SystemExit) as exc:
+        pr.main()
+    assert exc.value.code == 2
+
+
+def test_truncation_surfaces_in_text_cbom_and_sarif() -> None:
+    import json
+
+    r = pr.Report()
+    r.trust_store = {
+        "available": True,
+        "scanned_dirs": ["/etc/pki/tls/certs"],
+        "total_certs": 500,
+        "pqc_certs": 0,
+        "hybrid_certs": 0,
+        "cert_categories": {"classical": 500, "hybrid_composite": 0, "pure_pqc": 0},
+        "total_found": 1200,
+        "scanned_count": 500,
+        "max_certs": 500,
+        "truncated": True,
+    }
+    text = pr.render_text(r)
+    assert "scanned 500 of 1200" in text
+
+    cbom = json.loads(pr.render_cbom(r))
+    ts_comp = [
+        c for c in cbom["components"] if c.get("name") == "Trust store certificate inventory"
+    ][0]
+    props = {p["name"]: p["value"] for p in ts_comp["properties"]}
+    assert props["trust_store:truncated"] == "true"
+    assert props["trust_store:total_found"] == "1200"
+
+    sarif = json.loads(pr.render_sarif(r))
+    results = sarif["runs"][0]["results"]
+    ts_res = [x for x in results if x["ruleId"] == "pqc-004-classical-only-trust-store"][0]
+    assert "capped at 500 of 1200" in ts_res["message"]["text"]
+    assert ts_res["properties"]["trust_store:truncated"] is True
+
+
+# ---------------------------------------------------------------------------
 # Field-deployment edge cases (issue #79): hardened hosts and minimal
 # containers often have no trust store, an empty one, or damaged files.
 # ---------------------------------------------------------------------------
@@ -226,6 +350,10 @@ def test_scan_trust_store_all_default_dirs_missing(monkeypatch, tmp_path) -> Non
         "pqc_certs": 0,
         "hybrid_certs": 0,
         "cert_categories": {"classical": 0, "hybrid_composite": 0, "pure_pqc": 0},
+        "total_found": 0,
+        "scanned_count": 0,
+        "max_certs": pr.TRUST_STORE_MAX_CERTS_DEFAULT,
+        "truncated": False,
     }
 
 
