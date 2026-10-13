@@ -272,7 +272,7 @@ def test_run_aggregator_skips_valid_json_that_is_not_an_object(
     assert rollup["skipped"] == [
         {
             "file": str(stray),
-            "reason": f"not a report: top-level JSON is {type_name}, expected object",
+            "reason": f"unreadable: expected a JSON object, got {type_name}",
         }
     ]
 
