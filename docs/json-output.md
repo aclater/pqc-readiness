@@ -161,8 +161,34 @@ Each list item describes one detected device or HSM client configuration:
 | `tls_pqc_groups` | list[string] | Back-compat union of `tls_groups.pure_pqc` and `tls_groups.hybrid`; prefer `tls_groups`. |
 | `tls_group_references` | object | Present when OpenSSL was probed. One entry per known PQC group in `tls_groups.pure_pqc` / `hybrid`, keyed by name: `codepoint` (IANA TLS Supported Groups value, e.g. `0x11EC`), `kem`, `classical` (`null` for pure groups), `recommended` (IANA "Recommended" column), `cnsa_2_0` (true only for an ML-KEM-1024 component), `reference` (`RFC 10024` or `draft-ietf-tls-mlkem`), `status` (`final` or `draft`), `url`, and `obsolete: true` for the pre-standard Kyber groups. Unknown names are omitted. |
 | `providers` | list[string] | Active provider names. |
+| `third_party_providers` | list[object] | Loaded providers that don't ship with OpenSSL (not `default` / `base` / `fips` / `legacy` / `null`), e.g. a source-built OQS provider: `{name, display_name, version, build_info, status}` from `openssl list -providers -verbose`. Under `--host-mount` this describes the scanner image's `openssl`. |
+| `third_party_algorithms` | object | `kem` / `signature`: lists of `{name, provider}` from `openssl list -kem-algorithms` / `-signature-algorithms` lines tagged `@ <provider>` for a non-built-in provider (e.g. `p256_mldsa44 @ oqsprovider`). |
+| `config` | object | What the host's OpenSSL configuration sets by default (#106); see below. Read from files through the host prefix, so it describes the host under `--host-mount`. |
 | `upgrade_path` | string \| null | Family-aware advice for reaching OpenSSL ≥ 3.5; `null` when already there or no advice applies. |
 | `reason` | string | Present only when `available` is false. |
+
+#### `openssl.config`
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | An `openssl.cnf` was found. When false only `reason` follows. |
+| `path` | string | Main config file (host path). |
+| `path_source` | string | `OPENSSL_CONF`, `OPENSSLDIR` (from `openssl version -d`) or `distribution default` (always under `--host-mount`, where the environment and binary belong to the image). Defaults: `/etc/pki/tls/openssl.cnf` (RHEL family), `/etc/ssl/openssl.cnf` (Debian / Ubuntu / SUSE). |
+| `files` | list[string] | Every file read, in order, following `.include` (a directory include reads its `*.cnf` / `*.conf` files in sorted order). |
+| `include_errors` | list[string] | Includes that could not be read: missing, unreadable, or a cycle / depth limit. Stock Ubuntu 26.04 lists two here: directories that exist only once its optional `crypto-config` package is installed. |
+| `init_section` | string \| null | Section named by `openssl_conf`. |
+| `system_default_section` | string \| null | Section named by `ssl_conf` → `system_default` (RHEL-family / SUSE: `crypto_policy`, which includes the crypto-policies back-end). |
+| `providers_configured` | list[object] | Entries of the `providers` section: `{name, section, activate, module, third_party}`. `activate` is null when the section doesn't set it. Commented-out snippets (Fedora's `pkcs11-provider.conf`) don't appear. |
+| `min_protocol` | string \| null | `MinProtocol` in the `system_default` section. |
+| `groups_configured` | list[string] \| null | `Groups` (or `Curves`) set in the `system_default` section, in order; null when unset. |
+| `signature_algorithms_configured` | list[string] \| null | `SignatureAlgorithms` set there; null when unset. |
+| `default_groups` | list[string] | Effective default groups: `groups_configured`, else OpenSSL's built-in list. |
+| `default_groups_source` | string | `config`, `openssl built-in default (3.5+)` (`?*X25519MLKEM768 / ?*X25519:?secp256r1 / ?X448:?secp384r1:?secp521r1 / ?ffdhe2048:?ffdhe3072`, per OpenSSL CHANGES.md for 3.5.0, 8 Apr 2025) or `openssl built-in default (pre-3.5: no PQC groups)`. |
+| `default_pqc_groups` | object | `hybrid` / `pure_pqc` split of `default_groups`. |
+| `pqc_key_exchange_by_default` | bool | A PQC key-exchange group is in `default_groups`. |
+| `third_party_providers_configured` | list[string] | Names of activated providers in the config that don't ship with OpenSSL. |
+| `reason` | string | Present only when `available` is false. |
+| `unavailable_in_container` | bool | Present when running in a container without `--host-mount`. |
 
 ### `tpm_pqc`
 
