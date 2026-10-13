@@ -2628,9 +2628,11 @@ def _iter_aggregator_reports(
     `skipped` (in sorted path order) instead of being yielded.  Only the
     sorted path list is held in memory, never the parsed reports."""
     for fp in sorted(dir_path.glob("**/*.json")):
+        # UnicodeDecodeError covers binary/non-UTF-8 files dropped into the
+        # fleet dir; one stray file must not abort the whole rollup.
         try:
             data = json.loads(fp.read_text())
-        except (OSError, json.JSONDecodeError) as e:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
             skipped.append({"file": str(fp), "reason": f"unreadable: {e}"})
             continue
         if not isinstance(data, dict):
