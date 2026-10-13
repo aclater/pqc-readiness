@@ -24,6 +24,7 @@ privileged DaemonSet on OpenShift.
 - [Exit codes](#exit-codes)
 - [Distribution support](#distribution-support)
 - [Containers and OpenShift](#containers-and-openshift)
+- [Scanning images offline](#scanning-images-offline)
 - [Fleet aggregation](#fleet-aggregation)
 - [Scope and adjacent tooling](docs/scope.md)
 - [Findings](#findings)
@@ -366,6 +367,7 @@ Flags below are grouped by purpose.
 | `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: the rpm database (rhel / suse; SQLite, Berkeley DB and ndb databases are all read in-process for the inventory, with `rpm -qa` only as the fallback for an unreadable database), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. Under `--host-mount` the host's rpm database is read; the DaemonSet and quadlet mount `/var/lib/rpm` read-only for this. |
 | `--scan-services` | Map each listening TCP socket and bound UDP socket to the process that owns it and the crypto library that process actually maps (OpenSSL and its forks, GnuTLS, NSS, wolfSSL), or for Go binaries the toolchain version and its default hybrid key exchange. Reads `/proc` only, with no network connections; bounded by a process cap and a time budget. Needs root, or CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, to see other users' processes, and hostPID plus `--host-mount` in a container. Output: `service_crypto_linkage` ([docs/json-output.md](docs/json-output.md#service_crypto_linkage)). |
 | `--host-mount PATH` | Path where the host root is mounted. Host reads of `/proc /sys /dev /etc`, `os-release` and the rpm / dpkg package databases go through it. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
+| `--root PATH` | Scan a filesystem tree offline: a mounted disk image or an extracted container rootfs. Package, certificate, key, crypto-policy, `openssl.cnf` and signing-key checks read `PATH`; CPU, kernel, device, process and benchmark sections are marked not applicable and no readiness tier is computed. Cannot be combined with `--host-mount`, `--bench`, `--bench-tls`, `--scan-services`, `--check`, `--fips-strict` or `--recommend`. See [Scanning images offline](#scanning-images-offline). |
 
 ### Recommendation engine
 
@@ -575,6 +577,35 @@ image.
 
 For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).
+
+## Scanning images offline
+
+`--root PATH` inventories a filesystem tree without running anything from it
+(#152). Use it for container images, golden images and disk images before they
+are deployed:
+
+```bash
+# Container image: export its rootfs, then scan the tree.
+mkdir rootfs && podman export "$(podman create registry.access.redhat.com/ubi10/ubi)" | tar -x -C rootfs
+pqc-readiness --root rootfs --scan-packages --scan-trust-store \
+  --scan-crypto-material --scan-signing-keys --json
+```
+
+| | `--host-mount PATH` | `--root PATH` |
+|---|---|---|
+| Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
+| CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
+| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
+| Packages, certificates, keys, crypto policy, signing keys | Read from the host | Read from the tree |
+| Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
+
+Package databases are read in-process for every format the matrix covers (rpm
+SQLite / Berkeley DB / ndb, dpkg `status`, apk, pacman), so the scanner never
+runs the tree's binaries or its own package tools against the tree. Checked
+against the in-image `rpm -qa` / `dpkg-query -W` on UBI 8, UBI 9, UBI 10,
+Fedora 44, Debian 13 and openSUSE Leap 16 container images: identical package
+lists, and no subprocess runs during the scan. Scanning a disk image needs it
+mounted read-only first (e.g. `guestmount --ro`), which usually requires root.
 
 ## Fleet aggregation
 

@@ -84,6 +84,7 @@ nothing was found.
 | `verdict_caveat` | `""` when `--bench` measured the PQC primitives; otherwise an explanation that the verdict reflects CPU instruction set and memory only. |
 | `exit_code` | Numeric exit code the program will return. Mirrors the [Exit codes](../README.md#exit-codes) table in the README. |
 | `inventory_metadata` | Operator-supplied inventory facts from `--inventory-metadata FILE` (OMB M-23-02 items the host can't know), validated and normalised; `null` when the flag isn't given. See [`inventory_metadata`](#inventory_metadata). |
+| `scan_mode` | `null` for live scans. For an offline `--root PATH` scan of a filesystem tree, `{mode, root, not_applicable, partial, reason}`: which fields cannot be answered from a tree and are marked not applicable. See [`scan_mode`](#scan_mode). |
 
 ## Nested fields
 
@@ -91,6 +92,7 @@ One subsection per object-valued field. Conventions used throughout:
 
 - A detection that could not run returns `{"available": false, "reason": "<why>"}` in place of its normal keys (e.g. `openssl` when the binary is missing, `ssh_pqc` when `ssh` is absent).
 - Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
+- In an offline `--root` scan, object-valued sections that need a live host carry `{"available": false, "not_applicable": true, "reason": "<why>"}`; see [`scan_mode`](#scan_mode). `not_applicable` never appears in live scans.
 - Rates are operations per second; sizes are bytes; memory is GiB unless stated.
 
 ### `memory`
@@ -166,6 +168,9 @@ Each list item describes one detected device or HSM client configuration:
 | `third_party_algorithms` | object | `kem` / `signature`: lists of `{name, provider}` from `openssl list -kem-algorithms` / `-signature-algorithms` lines tagged `@ <provider>` for a non-built-in provider (e.g. `p256_mldsa44 @ oqsprovider`). |
 | `config` | object | What the host's OpenSSL configuration sets by default (#106); see below. Read from files through the host prefix, so it describes the host under `--host-mount`. |
 | `upgrade_path` | string \| null | Family-aware advice for reaching OpenSSL ≥ 3.5; `null` when already there or no advice applies. |
+| `not_applicable` | bool | Offline `--root` scan only: the capability probes (which run the scanner's own `openssl`) did not run; `available` is false and `reason` explains. `package`, `version_tuple`, `pqc_native_expected` and `config` describe the tree. |
+| `package` | object \| null | Offline `--root` scan only: the tree's OpenSSL library package `{name, version}` from its package database (e.g. `openssl-libs`, `libssl3t64`), or `null` when none is installed. |
+| `pqc_native_expected` | bool \| null | Offline `--root` scan only: the packaged version is ≥ 3.5; `null` when no version is known. |
 | `reason` | string | Present only when `available` is false. |
 
 #### `openssl.config`
@@ -426,9 +431,9 @@ Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `available` | bool | Inventory succeeded. When false only `reason` follows. |
-| `package_manager` | string | `rpm`, `dpkg-query`, `pacman` or `apk`. |
-| `source` | string | RPM families only: `rpmdb-sqlite`, `rpmdb-bdb` or `rpmdb-ndb` (database read in-process; the suffix is its format) or `rpm-cli` (fallback when it cannot be read directly). |
-| `db_root` | string \| null | RPM families only: host-relative rpm database directory. |
+| `package_manager` | string | `rpm`, `dpkg-query`, `pacman` or `apk` for live scans; `dpkg`, `pacman` or `apk` when the database was read in-process under `--host-mount` / `--root`. |
+| `source` | string | RPM families: `rpmdb-sqlite`, `rpmdb-bdb` or `rpmdb-ndb` (database read in-process; the suffix is its format) or `rpm-cli` (fallback when it cannot be read directly). Debian / Alpine / Arch under `--host-mount` or `--root`: `dpkg-status`, `apk-installed-db` or `pacman-local-db`, read in-process because their CLIs would read the scanner's own database. Absent for live non-RPM scans. |
+| `db_root` | string \| null | Host-relative database location: the rpm database directory, or the dpkg `status` file, apk `installed` file or pacman `local` directory when `source` names one of those. |
 | `total_packages` | int | Installed packages counted (on RPM hosts this includes `gpg-pubkey` entries, as `rpm -qa` does). |
 | `bundled_crypto` | list[object] | Packages that embed their own crypto stack, each `{package, version, note}` where `note` names the stack (e.g. `Go runtime (crypto/tls embedded)`). |
 | `reason` | string | Present when `available` is false, or with `unavailable_in_container`. |
@@ -594,6 +599,30 @@ component. With `--cbom-profile federal-draft` the CBOM also reports, per
 item, whether it was `provided`, `collected`, `partial` or
 `not-provided`; see [docs/inventory-methodology.md](inventory-methodology.md).
 
+### `scan_mode`
+
+`null` unless `--root PATH` is given. An offline scan reads a filesystem tree (a
+mounted disk image or an extracted container rootfs) instead of a live host:
+packages, certificates, keys, crypto policies, `openssl.cnf` and package-signing
+keys come from the tree; nothing about the scanning machine (its CPU, kernel,
+processes or binaries on `PATH`) is reported. `verdict` is
+`NOT APPLICABLE - offline filesystem scan`, `isa_tier` is `not_applicable`,
+`exit_code` is 0, and `hostname` comes from the tree's `/etc/hostname` (empty
+when it has none). `arch` is read from the ELF header of the tree's
+`/usr/bin/env` or `/bin/sh`.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `mode` | string | Always `offline_root`. |
+| `root` | string | Absolute path of the scanned tree. |
+| `not_applicable` | list[string] | Report fields that cannot be answered from a tree. Object-valued ones hold the `{available: false, not_applicable: true, reason}` marker; scalar and list ones keep their empty defaults and are listed here so consumers don't read them as "probed, nothing found". |
+| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (configured proposals, no capability) and `nss` (version from the tree's rpm database when present). Values are human-readable explanations. |
+| `reason` | string | One-sentence summary; also used as `verdict_reason`. |
+
+`--root` cannot be combined with `--host-mount`, `--bench`, `--bench-tls`,
+`--scan-services`, `--check`, `--fips-strict` or `--recommend` (usage error,
+exit 2): each needs a live host or a readiness tier.
+
 ## `--ansible` variant
 
 `--ansible` returns a single top-level key `ansible_facts`, whose value
@@ -740,6 +769,7 @@ Compliance Finding (2003) only:
 | `openssl_version`, `openssl_pqc_native` | 5001 | `openssl.version`, `openssl.pqc_native`. |
 | `tls_hybrid_groups`, `tls_pure_pqc_groups` | 5001 | `openssl.tls_groups.hybrid` / `.pure_pqc`. |
 | `findings_count` | 5001 | Number of 2003 events that follow. |
+| `scan_mode` | 5001 | Offline `--root` scans only: the report's [`scan_mode`](#scan_mode) object (the event describes a filesystem tree, not a live host). |
 | `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
 | `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
 
