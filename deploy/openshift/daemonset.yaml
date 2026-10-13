@@ -168,6 +168,13 @@ spec:
             - name: host-os-release
               mountPath: /host/usr/lib/os-release
               readOnly: true
+            # Host rpm database for --scan-packages / NSS version (#125).
+            # /var/lib/rpm is the real directory on EL8/EL9 and a relative
+            # symlink to /usr/lib/sysimage/rpm on EL10/Fedora/SUSE; the
+            # bind mount follows it, so one mount covers every layout.
+            - name: host-rpmdb
+              mountPath: /host/var/lib/rpm
+              readOnly: true
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
               readOnly: false
@@ -194,6 +201,10 @@ spec:
           hostPath:
             path: /usr/lib/os-release
             type: File
+        - name: host-rpmdb
+          hostPath:
+            path: /var/lib/rpm
+            type: Directory
         # Output: hostPath today.  Swap to a PVC bound to RWX storage
         # (e.g. NFS, CephFS) for centralized aggregation across the
         # fleet without per-node collection.
