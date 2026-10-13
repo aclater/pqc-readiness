@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+# Opt-in image variant for `--scan-services` on OpenShift (#181).
+#
+# Why a separate image: --scan-services reads /proc/<pid>/{maps,fd/*,exe,
+# root,environ} of other users' processes.  Each of those is gated by a
+# ptrace access mode PTRACE_MODE_READ_FSCREDS check (proc_pid_maps(5),
+# proc_pid_fd(5), proc_pid_exe(5), proc_pid_root(5), proc_pid_environ(5)),
+# which a non-root caller passes only with CAP_SYS_PTRACE in its
+# *effective* set (ptrace(2), "Ptrace access mode checking", steps 3-5).
+# Kubernetes `capabilities.add` does not reach the effective set of a
+# non-root process: Linux clears permitted/effective on the UID-0 ->
+# non-zero transition and CRI-O deliberately leaves the ambient set empty
+# (kubernetes/kubernetes#56374, KEP-2763, cri-o/cri-o#1558).  File
+# capabilities on the executed binary are the only way to keep the pod
+# non-root and still get the two capabilities, so this image carries a
+# *dedicated copy* of the interpreter with exactly
+#   cap_sys_ptrace       - pass the ptrace read check for other UIDs
+#   cap_dac_read_search  - traverse other users' 0500 /proc/<pid>/fd dirs
+#                          and read root-only library files via
+#                          /proc/<pid>/root (capabilities(7))
+# and nothing else.  The system /usr/bin/python3 stays capability-free, so
+# the default DaemonSet built from the same base gains nothing.
+#
+# Not granted: /proc/<pid>/map_files/* needs CAP_SYS_ADMIN or
+# CAP_CHECKPOINT_RESTORE (proc_pid_map_files(5)); libraries deleted by an
+# upgrade stay counted as unreadable rather than widening the grant.
+#
+# Build (base image first; BASE defaults to the published image):
+#   podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
+#   podman build --format=docker -t pqc-readiness:ubi10-services \
+#     --build-arg BASE=localhost/pqc-readiness:ubi10 \
+#     -f deploy/openshift/services/Containerfile .
+
+ARG BASE=ghcr.io/aclater/pqc-readiness:v2
+FROM ${BASE}
+
+LABEL org.opencontainers.image.title="pqc-readiness-services"
+LABEL org.opencontainers.image.description="pqc-readiness with a file-capability interpreter for --scan-services (opt-in)"
+
+USER 0
+# setcap ships in libcap, which the base already has (coreutils-single
+# depends on it), so no packages are added for this step.
+RUN install -d -m 0750 -o 0 -g 0 /usr/local/libexec/pqc-readiness \
+    && install -m 0750 -o 0 -g 0 "$(readlink -f /usr/bin/python3)" \
+        /usr/local/libexec/pqc-readiness/python3 \
+    && setcap 'cap_sys_ptrace,cap_dac_read_search=ep' \
+        /usr/local/libexec/pqc-readiness/python3
+
+# Mode 0750 root:0 — only GID 0 (the probe user's primary group, per the
+# base image) can execute the capability-bearing interpreter.
+USER 1001
+WORKDIR /var/lib/pqc-readiness
+
+# -I (isolated mode): ignore PYTHON* environment variables, the user site
+# directory and the current directory, so nothing outside the image can
+# steer code into the capability-bearing interpreter.
+ENTRYPOINT ["/usr/local/libexec/pqc-readiness/python3", "-I", "/usr/local/bin/pqc-readiness.pyz"]
+CMD ["--json", "--scan-services"]
