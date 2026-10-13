@@ -61,6 +61,7 @@ nothing was found.
 | `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan presence and PQC (ML-KEM) key-exchange support. See [`ipsec_pqc`](#ipsec_pqc). |
 | `nss` | NSS PQC algorithm exposure: `{available, tool, version, pqc_capable, note?}`. `tool` is `certutil --version`, `rpmdb (sqlite)` / `rpmdb (bdb)` / `rpmdb (ndb)` (package `nss` / `mozilla-nss` read from the rpm database in-process; the suffix is the database format) or `rpm -q` (CLI fallback when the database cannot be read directly). Under `--host-mount` the host rpm database is consulted before `certutil`, because `certutil` belongs to the scanner image. |
+| `crypto_policy` | System-wide crypto policy (crypto-policies) and what it lets PQC do: active / configured policy, subpolicies, per-protocol `pqc_enabled`, and the parsed OpenSSL / GnuTLS / NSS / OpenSSH / libreswan back-ends. Read from files, so it works under `--host-mount` and on SUSE releases that ship the policy data without `update-crypto-policies`. `{available: false, reason}` where there is no `/etc/crypto-policies`. See [Nested fields](#crypto_policy). |
 | `kernel_info` | Kernel release, OS identity copies kept for back-compat, `/etc/redhat-release` and PQC-named `/proc/crypto` drivers. See [`kernel_info`](#kernel_info). |
 | `fips_pqc_conflict` | `{in_conflict, explanation}`: `in_conflict` is true when kernel FIPS mode is on but PQC algorithms are exposed only through the non-FIPS default provider. See [`fips_pqc_conflict`](#fips_pqc_conflict). |
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
@@ -207,6 +208,53 @@ Each list item describes one detected device or HSM client configuration:
 | `pqc_capable` | bool | Version ≥ 3.108. |
 | `note` | string | Present for rpm-sourced versions (distro package version, not necessarily upstream), and under `--host-mount` when only the image's `certutil` was available. |
 | `reason` | string | Present only when `available` is false. |
+
+### `crypto_policy`
+
+The system-wide crypto policy is the master switch for which algorithms
+OpenSSL, GnuTLS, NSS, OpenSSH and libreswan negotiate by default, so a
+PQC-capable library can still be held back by policy. Measured on cloud
+images (2026-10-13):
+
+| Release | DEFAULT enables PQC? | PQ-enabling subpolicy | Other |
+| --- | --- | --- | --- |
+| RHEL-family 9.8 (Rocky, Alma, Stream, Oracle) | No: no ML-KEM / ML-DSA in any back-end | `PQ` | |
+| RHEL-family 10.2, Fedora 43 / 44 | Yes: hybrid ML-KEM groups, ML-DSA signatures, hybrid ML-KEM SSH kex | `TEST-PQ` adds pure ML-KEM groups and composite signatures | `NO-PQ` removes PQC |
+| openSUSE Leap 16.0, Tumbleweed | Yes (as Fedora) | `TEST-PQ` (module shipped) | Policy files present but no `update-crypto-policies` tool |
+
+Field names follow the RHEL `crypto_policies` system role's facts where
+they overlap (`crypto_policies_active`, `crypto_policies_available_subpolicies`,
+`crypto_policies_reboot_required`).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | `/etc/crypto-policies/state/current` or `/etc/crypto-policies/config` was readable. When false only `reason` (and any container note) follows. |
+| `active` | string \| null | Applied policy from `state/current`, e.g. `DEFAULT:TEST-PQ` (role: `crypto_policies_active`). |
+| `base_policy` | string \| null | Part before the first `:` (`DEFAULT`, `FUTURE`, `FIPS`, `LEGACY`, …). |
+| `subpolicies` | list[string] | Modules after the base, in order. |
+| `configured` | string \| null | Policy requested in `/etc/crypto-policies/config`. |
+| `applied` | bool \| null | `configured` equals `active` (what `update-crypto-policies --is-applied` checks); null when either file is missing. |
+| `available_subpolicies` | list[string] | `*.pmod` modules installed under `/usr/share/crypto-policies/policies/modules` and `/etc/crypto-policies/policies/modules` (role: `crypto_policies_available_subpolicies`). |
+| `pq_subpolicies_active` | list[string] | Active subpolicies that switch PQC on (`PQ` on EL9, `TEST-PQ` on EL10 / Fedora / SUSE). |
+| `pq_disabled_by_subpolicy` | list[string] | Active subpolicies that switch PQC off (`NO-PQ`). |
+| `reboot_required` | bool \| null | The FIPS policy and kernel FIPS mode disagree (`base_policy == "FIPS"` vs `/proc/sys/crypto/fips_enabled`); they only change together across a reboot (role: `crypto_policies_reboot_required`). Null when either is unknown. |
+| `pqc_enabled` | object | Per protocol, does the policy let PQC through: `tls_key_exchange`, `tls_signatures` (OpenSSL back-end), `ssh_key_exchange_client`, `ssh_key_exchange_server`, `ike_key_exchange` (libreswan). `null` when the deciding back-end is missing or unreadable. |
+| `backends` | object | Parsed back-ends keyed `opensslcnf`, `gnutls`, `nss`, `openssh`, `opensshserver`, `libreswan`. Each has `readable` (bool); readable ones add the fields below. Back-ends are absolute symlinks into `/usr/share/crypto-policies/<POLICY>/`, resolved inside the `--host-mount` prefix (mount `/usr/share/crypto-policies` read-only as well as `/etc`). |
+| `readable` | bool | The back-end file (after symlink resolution inside the host prefix) could be read. |
+| `groups` | list[string] | `opensslcnf` / `gnutls`: TLS groups in preference order (`*`, `?` markers and `GROUP-` prefixes stripped). |
+| `pqc_groups` | object | `hybrid` / `pure_pqc` lists of PQC key-exchange names (OpenSSL canonical names, oqs-provider aliases such as `p256_mlkem768`, GnuTLS and NSS spellings). |
+| `signature_algorithms` | list[string] | `opensslcnf` / `gnutls`: signature algorithms in preference order. |
+| `pqc_signature_algorithms` | object | `hybrid` (composite, e.g. `p256_mldsa44`) / `pure_pqc` (e.g. `mldsa65`, `ML-DSA-65`) lists. |
+| `allowed` | list[string] | `nss`: the policy module's `allow=` list. |
+| `kex` | list[string] | `openssh` / `opensshserver`: `KexAlgorithms` in order. |
+| `kex_groups` | object | `openssh` / `opensshserver`: `pure_pqc` / `hybrid` / `classical`, same classifier as `ssh_pqc.kex_groups`. |
+| `ike_proposals` | list[string] | `libreswan`: `ike=` proposals. |
+| `pqc_key_exchange` | list[string] | `libreswan`: PQC tokens found in the proposals (none in any measured policy). |
+| `reason` | string | Present only when `available` is false. |
+| `unavailable_in_container` | bool | Present when running in a container without `--host-mount` (see `host_fs_detections_unavailable`). |
+
+SARIF rule `pqc-008-crypto-policy-blocks-pqc` fires when `openssl.tls_groups`
+lists hybrid or pure PQC groups but `pqc_enabled.tls_key_exchange` is false.
 
 ### `kernel_info`
 
