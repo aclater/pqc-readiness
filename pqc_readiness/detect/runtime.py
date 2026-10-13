@@ -78,6 +78,16 @@ _HOST_FS_DEPENDENT_DETECTIONS: tuple[tuple[str, str, str], ...] = (
         "the rpm database (/usr/lib/sysimage/rpm, /var/lib/rpm or /usr/share/rpm)",
     ),
     (
+        "openssl_config",
+        "OpenSSL configuration detection",
+        "openssl.cnf and its .include files under /etc and /usr/lib/ssl",
+    ),
+    (
+        "crypto_policy",
+        "System crypto-policy detection",
+        "/etc/crypto-policies and /usr/share/crypto-policies",
+    ),
+    (
         "nss",
         "NSS version detection",
         "certutil and the rpm database (/usr/lib/sysimage/rpm, /var/lib/rpm or /usr/share/rpm)",

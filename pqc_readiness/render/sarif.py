@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import report as _report
 from .. import registry as _registry
+from ..detect import config_policy as _config_policy
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +170,24 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         help_uri=f"{SARIF_HELP_BASE}/pqc-007-fips-without-algorithm-fence.md",
     ),
     RuleSpec(
-        id="pqc-008-classical-package-signing-keys",
+        id="pqc-008-crypto-policy-blocks-pqc",
+        short_description=(
+            "OpenSSL supports PQC TLS groups but the system crypto policy "
+            "keeps them out."
+        ),
+        full_description=(
+            "The installed OpenSSL exposes hybrid or pure ML-KEM TLS 1.3 "
+            "groups, but the active system-wide crypto policy lists none in "
+            "its OpenSSL back-end, so applications using the system default "
+            "never negotiate PQC.  Measured on RHEL-family 9.8 hosts, whose "
+            "DEFAULT policy enables no PQC; the PQ subpolicy (EL9) or "
+            "TEST-PQ (EL10 / Fedora) turns it on, and NO-PQ turns it off."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-008-crypto-policy-blocks-pqc.md",
+    ),
+    RuleSpec(
+        id="pqc-009-classical-package-signing-keys",
         short_description=(
             "Every package-signing key the package manager trusts is classical."
         ),
@@ -184,7 +202,7 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
             "has to trust the new key before PQC-signed packages verify."
         ),
         default_level="note",
-        help_uri=f"{SARIF_HELP_BASE}/pqc-008-classical-package-signing-keys.md",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-009-classical-package-signing-keys.md",
     ),
 )
 
@@ -221,6 +239,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-007-fips-without-algorithm-fence": "7.5",
     # No native PQC in the TLS library: medium.
     "pqc-001-openssl-pre-3.5": "5.3",
+    # PQC-capable library held back by system policy; a config change fixes
+    # it, so just below pqc-001 (#104).
+    "pqc-008-crypto-policy-blocks-pqc": "5.0",
     # Appliance may not support PQC; unverified dependency: medium.
     "pqc-006-no-network-hsm-pqc-firmware": "4.3",
     # Hardware cannot run PQC in software at production speed: medium.
@@ -229,7 +250,7 @@ SECURITY_SEVERITY: dict[str, str] = {
     "pqc-004-classical-only-trust-store": "3.1",
     # Package-signing trust anchors need rotating to PQC keys; the fix is
     # upstream's, the host only has to trust the new key: low.
-    "pqc-008-classical-package-signing-keys": "3.1",
+    "pqc-009-classical-package-signing-keys": "3.1",
     # Performance concern, not a security weakness: low.
     "pqc-005-slh-dsa-in-tls-context": "2.0",
 }
@@ -437,12 +458,34 @@ def build_findings(r: _report.Report) -> list[Finding]:
             )
         )
 
+    cp = r.crypto_policy
+    if _config_policy.policy_blocks_capable_pqc(cp, osinfo):
+        tg = osinfo.get("tls_groups") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-008-crypto-policy-blocks-pqc",
+                level="warning",
+                message=(
+                    f"Crypto policy {cp.get('active')} allows no PQC TLS groups, "
+                    "although OpenSSL supports "
+                    + ", ".join((tg.get("hybrid") or []) + (tg.get("pure_pqc") or []))
+                    + "."
+                ),
+                properties={
+                    "crypto_policy:active": cp.get("active"),
+                    "crypto_policy:available_subpolicies": cp.get(
+                        "available_subpolicies"
+                    ),
+                },
+            )
+        )
+
     sk = r.signing_keys
     if sk.get("available") and (sk.get("summary") or {}).get("all_classical"):
         algos = sorted({str(k.get("algorithm")) for k in sk.get("keys") or []})
         findings.append(
             Finding(
-                rule_id="pqc-008-classical-package-signing-keys",
+                rule_id="pqc-009-classical-package-signing-keys",
                 level="note",
                 message=(
                     f"All {sk['summary']['total']} trusted package-signing keys "

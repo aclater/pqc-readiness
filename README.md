@@ -99,7 +99,7 @@ versions.
 |---|---|---|---|
 | Default scan | 0.38 s | 0.38 s | unchanged |
 | `--scan-packages` | 0.79 s | 0.36 s | 2.2× faster |
-| `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-008` when every key is classical). Public keys only. |
+| `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-009` when every key is classical). Public keys only. |
 | `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
 | Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
 
@@ -194,7 +194,10 @@ Nothing was renamed or removed. The full field reference is in
    Intel QAT.
 3. **OS / library plumbing** — `/proc/crypto` hardware drivers, kernel
    TLS, kernel FIPS mode, OpenSSL ≥ 3.5 PQC algorithms and TLS 1.3
-   hybrid groups, OpenSSH `ssh -Q kex`, strongSwan / Libreswan, NSS.
+   hybrid groups, OpenSSH `ssh -Q kex`, strongSwan / Libreswan, NSS,
+   and the system-wide crypto policy: whether it actually lets PQC
+   through to OpenSSL, GnuTLS, NSS, OpenSSH and libreswan (EL9 DEFAULT
+   does not; EL10, Fedora and SUSE 16 DEFAULT do).
 4. **Production suitability** — per-algorithm tier with measured
    throughput, host capacity estimate, and a top-level
    `replace_required` flag for fleet planning.

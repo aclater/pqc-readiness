@@ -23,6 +23,7 @@ from . import bench as _bench
 from .detect import certs as _certs
 from .detect import certs_discovery as _certs_discovery
 from .detect import config as _config
+from .detect import config_policy as _config_policy
 from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
 from .detect import packages as _packages
@@ -197,6 +198,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     _algorithms.annotate_key_exchange(osinfo, ssh_info)
     ipsec_info = _protocols.detect_ipsec_pqc(family)
     nss_info = _protocols.detect_nss()
+    crypto_policy = _config_policy.detect_crypto_policy()
     kernel_info = _osinfo.detect_kernel_info(os_release)
     fips = _config.interpret_fips(fips, osinfo, os_release)
     fips_conflict = _config.fips_pqc_conflict_check(fips, osinfo)
@@ -296,6 +298,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         ssh_pqc=ssh_info,
         ipsec_pqc=ipsec_info,
         nss=nss_info,
+        crypto_policy=crypto_policy,
         kernel_info=kernel_info,
         fips_pqc_conflict=fips_conflict,
         cnsa_2_0=cnsa_2_0,

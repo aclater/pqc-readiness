@@ -366,22 +366,22 @@ def test_cli_flag_and_default_report_field() -> None:
     assert pr.Report().signing_keys == {}
 
 
-def test_sarif_pqc_008_only_when_all_classical(host) -> None:
+def test_sarif_pqc_009_only_when_all_classical(host) -> None:
     host("el8-bdb")
     r = pr.Report(signing_keys=ps.scan_signing_keys({"family": "rhel"}))
     ids = [f.rule_id for f in pr.build_findings(r)]
-    assert "pqc-008-classical-package-signing-keys" in ids
-    finding = [f for f in pr.build_findings(r) if f.rule_id.startswith("pqc-008")][0]
+    assert "pqc-009-classical-package-signing-keys" in ids
+    finding = [f for f in pr.build_findings(r) if f.rule_id.startswith("pqc-009")][0]
     assert finding.level == "note"
     assert finding.properties["signing_keys:total"] == 2
 
 
-def test_sarif_pqc_008_silent_with_pqc_key(host) -> None:
+def test_sarif_pqc_009_silent_with_pqc_key(host) -> None:
     host("el10-sqlite")
     r = pr.Report(
         signing_keys=ps.scan_signing_keys({"family": "rhel", "version_id": "10.2"})
     )
-    assert all(not f.rule_id.startswith("pqc-008") for f in pr.build_findings(r))
+    assert all(not f.rule_id.startswith("pqc-009") for f in pr.build_findings(r))
 
 
 def test_text_section_lists_keys(host) -> None:

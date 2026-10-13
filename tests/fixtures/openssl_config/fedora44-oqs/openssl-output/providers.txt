@@ -1,0 +1,21 @@
+Providers:
+  default
+    name: OpenSSL Default Provider
+    version: 3.5.9
+    status: active
+    build info: 3.5.9
+    gettable provider parameters:
+      name: pointer to a UTF8 encoded string (arbitrary size)
+      version: pointer to a UTF8 encoded string (arbitrary size)
+      buildinfo: pointer to a UTF8 encoded string (arbitrary size)
+      status: integer (arbitrary size)
+  oqsprovider
+    name: OpenSSL OQS Provider
+    version: 0.12.0
+    status: active
+    build info: OQS Provider v.0.12.0 (7e9d095) based on liboqs v.0.16.0
+    gettable provider parameters:
+      name: pointer to a UTF8 encoded string (arbitrary size)
+      version: pointer to a UTF8 encoded string (arbitrary size)
+      buildinfo: pointer to a UTF8 encoded string (arbitrary size)
+      status: integer (arbitrary size)

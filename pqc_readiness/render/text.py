@@ -7,6 +7,7 @@ from typing import Any
 
 from .. import report as _report
 from .. import registry as _registry
+from ..detect import config_policy as _config_policy
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +202,44 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_crypto_policy(r: _report.Report) -> list[str]:
+    """Section 3d: system-wide crypto policy and what it lets PQC do (#104)."""
+    cp = r.crypto_policy
+    if not cp.get("available"):
+        return []
+    state = "applied" if cp.get("applied") else "NOT applied"
+    if cp.get("applied") is None:
+        state = "applied: unknown"
+    en = cp.get("pqc_enabled") or {}
+
+    def yn(v: object) -> str:
+        return "?" if v is None else ("yes" if v else "no")
+
+    L = [
+        f"   Crypto policy: {cp.get('active')} ({state})",
+        "     PQC allowed: "
+        f"TLS kex {yn(en.get('tls_key_exchange'))}, "
+        f"TLS sig {yn(en.get('tls_signatures'))}, "
+        f"SSH kex {yn(en.get('ssh_key_exchange_server'))}, "
+        f"IKE {yn(en.get('ike_key_exchange'))}",
+    ]
+    if cp.get("pq_disabled_by_subpolicy"):
+        L.append(
+            C.wrap(
+                C.YELLOW,
+                f"     ⚠  PQC removed by subpolicy: {', '.join(cp['pq_disabled_by_subpolicy'])}",
+            )
+        )
+    if _config_policy.policy_blocks_capable_pqc(cp, r.openssl):
+        L.append(
+            C.wrap(
+                C.YELLOW,
+                "     ⚠  OpenSSL supports PQC TLS groups but the policy keeps them out",
+            )
+        )
+    return L
+
+
 def _render_text_os_crypto(r: _report.Report) -> list[str]:
     """Section 3: OS crypto plumbing. Composite of kernel/proc-crypto, FIPS,
     and SSH/IPsec/NSS sub-blocks under a single bold heading."""
@@ -208,6 +247,7 @@ def _render_text_os_crypto(r: _report.Report) -> list[str]:
     L.extend(_render_text_kernel_crypto(r))
     L.extend(_render_text_fips(r))
     L.extend(_render_text_ssh_ipsec_nss(r))
+    L.extend(_render_text_crypto_policy(r))
     L.append("")
     return L
 
@@ -245,6 +285,15 @@ def _render_text_openssl(r: _report.Report) -> list[str]:
         L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
         L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
         L.extend(_render_text_openssl_tls_groups(r.openssl.get("tls_groups") or {}))
+        cfg = r.openssl.get("config") or {}
+        if cfg.get("available"):
+            src = cfg.get("default_groups_source")
+            pqc = "yes" if cfg.get("pqc_key_exchange_by_default") else "no"
+            L.append(f"   Config:        {cfg.get('path')} (default groups from {src})")
+            L.append(f"   PQC kex by default: {pqc}")
+        tp = [p.get("name") for p in r.openssl.get("third_party_providers") or []]
+        if tp:
+            L.append(f"   3rd-party providers: {', '.join(str(n) for n in tp)}")
     L.append("")
     return L
 
@@ -566,6 +615,28 @@ def render_markdown(r: _report.Report) -> str:
         pure_md = tg_md.get("pure_pqc") or []
         L.append(f"- TLS 1.3 hybrid groups: {', '.join(hybrid_md) or '_none_'}")
         L.append(f"- TLS 1.3 pure PQC groups: {', '.join(pure_md) or '_none_'}")
+        L.append("")
+    cp = r.crypto_policy
+    if cp.get("available"):
+        en = cp.get("pqc_enabled") or {}
+
+        def md_yn(v: object) -> str:
+            return "unknown" if v is None else ("yes" if v else "**no**")
+
+        L.append("## System crypto policy")
+        L.append(
+            f"- Active: `{cp.get('active')}` (configured `{cp.get('configured')}`)"
+        )
+        L.append(
+            f"- PQC allowed: TLS key exchange {md_yn(en.get('tls_key_exchange'))}, "
+            f"TLS signatures {md_yn(en.get('tls_signatures'))}, "
+            f"SSH key exchange {md_yn(en.get('ssh_key_exchange_server'))}, "
+            f"IKE {md_yn(en.get('ike_key_exchange'))}"
+        )
+        if _config_policy.policy_blocks_capable_pqc(cp, r.openssl):
+            L.append(
+                "- ⚠ OpenSSL supports PQC TLS groups but the active policy keeps them out"
+            )
         L.append("")
     if r.per_algo:
         L.append("## Per-algorithm verdict")

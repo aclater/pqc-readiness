@@ -48,6 +48,10 @@ Volume=/usr/lib/os-release:/host/usr/lib/os-release:ro
 # is a relative symlink to /usr/lib/sysimage/rpm on EL10 / Fedora / SUSE;
 # the bind mount follows it, so this one mount covers every layout.
 Volume=/var/lib/rpm:/host/var/lib/rpm:ro
+# System crypto-policy back-ends (#104): /etc/crypto-policies/back-ends/*
+# are absolute symlinks into this directory.  Drop this line on hosts
+# without crypto-policies (Debian / Ubuntu), where it does not exist.
+Volume=/usr/share/crypto-policies:/host/usr/share/crypto-policies:ro
 Volume=/var/lib/pqc-readiness:/var/lib/pqc-readiness:rw,Z
 
 # SecurityLabelDisable is required because the container_t domain does
