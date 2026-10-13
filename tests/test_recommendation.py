@@ -256,9 +256,257 @@ def test_unknown_role_raises() -> None:
         pr.recommend(r, policy="commercial", role="not-a-role")
 
 
+# ---------------------------------------------------------------------------
+# tls-client role (#90)
+# ---------------------------------------------------------------------------
+
+_EXPECTED_TLS = {
+    "cnsa-2.0": ("ML-KEM-1024", "pure", "ML-DSA-87", "SHA-384"),
+    "nist-civilian": ("ML-KEM-768", "pure", "ML-DSA-65", "SHA-256"),
+    "eu-anssi-bsi": ("ML-KEM-768", "hybrid", "ML-DSA-65", "SHA-256"),
+    "commercial": ("ML-KEM-768", "pure", "ML-DSA-65", "SHA-256"),
+}
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_tls_client_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy=policy, role="tls-client")["recommendations"][policy]
+    kem, mode, sig, hash_ = _EXPECTED_TLS[policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "tls-client"
+    assert sub["kem"]["algorithm"] == kem
+    assert sub["kem"]["mode"] == mode
+    assert sub["signature"]["algorithm"] == sig
+    assert sub["hash"]["algorithm"] == hash_
+    # A client verifies the server chain; it does not sign.
+    assert "verify" in sub["signature"]["reason"]
+    assert "sign p99" not in sub["signature"]["reason"]
+    assert all("sign p99" not in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_tls_client_reasons_differ_from_tls_server(policy: str) -> None:
+    r = _make_report(isa_tier="good")
+    client = pr.recommend(r, policy, "tls-client")["recommendations"][policy]
+    server = pr.recommend(r, policy, "tls-server")["recommendations"][policy]
+    assert client["signature"]["algorithm"] == server["signature"]["algorithm"]
+    assert client["signature"]["reason"] != server["signature"]["reason"]
+
+
+def test_tls_client_cnsa_poor_isa_caveat_references_verify() -> None:
+    r = _make_report(isa_tier="poor")
+    sub = pr.recommend(r, "cnsa-2.0", "tls-client")["recommendations"]["cnsa-2.0"]
+    assert any("ML-DSA-87 verify p99" in c for c in sub["caveats"])
+
+
+def test_tls_client_middlebox_caveat_for_ml_kem_1024() -> None:
+    r = _make_report(isa_tier="excellent")
+    sub = pr.recommend(r, "cnsa-2.0", "tls-client")["recommendations"]["cnsa-2.0"]
+    caveat = [c for c in sub["caveats"] if "middlebox" in c]
+    assert len(caveat) == 1
+    # FIPS 203: ML-KEM-1024 encapsulation key = 384*4 + 32 bytes.
+    assert "1568 bytes" in caveat[0]
+
+
+def test_tls_client_no_middlebox_caveat_for_pure_ml_kem_768() -> None:
+    """A pure ML-KEM-768 share (1184 bytes) stays under the threshold."""
+    r = _make_report(isa_tier="excellent")
+    for policy in ("nist-civilian", "commercial"):
+        sub = pr.recommend(r, policy, "tls-client")["recommendations"][policy]
+        assert not any("middlebox" in c for c in sub["caveats"])
+
+
+def test_tls_client_hybrid_share_size_includes_classical_component() -> None:
+    """X25519MLKEM768 = 1184 + 32 bytes, which crosses the threshold."""
+    r = _make_report(isa_tier="excellent")
+    sub = pr.recommend(r, "eu-anssi-bsi", "tls-client")["recommendations"][
+        "eu-anssi-bsi"
+    ]
+    assert any("1216 bytes" in c for c in sub["caveats"])
+
+
+def test_ml_kem_encaps_key_sizes_match_pqc_sizes() -> None:
+    assert (
+        pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-768"] == pr.PQC_SIZES["ML-KEM-768"]["pk"]
+    )
+    assert pr.ML_KEM_ENCAPS_KEY_BYTES["ML-KEM-1024"] == 1568
+
+
+def test_tls_client_missing_hybrid_groups_caveat_names_client() -> None:
+    r = _make_report(hybrid_groups=[])
+    sub = pr.recommend(r, "eu-anssi-bsi", "tls-client")["recommendations"][
+        "eu-anssi-bsi"
+    ]
+    assert any("hybrid TLS client" in c for c in sub["caveats"])
+
+
+# ---------------------------------------------------------------------------
+# signing-service role (#91)
+# ---------------------------------------------------------------------------
+
+_PQC_ACCEL = [{"name": "test-hsm", "pqc_capable": True}]
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "signing-service"
+    expected_sig = "ML-DSA-87" if policy == "cnsa-2.0" else "ML-DSA-65"
+    assert sub["signature"]["algorithm"] == expected_sig
+    assert sub["hash"]["algorithm"] == _EXPECTED_TLS[policy][3]
+    assert "sign" in sub["signature"]["reason"] or "mandated" in sub["signature"]["reason"]
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_kem_is_null(policy: str) -> None:
+    sub = pr.recommend(_make_report(), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    assert sub["kem"]["algorithm"] is None
+    assert sub["kem"]["mode"] == "n/a"
+    assert "not applicable" in sub["kem"]["reason"]
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_has_no_tls_group_caveat(policy: str) -> None:
+    """Signing services negotiate no TLS groups, so missing groups or a
+    missing OpenSSL must not produce TLS caveats."""
+    r = _make_report(openssl_available=False, hybrid_groups=[], pure_groups=[])
+    sub = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert not any("TLS" in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ("nist-civilian", "eu-anssi-bsi", "commercial"))
+def test_signing_service_notes_slh_dsa_for_low_volume(policy: str) -> None:
+    sub = pr.recommend(_make_report(), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    assert sub["signature"]["algorithm"] == "ML-DSA-65"
+    assert any(
+        "SLH-DSA-SHA2-128s" in c and "low-volume" in c for c in sub["caveats"]
+    )
+
+
+def test_signing_service_cnsa_does_not_offer_slh_dsa() -> None:
+    sub = pr.recommend(_make_report(), "cnsa-2.0", "signing-service")[
+        "recommendations"
+    ]["cnsa-2.0"]
+    assert not any("SLH-DSA" in c for c in sub["caveats"])
+
+
 @pytest.mark.parametrize(
-    "role", ["tls-client", "signing-service", "firmware-signing"]
+    ("policy", "algo"), [("cnsa-2.0", "ML-DSA-87"), ("commercial", "ML-DSA-65")]
 )
+def test_signing_service_hsm_presence_changes_caveats(policy: str, algo: str) -> None:
+    without = pr.recommend(_make_report(isa_tier="poor"), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    with_hsm = pr.recommend(
+        _make_report(isa_tier="poor", accelerators=_PQC_ACCEL),
+        policy,
+        "signing-service",
+    )["recommendations"][policy]
+    assert any("sign throughput below" in c for c in without["caveats"])
+    assert not any("sign throughput below" in c for c in with_hsm["caveats"])
+    assert any(f"route {algo} signing through it" in c for c in with_hsm["caveats"])
+    assert "accelerator" in with_hsm["signature"]["reason"]
+
+
+def test_signing_service_reasons_differ_from_tls_server() -> None:
+    r = _make_report(isa_tier="good")
+    svc = pr.recommend(r, "commercial", "signing-service")["recommendations"][
+        "commercial"
+    ]
+    tls = pr.recommend(r, "commercial", "tls-server")["recommendations"]["commercial"]
+    assert svc["signature"]["reason"] != tls["signature"]["reason"]
+    assert "handshake" not in svc["signature"]["reason"]
+
+
+def test_renderers_print_na_for_null_kem() -> None:
+    r = _make_report()
+    rec = pr.recommend(r, "auto", "signing-service")
+    text = pr.render_recommendation_text(r, rec)
+    md = pr.render_recommendation_markdown(r, rec)
+    assert "KEM:        n/a" in text
+    assert "None" not in text
+    assert "| KEM (n/a) | n/a |" in md
+    assert "`None`" not in md
+
+
+# ---------------------------------------------------------------------------
+# firmware-signing role (#92)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_firmware_signing_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy, "firmware-signing")["recommendations"][policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "firmware-signing"
+    assert sub["kem"]["algorithm"] is None
+    assert sub["kem"]["mode"] == "n/a"
+    assert sub["hash"]["algorithm"] == _EXPECTED_TLS[policy][3]
+    if policy == "cnsa-2.0":
+        assert sub["signature"]["algorithm"] == "ML-DSA-87"
+    else:
+        assert sub["signature"]["algorithm"] == "SLH-DSA-SHA2-128s"
+        assert "long-lived" in sub["signature"]["reason"]
+        assert "ML-DSA-65" in sub["signature"]["reason"]
+    # Build-time signing: no ISA tier / throughput caveats for any host.
+    assert not any("ISA tier" in c for c in sub["caveats"])
+    assert not any("throughput" in c for c in sub["caveats"])
+
+
+def test_firmware_signing_cnsa_points_at_cnsa_hash_based_options() -> None:
+    """SLH-DSA is not a CNSA 2.0 algorithm; CNSA 2.0's hash-based option
+    for firmware is LMS/XMSS (SP 800-208)."""
+    sub = pr.recommend(_make_report(), "cnsa-2.0", "firmware-signing")[
+        "recommendations"
+    ]["cnsa-2.0"]
+    assert any("LMS" in c and "SP 800-208" in c for c in sub["caveats"])
+    assert sub["signature"]["algorithm"] == "ML-DSA-87"
+
+
+def test_firmware_signing_reason_cites_signature_size_from_pqc_sizes() -> None:
+    sub = pr.recommend(_make_report(), "commercial", "firmware-signing")[
+        "recommendations"
+    ]["commercial"]
+    assert f"{pr.PQC_SIZES['SLH-DSA-SHA2-128s']['sig']}-byte" in sub["signature"][
+        "reason"
+    ]
+
+
+def test_firmware_signing_notes_pqc_hsm() -> None:
+    sub = pr.recommend(
+        _make_report(accelerators=_PQC_ACCEL), "commercial", "firmware-signing"
+    )["recommendations"]["commercial"]
+    assert any("HSM" in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ("nist-civilian", "eu-anssi-bsi", "commercial"))
+def test_firmware_signing_differs_from_signing_service(policy: str) -> None:
+    r = _make_report()
+    fw = pr.recommend(r, policy, "firmware-signing")["recommendations"][policy]
+    svc = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert fw["signature"]["algorithm"] != svc["signature"]["algorithm"]
+
+
+@pytest.mark.parametrize("role", ["tls-server", "tls-client", "signing-service", "firmware-signing"])
+def test_workload_roles_are_implemented(role: str) -> None:
+    sub = pr.recommend(_make_report(), "commercial", role)["recommendations"][
+        "commercial"
+    ]
+    assert sub["implemented"] is True
+
+
+@pytest.mark.parametrize("role", ["generic"])
 def test_other_roles_return_stub(role: str) -> None:
     r = _make_report()
     rec = pr.recommend(r, policy="commercial", role=role)
