@@ -155,6 +155,7 @@ Each list item describes one detected device or HSM client configuration:
 | `sig_algorithms` | list[string] | `ML-DSA-*` / `SLH-DSA-*` names from `openssl list -signature-algorithms`. |
 | `tls_groups` | object | TLS 1.3 groups split into `pure_pqc` (e.g. `MLKEM768`), `hybrid` (e.g. `X25519MLKEM768`, `SecP256r1MLKEM768`) and `classical`; each a list. |
 | `tls_pqc_groups` | list[string] | Back-compat union of `tls_groups.pure_pqc` and `tls_groups.hybrid`; prefer `tls_groups`. |
+| `tls_group_references` | object | Present when OpenSSL was probed. One entry per known PQC group in `tls_groups.pure_pqc` / `hybrid`, keyed by name: `codepoint` (IANA TLS Supported Groups value, e.g. `0x11EC`), `kem`, `classical` (`null` for pure groups), `recommended` (IANA "Recommended" column), `cnsa_2_0` (true only for an ML-KEM-1024 component), `reference` (`RFC 10024` or `draft-ietf-tls-mlkem`), `status` (`final` or `draft`), `url`, and `obsolete: true` for the pre-standard Kyber groups. Unknown names are omitted. |
 | `providers` | list[string] | Active provider names. |
 | `upgrade_path` | string \| null | Family-aware advice for reaching OpenSSL ≥ 3.5; `null` when already there or no advice applies. |
 | `reason` | string | Present only when `available` is false. |
@@ -178,6 +179,7 @@ Each list item describes one detected device or HSM client configuration:
 | `kex_count` | int | Number of key-exchange methods the client binary supports. |
 | `pqc_kex` | list[string] | Back-compat flat list of PQC / hybrid methods (ML-KEM hybrids, `sntrup761`); prefer `kex_groups`. |
 | `kex_groups` | object | `pure_pqc` / `hybrid` / `classical` lists, mirroring `openssl.tls_groups`. |
+| `kex_references` | object | Present when `ssh -Q kex` ran. One entry per known PQC kex in `kex_groups.pure_pqc` / `hybrid`: `kem`, `classical`, `cnsa_2_0`, `reference` (`RFC 10042` or `RFC 9941`), `status`, `url`, and `alias_of` for the pre-RFC `sntrup761x25519-sha512@openssh.com` name. |
 | `reason` | string | Present only when `available` is false. |
 
 ### `ipsec_pqc`
@@ -223,6 +225,7 @@ Each list item describes one detected device or HSM client configuration:
 | `signature_compliant` | bool | `ML-DSA-87` exposed by OpenSSL. |
 | `symmetric_compliant` | bool | An AES driver with a ≥ 32-byte key in `/proc/crypto`. |
 | `hash_compliant` | bool | Hardware-accelerated SHA-384 **and** SHA-512 drivers in `/proc/crypto`. |
+| `tls_key_exchange` | object | Informational split of the PQC TLS groups OpenSSL offers: `compliant_groups` (ML-KEM-1024 component: `SecP384r1MLKEM1024`, `MLKEM1024`) and `non_compliant_pqc_groups` (e.g. `X25519MLKEM768`). Does not change `status`; a note is added when PQC groups are offered but none is compliant. |
 | `notes` | list[string] | One entry per gap or per input that could not be checked; a false boolean means "missing or not checkable", and `notes` says which. |
 | `requirements` | object | The suite as evaluated: `{kem: ["ML-KEM-1024"], signature: ["ML-DSA-87"], symmetric: ["AES-256"], hash: ["SHA-384", "SHA-512"]}`. |
 
@@ -398,11 +401,12 @@ instead of the readiness report.
 | `policy_source` | string | Source document URL. |
 | `implemented` | bool | False only for `generic`, which has no workload profile; that record carries `note` and no algorithm fields. |
 | `note` | string | `generic` only: which roles are implemented. |
-| `kem` | object | `{algorithm, mode, reason}`. `mode` is `hybrid` or `pure` for the TLS roles; for `signing-service` and `firmware-signing` the KEM is not applicable: `algorithm` is `null` and `mode` is `n/a`. |
+| `kem` | object | `{algorithm, mode, reason, tls_groups}` (`tls_groups` for the TLS roles only). `mode` is `hybrid` or `pure` for the TLS roles; for `signing-service` and `firmware-signing` the KEM is not applicable: `algorithm` is `null` and `mode` is `n/a`. |
 | `signature` | object | `{algorithm, reason}`. |
 | `hash` | object | `{algorithm, reason}` from the policy's primary hash. |
 | `algorithm` | string \| null | Inside `kem`, `signature`, `hash`: the selected algorithm. |
 | `mode` | string | Inside `kem`: see above. |
+| `tls_groups` | list[string] | Inside `kem`, TLS roles only: advertised groups that carry the chosen KEM in the chosen mode (e.g. `MLKEM1024` for CNSA 2.0). Empty means the host cannot serve the recommendation yet, and `caveats` says why. |
 | `reason` | string | Inside `kem`, `signature`, `hash`: why that algorithm was chosen for this host and policy. |
 | `host_capability_inputs` | object | The host facts the choice used: `isa_tier`, `pqc_accelerator_present`, and for implemented roles `fips_kernel`, `openssl_version`, `kernel_release`. |
 | `isa_tier` | string | Inside `host_capability_inputs`: lower-cased `isa_tier`. |
