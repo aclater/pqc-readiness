@@ -1172,10 +1172,60 @@ def test_openssl_upgrade_path_debian12() -> None:
 
 
 def test_openssl_upgrade_path_ubuntu_2404() -> None:
+    # Verified against the noble archive: OpenSSL 3.0.x only, no 3.5
+    # build in any component, so the old "available in universe" advice
+    # was false; the fix is the 26.04 LTS upgrade (#121).
     osr = {"family": "debian", "id": "ubuntu", "version_id": "24.04"}
-    msg = pr.openssl_upgrade_path([3, 0, 0], osr)
+    msg = pr.openssl_upgrade_path([3, 0, 13], osr)
     assert msg is not None
-    assert "universe" in msg or "25.10" in msg
+    assert "26.04 LTS" in msg
+    assert "universe" not in msg
+
+
+@pytest.mark.parametrize("version_id", ["20.04", "22.04", "25.04", "25.10"])
+def test_openssl_upgrade_path_ubuntu_older_points_at_26_04_lts(
+    version_id: str,
+) -> None:
+    osr = {"family": "debian", "id": "ubuntu", "version_id": version_id}
+    msg = pr.openssl_upgrade_path([3, 0, 2], osr)
+    assert msg is not None
+    assert version_id in msg
+    assert "26.04 LTS" in msg
+
+
+def test_openssl_upgrade_path_ubuntu_2604_with_old_openssl_flags_pinning() -> None:
+    # 26.04 ships 3.5 in main, so an older OpenSSL there means a held,
+    # pinned or third-party package -- not "upgrade the release".
+    osr = {"family": "debian", "id": "ubuntu", "version_id": "26.04"}
+    msg = pr.openssl_upgrade_path([3, 0, 13], osr)
+    assert msg is not None
+    assert "apt-cache policy" in msg
+    assert "upgrade to" not in msg.lower()
+
+
+def test_openssl_upgrade_path_ubuntu_2604_already_capable() -> None:
+    osr = {"family": "debian", "id": "ubuntu", "version_id": "26.04"}
+    assert pr.openssl_upgrade_path([3, 5, 5], osr) is None
+
+
+@pytest.mark.parametrize(
+    "version_id", ["16.04", "20.04", "22.04", "24.04", "25.04", "25.10", "26.04", "26.10"]
+)
+def test_openssl_upgrade_path_ubuntu_never_recommends_interim_release(
+    version_id: str,
+) -> None:
+    # Interim releases go EOL after nine months; advice must only name
+    # LTS releases so it does not rot (#121).
+    osr = {"family": "debian", "id": "ubuntu", "version_id": version_id}
+    msg = pr.openssl_upgrade_path([3, 0, 0], osr) or ""
+    for interim in ("25.04", "25.10", "26.10"):
+        if interim != version_id:
+            assert interim not in msg
+
+
+def test_openssl_upgrade_path_ubuntu_unparseable_version_returns_none() -> None:
+    osr = {"family": "debian", "id": "ubuntu", "version_id": "devel"}
+    assert pr.openssl_upgrade_path([3, 0, 0], osr) is None
 
 
 def test_openssl_upgrade_path_no_os_release() -> None:
