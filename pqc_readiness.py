@@ -936,6 +936,44 @@ def detect_ktls() -> bool | None:
     return rc == 0 and "filename" in out
 
 
+def _host_fs_note_for(key: str) -> dict[str, Any] | None:
+    """Look up `key` in `_HOST_FS_DEPENDENT_DETECTIONS` and return its
+    `unavailable_in_container` note (or None).  Sourcing the label and
+    host-resource text from the catalogue keeps the per-detection note
+    byte-identical to the Report-level `host_fs_detections_unavailable`
+    entry for the same key."""
+    for k, label, host_resources in _HOST_FS_DEPENDENT_DETECTIONS:
+        if k == key:
+            return host_fs_unavailable_note(label, host_resources)
+    raise KeyError(f"{key!r} is not in _HOST_FS_DEPENDENT_DETECTIONS")
+
+
+def detect_kernel_crypto_hw_annotated() -> dict[str, Any]:
+    """Dict-returning sibling of detect_kernel_crypto_hw(), mirroring
+    detect_pci_accelerators().  Returns the driver list under `items`
+    plus an `unavailable_in_container` annotation when /proc/crypto is
+    the container's view rather than the host's.  The Report field
+    `kernel_crypto_hw` keeps its list type; the annotation reaches JSON
+    via `host_fs_detections_unavailable`."""
+    out: dict[str, Any] = {"items": detect_kernel_crypto_hw()}
+    note = _host_fs_note_for("kernel_crypto_hw")
+    if note:
+        out.update(note)
+    return out
+
+
+def detect_ktls_annotated() -> dict[str, Any]:
+    """Dict-returning sibling of detect_ktls().  Returns the tri-state
+    result under `supported` plus an `unavailable_in_container`
+    annotation when /proc/modules and /sys/module/tls reflect the
+    container rather than the host."""
+    out: dict[str, Any] = {"supported": detect_ktls()}
+    note = _host_fs_note_for("ktls")
+    if note:
+        out.update(note)
+    return out
+
+
 def detect_fips_mode_from_providers_text(text: str) -> bool:
     """Parse `openssl list -providers -verbose` output as records and
     return True iff a provider named exactly 'fips' has 'status: active'.
@@ -6199,8 +6237,8 @@ def main() -> int:
     accels.extend(detect_network_hsms())
     os_release = detect_os()
     pkcs11 = detect_pkcs11_modules(os_release.get("family", "unknown"))
-    kcrypto = detect_kernel_crypto_hw()
-    ktls = detect_ktls()
+    kcrypto = detect_kernel_crypto_hw_annotated()["items"]
+    ktls = detect_ktls_annotated()["supported"]
     fips = detect_fips_mode()
     tpm = detect_tpm_pqc()
     family = os_release.get("family", "unknown")

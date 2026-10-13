@@ -32,8 +32,8 @@ of the README.
 | `accelerators` | List of detected accelerators (HSMs, DPUs, TPMs, QAT, Nitro, …). |
 | `hsm_present_but_not_pqc` | True when an HSM is detected but it does not advertise PQC primitives. |
 | `pkcs11_modules` | PKCS#11 modules discoverable on the host. |
-| `kernel_crypto_hw` | `/proc/crypto` entries backed by hardware drivers. |
-| `ktls_supported` | Whether kernel TLS is available. |
+| `kernel_crypto_hw` | List of `/proc/crypto` driver names backed by hardware. Inside a container without `--host-mount` this is the container's view; `host_fs_detections_unavailable.kernel_crypto_hw` is then set. |
+| `ktls_supported` | `true` / `false`, or `null` on non-Linux. Inside a container without `--host-mount` this reflects the container's `/proc/modules` and `/sys/module/tls`; `host_fs_detections_unavailable.ktls` is then set. |
 | `fips` | Kernel FIPS mode and provider state. |
 | `openssl` | Detected OpenSSL version, PQC algorithm exposure, hybrid TLS group list, and `upgrade_path` suggestion. |
 | `tpm_pqc` | TPM presence and any PQC capability advertised. |
@@ -47,7 +47,7 @@ of the README.
 | `cnsa_2_0` | CNSA 2.0 compliance summary (algorithm coverage, hash, FIPS state). |
 | `trust_store` | Trust-store summary (count, PQC-capable count, hybrid count). Populated only when `--scan-trust-store` is set. |
 | `runtime_environment` | How the probe is running (bare metal, container, DaemonSet, …). |
-| `host_fs_detections_unavailable` | Per-probe annotations emitted when running inside a container without `--host-mount`. One entry per host-fs-dependent detection (lspci, dmidecode, `/proc /sys` reads). Empty on bare metal or when `--host-mount` is in effect. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
+| `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` (id, version, like-chain). |
