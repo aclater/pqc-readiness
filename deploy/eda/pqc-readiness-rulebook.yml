@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+# Event-Driven Ansible rulebook for pqc-readiness --ndjson findings (#157).
+#
+# Feed it the NDJSON event stream (one OCSF event per line) by POSTing each
+# line to the webhook, e.g. from a log forwarder or:
+#   pqc-readiness --ndjson | while read -r l; do
+#     curl -s -H 'Content-Type: application/json' -d "$l" http://eda:5000/endpoint; done
+#
+# Rules:
+#   1. pqc-008 (system crypto policy blocks PQC): run the PQ-subpolicy
+#      playbook against that host, which uses the crypto_policies system role.
+#   2. Software that will fail at PQC (pqc-011 .. pqc-017): hand off to a
+#      ticketing/notification playbook. These need upgrades, not config.
+#   3. Capable but not configured (pqc-020): same hand-off.
+#
+# Variables (pass with --vars):
+#   pqc_remediation_playbook  path to playbook-pq-subpolicy.yml
+#   pqc_notify_playbook       path to your ticketing / notification playbook
+- name: React to pqc-readiness findings
+  hosts: all
+  sources:
+    - ansible.eda.webhook:
+        host: 0.0.0.0
+        port: 5000
+  rules:
+    - name: System crypto policy blocks PQC -> enable the PQ subpolicy
+      condition: >-
+        event.payload.class_uid == 2003 and
+        event.payload.finding_info.analytic.uid is regex("^pqc-008-")
+      action:
+        run_playbook:
+          name: "{{ pqc_remediation_playbook }}"
+          extra_vars:
+            pqc_finding_host: "{{ event.payload.device.hostname }}"
+
+    - name: Software that will fail at PQC -> notify / open a ticket
+      condition: >-
+        event.payload.class_uid == 2003 and
+        event.payload.finding_info.analytic.uid is regex("^pqc-01[1-7]-")
+      action:
+        run_playbook:
+          name: "{{ pqc_notify_playbook }}"
+          extra_vars:
+            pqc_finding_host: "{{ event.payload.device.hostname }}"
+            pqc_finding_rule: "{{ event.payload.finding_info.analytic.uid }}"
+            pqc_finding_message: "{{ event.payload.message }}"
+
+    - name: PQC-capable but not configured -> notify / open a ticket
+      condition: >-
+        event.payload.class_uid == 2003 and
+        event.payload.finding_info.analytic.uid is regex("^pqc-020-")
+      action:
+        run_playbook:
+          name: "{{ pqc_notify_playbook }}"
+          extra_vars:
+            pqc_finding_host: "{{ event.payload.device.hostname }}"
+            pqc_finding_rule: "{{ event.payload.finding_info.analytic.uid }}"
+            pqc_finding_message: "{{ event.payload.message }}"

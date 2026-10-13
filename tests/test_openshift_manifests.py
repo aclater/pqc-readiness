@@ -180,3 +180,65 @@ def test_quadlet_mounts_host_usr_read_only_and_nothing_narrower() -> None:
     # podman refuses a missing bind-mount source, so distro-specific /usr
     # subdirectories (e.g. /usr/etc/ssh on SUSE) must not be mounted.
     assert not [v for v in volumes if v.split(":")[0].startswith("/usr/")]
+
+
+# ---------------------------------------------------------------- summary overlay (#157)
+
+SUMMARY = REPO / "deploy" / "openshift-summary"
+
+
+def test_base_has_no_api_access_and_only_an_unset_summary_hook() -> None:
+    ds = _docs(BASE)["DaemonSet"]
+    assert ds["spec"]["template"]["spec"]["automountServiceAccountToken"] is False
+    env = {e["name"] for e in _container(ds).get("env", [])}
+    assert "PQC_SUMMARY_HOOK" not in env
+    script = "\n".join(_container(ds)["command"])
+    assert 'if [ -n "${PQC_SUMMARY_HOOK:-}" ]' in script
+    assert "Role" not in _docs(BASE) and "RoleBinding" not in _docs(BASE)
+
+
+def test_summary_role_allows_configmaps_in_its_namespace_only() -> None:
+    docs = _docs(SUMMARY / "rbac.yaml")
+    role = docs["Role"]
+    assert role["metadata"]["namespace"] == "pqc-readiness"
+    (rule,) = role["rules"]
+    assert rule["apiGroups"] == [""]
+    assert rule["resources"] == ["configmaps"]
+    assert set(rule["verbs"]) <= {"get", "create", "update"}
+    binding = docs["RoleBinding"]
+    assert binding["roleRef"] == {
+        "apiGroup": "rbac.authorization.k8s.io",
+        "kind": "Role",
+        "name": "pqc-readiness-summary",
+    }
+    assert binding["subjects"] == [
+        {
+            "kind": "ServiceAccount",
+            "name": "pqc-readiness",
+            "namespace": "pqc-readiness",
+        }
+    ]
+    assert "ClusterRole" not in docs and "ClusterRoleBinding" not in docs
+
+
+def test_summary_patch_only_adds_token_hook_and_script_mount() -> None:
+    patch = _docs(SUMMARY / "daemonset-patch.yaml")["DaemonSet"]
+    spec = patch["spec"]["template"]["spec"]
+    assert spec["automountServiceAccountToken"] is True
+    (c,) = spec["containers"]
+    assert "securityContext" not in c  # no privilege changes in the overlay
+    assert {e["name"] for e in c["env"]} == {
+        "PQC_SUMMARY_HOOK",
+        "NODE_NAME",
+        "POD_NAMESPACE",
+    }
+    (m,) = c["volumeMounts"]
+    assert m["readOnly"] is True
+    (v,) = spec["volumes"]
+    assert set(v) == {"name", "configMap"}  # no hostPath added
+
+
+def test_summary_kustomization_reuses_the_base() -> None:
+    k = yaml.safe_load((SUMMARY / "kustomization.yaml").read_text())
+    assert k["resources"] == ["../openshift", "rbac.yaml"]
+    assert (REPO / "deploy" / "openshift" / "kustomization.yaml").exists()

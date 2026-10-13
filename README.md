@@ -434,6 +434,7 @@ example Ansible playbooks already use the zipapp.
 | `--json` | Stable JSON schema | Fleet aggregation, automation |
 | `--cbom` | CycloneDX 1.7 CBOM (`--cbom-version 1.6` for 1.6) | Cryptographic inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
+| `--sbom` | Plain CycloneDX 1.6 package SBOM: one component per installed OS package, with purls, no crypto assets ([docs/integrations/sbom-graph-tools.md](docs/integrations/sbom-graph-tools.md)) | SBOM / supply-chain graph tools that don't understand crypto assets |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
 | `--ndjson` | OCSF 1.9.0 events, one JSON object per line ([field reference](docs/json-output.md#--ndjson-events), [SIEM recipes](docs/siem-ndjson.md)) | SIEM / log pipelines |
 | `--prometheus` | Prometheus text format | node_exporter textfile collector, fleet dashboards ([docs/prometheus.md](docs/prometheus.md)) |
@@ -563,7 +564,7 @@ Flags below are grouped by purpose.
 
 | Flag | Purpose |
 | --- | --- |
-| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ndjson` / `--ansible` | See [Output formats](#output-formats). |
+| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sbom` / `--sarif` / `--prometheus` / `--ndjson` / `--ansible` | See [Output formats](#output-formats). |
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--sarif-anchor PATH` | Shape `--sarif` for code-scanning upload: every result is attached to `PATH` (relative to the repository root; `{hostname}` is substituted), with `partialFingerprints`, a per-host `automationDetails.id` category and rule `security-severity`. Without it, `--sarif` output is unchanged. See [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md). |
 | `--cbom-profile {none,federal-draft}` | Regime annotations for `--cbom` (default `none`, unchanged output). `federal-draft` adds OMB M-23-02 / M-26-15 / EO 14412 fields: key-establishment vs signature, quantum-vulnerable flag and deadline per asset, the classical groups a host offers, a TLS 1.3 status, and M-23-02 item coverage. Draft until CISA/NIST publish the minimum CBOM elements (~March 2027). |
@@ -767,6 +768,10 @@ the host root is mounted at `/host` and the probe is invoked with
 image.
 
 For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in [`deploy/openshift/services/`](docs/openshift-services-overlay.md) instead (adds only `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`).
+For per-node summary ConfigMaps that ACM governance policies and Compliance
+Operator CEL rules can evaluate, apply the opt-in overlay with
+`oc apply -k deploy/openshift-summary` ([details](docs/integrations/openshift-node-summaries.md);
+it adds a token and a ConfigMap-only Role, nothing else).
 
 For Ansible-based deployments see [docs/ansible.md](docs/ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](deploy/ansible/).
@@ -837,7 +842,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/sarif-code-scanning.md`](docs/sarif-code-scanning.md) — `--sarif-anchor` code-scanning upload recipe.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
 - [`docs/endpoint-observations.md`](docs/endpoint-observations.md) — endpoint-observation record format, matching rules and adapter guidance for `--aggregate --observations`.
-- [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF), [ServiceNow Vulnerability Response](docs/integrations/servicenow-vr.md) (NDJSON findings; converter tested, instance steps not live-tested).
+- [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF), [ServiceNow Vulnerability Response](docs/integrations/servicenow-vr.md) (NDJSON findings; converter tested, instance steps not live-tested), [ACM / Compliance Operator per-node summaries](docs/integrations/openshift-node-summaries.md), [Event-Driven Ansible](docs/integrations/event-driven-ansible.md), [SUSE Multi-Linux Manager](docs/integrations/suse-multi-linux-manager.md), [plain SBOM for graph tools](docs/integrations/sbom-graph-tools.md) (`--sbom`). Each page lists what was tested and what wasn't.
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party-product reference policy, the README ↔ `--help` rule.

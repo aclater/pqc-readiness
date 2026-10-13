@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# Enable the post-quantum crypto-policies subpolicy on hosts where the
+# scanner reports that the system policy blocks PQC (SARIF pqc-008), using
+# the RHEL crypto_policies system role (#157).
+#
+# The scanner's crypto_policy object uses the same names as the role's
+# facts (active, available_subpolicies, reboot_required), so its output
+# feeds the role directly.  The subpolicy is PQ where available (EL 9.x,
+# EL 10.1+, Fedora) and TEST-PQ on RHEL 10.0, which ships only the preview
+# module (crypto-policies-pq-preview).
+#
+# Requires: fedora.linux_system_roles or redhat.rhel_system_roles collection.
+- name: Enable the PQ crypto-policies subpolicy where policy blocks PQC
+  # From EDA (deploy/eda), only the host named in the finding.
+  hosts: "{{ pqc_finding_host | default('pqc_targets') }}"
+  gather_facts: false
+  vars:
+    pqc_role: fedora.linux_system_roles.crypto_policies
+  tasks:
+    - name: Run pqc-readiness with --ansible
+      ansible.builtin.script:
+        cmd: ../../dist/pqc-readiness.pyz --ansible
+      register: pqc_raw
+      changed_when: false
+
+    - name: Set pqc_readiness facts from probe output
+      ansible.builtin.set_fact:
+        pqc_readiness: "{{ (pqc_raw.stdout | from_json).ansible_facts.pqc_readiness }}"
+
+    - name: Decide whether and how to enable PQC in the system policy
+      ansible.builtin.set_fact:
+        pqc_cp: "{{ pqc_readiness.crypto_policy }}"
+        pqc_subpolicy: >-
+          {{ 'PQ' if 'PQ' in (pqc_readiness.crypto_policy.available_subpolicies | default([]))
+             else ('TEST-PQ' if 'TEST-PQ' in (pqc_readiness.crypto_policy.available_subpolicies | default([]))
+             else '') }}
+
+    - name: Report hosts the role cannot fix (no PQ subpolicy shipped)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: policy {{ pqc_cp.active }} blocks PQC but no PQ /
+          TEST-PQ subpolicy is available; upgrade crypto-policies (or install
+          crypto-policies-pq-preview on RHEL 10.0).
+      when:
+        - pqc_cp.available | default(false)
+        - pqc_cp.framework | default('') == 'crypto-policies'
+        - pqc_cp.pqc_enabled.tls_key_exchange is sameas false
+        - pqc_subpolicy | length == 0
+
+    - name: Apply <base>:<PQ subpolicy> with the crypto_policies role
+      ansible.builtin.include_role:
+        name: "{{ pqc_role }}"
+      vars:
+        # Keep existing subpolicies; append the PQ one.
+        crypto_policies_policy: >-
+          {{ ([pqc_cp.base_policy] + (pqc_cp.subpolicies | default([])) + [pqc_subpolicy]) | unique | join(':') }}
+        crypto_policies_reboot_ok: false
+      when:
+        - pqc_cp.available | default(false)
+        - pqc_cp.framework | default('') == 'crypto-policies'
+        - pqc_cp.pqc_enabled.tls_key_exchange is sameas false
+        - pqc_subpolicy | length > 0

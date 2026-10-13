@@ -148,6 +148,34 @@ Output:
   list; `replace_required_count`. Same schema as
   [README ## Aggregation](../README.md#aggregation-1).
 
+## Aligning with the `crypto_policies` system role
+
+The RHEL `crypto_policies` system role (linux-system-roles, v1.9.0)
+reports the system policy as `crypto_policies_*` facts. The scanner's
+`crypto_policy` object uses the same names for the same facts, so one
+can be checked against, or fed into, the other:
+
+| Role fact | pqc-readiness field | Notes |
+|---|---|---|
+| `crypto_policies_active` | `pqc_readiness.crypto_policy.active` | e.g. `DEFAULT:PQ` |
+| `crypto_policies_available_subpolicies` | `pqc_readiness.crypto_policy.available_subpolicies` | |
+| `crypto_policies_reboot_required` | `pqc_readiness.crypto_policy.reboot_required` | |
+| `crypto_policies_available_policies` | — | not collected by the scanner |
+| *(role input)* `crypto_policies_policy` | `base_policy` + `subpolicies` | build the value to set from these |
+
+The scanner deliberately does **not** emit top-level `crypto_policies_*`
+facts: on hosts where the role also runs, those would shadow the role's own
+facts. Read them under `pqc_readiness.crypto_policy` instead.
+
+The scanner adds what the role does not report: whether the active policy
+actually lets each protocol use PQC (`crypto_policy.pqc_enabled`), which is
+what SARIF rule `pqc-008` flags.
+[`deploy/ansible/playbook-pq-subpolicy.yml`](../deploy/ansible/playbook-pq-subpolicy.yml)
+closes that gap with the role. On hosts where the policy blocks PQC, it
+appends the `PQ` subpolicy, or `TEST-PQ` on RHEL 10.0 (preview module),
+keeping existing subpolicies, and leaves rebooting to you
+(`crypto_policies_reboot_ok: false`).
+
 ## Privilege requirements
 
 The probe does *not* need `become: yes` for the headline readiness

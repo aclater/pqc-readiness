@@ -61,6 +61,35 @@ jobs:
             -strict -summary -skip SecurityContextConstraints \
             /d/openshift/daemonset.yaml
 
+      - name: Summary overlay (#157) - kustomize build + kubeconform
+        # The overlay reuses the base, so its SCC is skipped for the same
+        # reason as the base step above.
+        run: |
+          podman run --rm -v "$PWD/deploy:/d:ro" registry.k8s.io/kustomize/kustomize:v5.8.3 \
+            build /d/openshift-summary > /tmp/summary-built.yaml
+          podman run --rm -v /tmp/summary-built.yaml:/b.yaml:ro ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -skip SecurityContextConstraints /b.yaml
+
+      - name: Summary overlay (#157) - ACM / Compliance Operator samples vs upstream CRDs
+        # Schemas generated from pinned CRDs: Compliance Operator v1.8.2,
+        # ACM config-policy-controller / governance-policy-propagator v0.20.1.
+        run: |
+          mkdir -p /tmp/crds /tmp/schemas
+          base_co=https://raw.githubusercontent.com/ComplianceAsCode/compliance-operator/v1.8.2/config/crd/bases
+          for f in customrules tailoredprofiles scansettingbindings; do
+            curl -fsSL "$base_co/compliance.openshift.io_$f.yaml" -o "/tmp/crds/co-$f.yaml"
+          done
+          curl -fsSL https://raw.githubusercontent.com/open-cluster-management-io/config-policy-controller/v0.20.1/deploy/crds/policy.open-cluster-management.io_configurationpolicies.yaml -o /tmp/crds/acm-configurationpolicies.yaml
+          curl -fsSL https://raw.githubusercontent.com/open-cluster-management-io/governance-policy-propagator/v0.20.1/deploy/crds/policy.open-cluster-management.io_policies.yaml -o /tmp/crds/acm-policies.yaml
+          python3 scripts/crd_to_jsonschema.py /tmp/schemas /tmp/crds/*.yaml
+          # The Policy CRD doesn't validate its embedded template; check the
+          # ConfigurationPolicy separately.
+          python3 -c "import yaml; p = yaml.safe_load(open('deploy/openshift-summary/acm-policy.yaml')); yaml.safe_dump(p['spec']['policy-templates'][0]['objectDefinition'], open('/tmp/schemas/embedded-configpolicy.yaml', 'w'))"
+          podman run --rm -v "$PWD/deploy:/d:ro" -v /tmp/schemas:/s:ro ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary -schema-location '/s/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            /d/openshift-summary/acm-policy.yaml /d/openshift-summary/compliance-customrule.yaml \
+            /s/embedded-configpolicy.yaml
+
   services-image:
     name: services image (file capabilities)
     runs-on: ubuntu-latest

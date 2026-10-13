@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: Apache-2.0
+# Base: least-privilege DaemonSet (oc apply -k deploy/openshift).
+# Opt-in: services/ (#181, plain manifests) and ../openshift-summary (#157,
+# kustomize overlay; a sibling because kustomize forbids nesting an overlay
+# inside its base).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - daemonset.yaml

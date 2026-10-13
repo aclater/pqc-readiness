@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: Apache-2.0
+# Sample Compliance Operator CEL CustomRule over the per-node summary
+# ConfigMaps (#157).  CustomRule is Tech Preview from Compliance Operator
+# 1.8.  Fails when any node reports a PQC deployment gap or software that
+# will fail at PQC (rules pqc-011..pqc-017).  Passes when no summaries exist
+# yet, because `all` over an empty list is true.  Check the ConfigMap count
+# separately if that matters.
+apiVersion: compliance.openshift.io/v1alpha1
+kind: CustomRule
+metadata:
+  name: pqc-readiness-no-node-gaps
+  namespace: openshift-compliance
+spec:
+  id: custom_pqc_readiness_no_node_gaps
+  title: Nodes have no PQC deployment gaps or PQC-failing software
+  description: >-
+    Every pqc-readiness per-node summary must report no PQC deployment gaps
+    (capable_not_configured / configured_not_capable) and no software that
+    will fail at PQC.
+  failureReason: >-
+    One or more nodes report a PQC deployment gap or PQC-failing software;
+    see the pqc-readiness-node-* ConfigMaps in the pqc-readiness namespace.
+  checkType: Platform
+  scannerType: CEL
+  severity: medium
+  inputs:
+    - name: summaries
+      kubernetesInputSpec:
+        apiVersion: v1
+        resource: configmaps
+        resourceNamespace: pqc-readiness
+  expression: |
+    summaries.items
+      .filter(c, has(c.metadata.labels) &&
+                 'pqc-readiness/summary' in c.metadata.labels)
+      .all(c, c.data.gap_count == '0' && c.data.failure_findings == '0')
+---
+apiVersion: compliance.openshift.io/v1alpha1
+kind: TailoredProfile
+metadata:
+  name: pqc-readiness
+  namespace: openshift-compliance
+spec:
+  title: PQC readiness (pqc-readiness summaries)
+  description: CEL checks over pqc-readiness per-node summary ConfigMaps
+  enableRules:
+    - kind: CustomRule
+      name: pqc-readiness-no-node-gaps
+      rationale: Track post-quantum deployment gaps per node
+---
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ScanSettingBinding
+metadata:
+  name: pqc-readiness
+  namespace: openshift-compliance
+profiles:
+  - apiGroup: compliance.openshift.io/v1alpha1
+    kind: TailoredProfile
+    name: pqc-readiness
+settingsRef:
+  apiGroup: compliance.openshift.io/v1alpha1
+  kind: ScanSetting
+  name: default
