@@ -131,6 +131,27 @@ special-case a role.
   X25519MLKEM768 under ANSSI/BSI) a caveat warns that some legacy
   middleboxes mishandle large ClientHellos.
 
+### `signing-service`
+
+- **Bottleneck:** *signing* at request rate (certificate issuance, token
+  or artifact signing as a service). Reason strings and caveats quote the
+  per-core sign/s floors from `ALGO_THRESHOLDS`.
+- **KEM:** `{"algorithm": null, "mode": "n/a", "reason": ...}`. A
+  signing service does no key exchange; the field is kept (as null) so
+  every role's record has the same shape.
+- **Signature:** `ML-DSA-87` under CNSA 2.0, otherwise `ML-DSA-65`. Below
+  ISA tier `excellent` without an accelerator a sign-throughput caveat is
+  emitted. No TLS-group check: signing services negotiate no TLS groups.
+- **HSM-aware:** when a PQC-capable accelerator is present, the reason
+  and caveats point at offloading signing to it, and the ISA-tier
+  throughput caveat is dropped.
+- **SLH-DSA:** under every non-CNSA policy a caveat names
+  SLH-DSA-SHA2-128s as a conservative hash-based alternative for
+  low-volume signing. It stays a caveat, not the primary, because a
+  signing service implies request-rate signing and SLH-DSA signs at
+  single-digit ops/s. SLH-DSA is not a CNSA 2.0 algorithm, so it is not
+  offered under `cnsa-2.0`.
+
 ## How a policy update should be made
 
 1. Edit `POLICY_PREFERENCES` in `pqc_readiness.py`. This is the only

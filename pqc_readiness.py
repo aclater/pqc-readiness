@@ -4153,6 +4153,112 @@ def _recommend_tls_client(r: Report, policy: str) -> dict[str, Any]:
     )
 
 
+def _no_kem(why: str) -> dict[str, Any]:
+    """KEM record for roles that do no key exchange.  Keeps the record
+    shape uniform so consumers indexing rec['kem'] never KeyError."""
+    return {"algorithm": None, "mode": "n/a", "reason": why}
+
+
+def _sign_rate_floor(algo: str, tier: str) -> str:
+    """Per-core sign/s floor for `tier` from ALGO_THRESHOLDS, formatted."""
+    return f"{ALGO_THRESHOLDS[algo][1][tier]:g}"
+
+
+def _hsm_offload_caveat(sig_chosen: str) -> str:
+    return (
+        "A PQC-capable accelerator is present; route "
+        f"{sig_chosen} signing through it (e.g. via PKCS#11) so sign "
+        "throughput is bounded by the accelerator rather than host ISA tier."
+    )
+
+
+def _recommend_signing_service(r: Report, policy: str) -> dict[str, Any]:
+    isa = (r.isa_tier or "unknown").lower()
+    accel_pqc = _accel_pqc_capable(r.accelerators)
+    caveats: list[str] = []
+
+    # Signature: a signing service signs at request rate, so sign
+    # throughput is the constraint.  Thresholds quoted from
+    # ALGO_THRESHOLDS so the reasoning matches the per-algo verdict.
+    if policy == "cnsa-2.0":
+        sig_chosen = "ML-DSA-87"
+        if accel_pqc:
+            sig_reason = (
+                "ML-DSA-87 per CNSA 2.0; signing offloads to the PQC-capable "
+                "accelerator, so host sign throughput is not the limit"
+            )
+        elif isa == "excellent":
+            sig_reason = (
+                "ML-DSA-87 per CNSA 2.0; ISA tier 'excellent' sustains "
+                f"≥{_sign_rate_floor('ML-DSA-87', 'excellent')} sign/s per "
+                "core at typical request rates"
+            )
+        else:
+            sig_reason = "ML-DSA-87 mandated by CNSA 2.0"
+            caveats.append(
+                f"Policy mandates ML-DSA-87 but host ISA tier is '{isa}' "
+                "without a PQC accelerator; expect ML-DSA-87 sign "
+                f"throughput below {_sign_rate_floor('ML-DSA-87', 'excellent')} "
+                "sign/s per core.  Size the signing fleet for it or add a "
+                "PQC-capable HSM."
+            )
+    else:
+        sig_chosen = "ML-DSA-65"
+        if accel_pqc:
+            sig_reason = (
+                "ML-DSA-65 — balanced default; signing offloads to the "
+                "PQC-capable accelerator, so host sign throughput is not "
+                "the limit"
+            )
+        elif isa == "excellent":
+            sig_reason = (
+                "ML-DSA-65 — sustains "
+                f"≥{_sign_rate_floor('ML-DSA-65', 'excellent')} sign/s per "
+                "core on ISA tier 'excellent'; ML-DSA-87 is viable if "
+                "compliance scope demands it"
+            )
+        elif isa == "good":
+            sig_reason = (
+                "ML-DSA-65 over ML-DSA-87 because ISA tier is 'good' not "
+                "'excellent'; ML-DSA-87 sign throughput would cap the "
+                "service's request rate"
+            )
+        elif isa in ("poor", "marginal"):
+            sig_reason = (
+                f"ML-DSA-65 because ISA tier is '{isa}' without a PQC "
+                "accelerator; it is the cheaper-to-sign ML-DSA parameter set"
+            )
+            caveats.append(
+                f"Host ISA tier is '{isa}' without a PQC accelerator; expect "
+                "ML-DSA-65 sign throughput below "
+                f"{_sign_rate_floor('ML-DSA-65', 'good')} sign/s per core.  "
+                "Size the signing fleet for it or add a PQC-capable HSM."
+            )
+        else:
+            sig_reason = (
+                "ML-DSA-65 — balanced default for request-rate signing"
+            )
+        slh_sig = PQC_SIZES["SLH-DSA-SHA2-128s"]["sig"]
+        caveats.append(
+            "For low-volume signing (releases, documents), SLH-DSA-SHA2-128s "
+            "is a conservative hash-based alternative with no lattice "
+            f"assumptions.  Its sign rate (single-digit sign/s) and {slh_sig}"
+            "-byte signatures rule it out for request-rate signing."
+        )
+
+    if accel_pqc:
+        caveats.append(_hsm_offload_caveat(sig_chosen))
+    _fips_caveat(policy, bool((r.fips or {}).get("kernel")), caveats)
+    return _recommendation_record(
+        r,
+        policy,
+        "signing-service",
+        _no_kem("Key exchange is not applicable for signing services"),
+        {"algorithm": sig_chosen, "reason": sig_reason},
+        caveats,
+    )
+
+
 def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
     """Placeholder for roles not yet fully implemented.  Returns the
     policy basis so the JSON shape is consistent across roles, but
@@ -4183,6 +4289,7 @@ def _recommend_stub(r: Report, policy: str, role: str) -> dict[str, Any]:
 _ROLE_RECOMMENDERS: dict[str, Callable[[Report, str], dict[str, Any]]] = {
     "tls-server": _recommend_tls_server,
     "tls-client": _recommend_tls_client,
+    "signing-service": _recommend_signing_service,
 }
 
 
@@ -4245,7 +4352,10 @@ def _render_recommendation_block(rec: dict[str, Any]) -> list[str]:
     kem = rec["kem"]
     sig = rec["signature"]
     h = rec["hash"]
-    L.append(f"  KEM:        {kem['algorithm']} ({kem['mode']})")
+    if kem["algorithm"] is None:
+        L.append("  KEM:        n/a")
+    else:
+        L.append(f"  KEM:        {kem['algorithm']} ({kem['mode']})")
     L.append(f"              Reason: {kem['reason']}")
     L.append(f"  Signature:  {sig['algorithm']}")
     L.append(f"              Reason: {sig['reason']}")
@@ -4292,7 +4402,8 @@ def render_recommendation_markdown(report: Report, rec: dict[str, Any]) -> str:
         h = sub["hash"]
         L.append("| Primitive | Algorithm | Reason |")
         L.append("|-----------|-----------|--------|")
-        L.append(f"| KEM ({kem['mode']}) | `{kem['algorithm']}` | {kem['reason']} |")
+        kem_algo = "n/a" if kem["algorithm"] is None else f"`{kem['algorithm']}`"
+        L.append(f"| KEM ({kem['mode']}) | {kem_algo} | {kem['reason']} |")
         L.append(f"| Signature | `{sig['algorithm']}` | {sig['reason']} |")
         L.append(f"| Hash | `{h['algorithm']}` | {h['reason']} |")
         L.append("")
@@ -6228,8 +6339,9 @@ def main() -> int:
         default=None,
         help=(
             "workload role.  Drives both the recommendation engine "
-            "('tls-server' and 'tls-client' are fully implemented; other "
-            "roles currently return a stub response) and the memory-tier "
+            "('tls-server', 'tls-client' and 'signing-service' are fully "
+            "implemented; other roles currently return a stub response) "
+            "and the memory-tier "
             "threshold (per-role good thresholds: tls-server=16 GiB, "
             "tls-client=4 GiB, signing-service=8 GiB, firmware-signing="
             "2 GiB, generic=16 GiB).  When omitted, the report contains "

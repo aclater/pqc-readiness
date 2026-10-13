@@ -342,8 +342,104 @@ def test_tls_client_missing_hybrid_groups_caveat_names_client() -> None:
     assert any("hybrid TLS client" in c for c in sub["caveats"])
 
 
+# ---------------------------------------------------------------------------
+# signing-service role (#91)
+# ---------------------------------------------------------------------------
+
+_PQC_ACCEL = [{"name": "test-hsm", "pqc_capable": True}]
+
+
+@pytest.mark.parametrize("isa_tier", ["excellent", "good", "poor"])
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_algorithms_per_policy(policy: str, isa_tier: str) -> None:
+    r = _make_report(isa_tier=isa_tier)
+    sub = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert sub["implemented"] is True
+    assert sub["role"] == "signing-service"
+    expected_sig = "ML-DSA-87" if policy == "cnsa-2.0" else "ML-DSA-65"
+    assert sub["signature"]["algorithm"] == expected_sig
+    assert sub["hash"]["algorithm"] == _EXPECTED_TLS[policy][3]
+    assert "sign" in sub["signature"]["reason"] or "mandated" in sub["signature"]["reason"]
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_kem_is_null(policy: str) -> None:
+    sub = pr.recommend(_make_report(), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    assert sub["kem"]["algorithm"] is None
+    assert sub["kem"]["mode"] == "n/a"
+    assert "not applicable" in sub["kem"]["reason"]
+
+
+@pytest.mark.parametrize("policy", ALL_POLICIES)
+def test_signing_service_has_no_tls_group_caveat(policy: str) -> None:
+    """Signing services negotiate no TLS groups, so missing groups or a
+    missing OpenSSL must not produce TLS caveats."""
+    r = _make_report(openssl_available=False, hybrid_groups=[], pure_groups=[])
+    sub = pr.recommend(r, policy, "signing-service")["recommendations"][policy]
+    assert not any("TLS" in c for c in sub["caveats"])
+
+
+@pytest.mark.parametrize("policy", ("nist-civilian", "eu-anssi-bsi", "commercial"))
+def test_signing_service_notes_slh_dsa_for_low_volume(policy: str) -> None:
+    sub = pr.recommend(_make_report(), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    assert sub["signature"]["algorithm"] == "ML-DSA-65"
+    assert any(
+        "SLH-DSA-SHA2-128s" in c and "low-volume" in c for c in sub["caveats"]
+    )
+
+
+def test_signing_service_cnsa_does_not_offer_slh_dsa() -> None:
+    sub = pr.recommend(_make_report(), "cnsa-2.0", "signing-service")[
+        "recommendations"
+    ]["cnsa-2.0"]
+    assert not any("SLH-DSA" in c for c in sub["caveats"])
+
+
 @pytest.mark.parametrize(
-    "role", ["signing-service", "firmware-signing"]
+    ("policy", "algo"), [("cnsa-2.0", "ML-DSA-87"), ("commercial", "ML-DSA-65")]
+)
+def test_signing_service_hsm_presence_changes_caveats(policy: str, algo: str) -> None:
+    without = pr.recommend(_make_report(isa_tier="poor"), policy, "signing-service")[
+        "recommendations"
+    ][policy]
+    with_hsm = pr.recommend(
+        _make_report(isa_tier="poor", accelerators=_PQC_ACCEL),
+        policy,
+        "signing-service",
+    )["recommendations"][policy]
+    assert any("sign throughput below" in c for c in without["caveats"])
+    assert not any("sign throughput below" in c for c in with_hsm["caveats"])
+    assert any(f"route {algo} signing through it" in c for c in with_hsm["caveats"])
+    assert "accelerator" in with_hsm["signature"]["reason"]
+
+
+def test_signing_service_reasons_differ_from_tls_server() -> None:
+    r = _make_report(isa_tier="good")
+    svc = pr.recommend(r, "commercial", "signing-service")["recommendations"][
+        "commercial"
+    ]
+    tls = pr.recommend(r, "commercial", "tls-server")["recommendations"]["commercial"]
+    assert svc["signature"]["reason"] != tls["signature"]["reason"]
+    assert "handshake" not in svc["signature"]["reason"]
+
+
+def test_renderers_print_na_for_null_kem() -> None:
+    r = _make_report()
+    rec = pr.recommend(r, "auto", "signing-service")
+    text = pr.render_recommendation_text(r, rec)
+    md = pr.render_recommendation_markdown(r, rec)
+    assert "KEM:        n/a" in text
+    assert "None" not in text
+    assert "| KEM (n/a) | n/a |" in md
+    assert "`None`" not in md
+
+
+@pytest.mark.parametrize(
+    "role", ["firmware-signing"]
 )
 def test_other_roles_return_stub(role: str) -> None:
     r = _make_report()
