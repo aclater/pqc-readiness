@@ -42,6 +42,7 @@ RECOMMEND = "`--recommend --json` document"
 RECORD = "Recommendation record"
 POLICY_SOURCES = "Policy sources"
 AGGREGATE = "`--aggregate` rollup"
+OBSERVATIONS_JOIN = "`--aggregate` observations join"
 
 # Producing function -> doc section(s) its keys must appear in.
 FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
@@ -137,6 +138,8 @@ FUNCTION_SECTIONS: dict[str, tuple[str, ...]] = {
     "_recommend_firmware_signing": (RECORD,),
     "_aggregate_iter": (AGGREGATE,),
     "run_aggregator": (AGGREGATE,),
+    "join_observations": (OBSERVATIONS_JOIN,),
+    "_compact_listener": (OBSERVATIONS_JOIN,),
 }
 
 # Keys that a producing function builds for internal use and never emits.
@@ -370,3 +373,66 @@ def test_every_ndjson_key_path_is_documented() -> None:
                 if not _documented(section, key):
                     missing.add(f"{parent}.{key}" if parent else key)
     assert not missing, f"undocumented --ndjson keys: {sorted(missing)}"
+
+
+def test_every_observations_join_key_is_documented(tmp_path: Path) -> None:
+    from pqc_readiness import observations as obs
+
+    d = tmp_path / "fleet"
+    d.mkdir()
+    report = _golden_report()
+    report["hostname"] = "h.example"
+    report["service_crypto_linkage"] = {
+        "available": True,
+        "listeners": [
+            {
+                "protocol": "tcp",
+                "address": "0.0.0.0",
+                "port": 443,
+                "bind_scope": "any",
+                "network_namespace": "host",
+                "process": "httpd",
+                "systemd_unit": "httpd.service",
+                "crypto_libraries": [
+                    {"family": "openssl", "library_pqc_capable": True}
+                ],
+                "go": None,
+            }
+        ],
+    }
+    (d / "h.json").write_text(json.dumps(report))
+    f = tmp_path / "obs.json"
+    f.write_text(
+        json.dumps(
+            {
+                "observation_schema_version": "1.0",
+                "observations": [
+                    {
+                        "observed_at": "2026-10-13T11:00:00Z",
+                        "protocol": "tls",
+                        "fqdn": "h.example",
+                        "port": 443,
+                        "negotiated_group": "x25519",
+                        "source": {"category": "manual"},
+                    },
+                    {
+                        "observed_at": "2026-10-13T11:00:00Z",
+                        "protocol": "tls",
+                        "port": 0,
+                        "source": {"category": "manual"},
+                    },
+                ],
+            }
+        )
+    )
+    body, _code = pr.run_aggregator(d, observations=f)
+    joined = json.loads(body)["observations"]
+    section = _section(_sections(), OBSERVATIONS_JOIN)
+    keys = set(joined) | {k for m in joined["matches"] for k in m}
+    keys |= {k for m in joined["matches"] for k in (m["listener"] or {})}
+    keys |= {k for i in joined["invalid"] for k in i}
+    keys |= {k for s in joined["states"] for k in s}
+    keys |= {k for h in joined["per_host"].values() for k in h}
+    assert obs.OBSERVATION_SCHEMA_VERSION == joined["observation_schema_version"]
+    missing = sorted(k for k in keys if not _documented(section, k))
+    assert missing == []

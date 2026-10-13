@@ -567,6 +567,8 @@ Flags below are grouped by purpose.
 | --- | --- |
 | `--aggregate DIR` | Roll every `*.json` in `DIR` into a fleet rollup. The program exits when done and ignores all other flags. |
 | `--aggregate-format {json,csv}` | Output format for `--aggregate` (default `json`). |
+| `--observations FILE` | With `--aggregate`: join endpoint-observation records (what a network-side tool saw an endpoint negotiate) to the hosts and listening services in the reports. Format and matching rules: [docs/endpoint-observations.md](docs/endpoint-observations.md). |
+| `--observations-max-age-days DAYS` | Flag an observation as stale when it was made more than `DAYS` before or after its host's report (default 7). |
 
 ### Misc
 
@@ -791,6 +793,12 @@ pqc-readiness --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
 Files with mismatched `schema_version` land under `skipped` with a
 reason rather than being silently merged.
 
+To see what endpoints actually negotiate, add `--observations FILE`:
+records from any network-side source, in a small neutral format, are
+matched to the hosts and to the listening services found by
+`--scan-services`, and each endpoint is labelled capable / configured /
+observed. See [docs/endpoint-observations.md](docs/endpoint-observations.md).
+
 ## Findings
 
 Reproducible technical findings produced by `pqc-readiness`-driven testing. Reference documents — not blog posts — kept in-repo so the underlying claim, the data, and the reproduction steps stay together.
@@ -806,6 +814,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/siem-ndjson.md`](docs/siem-ndjson.md) — `--ndjson` (OCSF 1.9.0) ingestion recipes.
 - [`docs/sarif-code-scanning.md`](docs/sarif-code-scanning.md) — `--sarif-anchor` code-scanning upload recipe.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
+- [`docs/endpoint-observations.md`](docs/endpoint-observations.md) — endpoint-observation record format, matching rules and adapter guidance for `--aggregate --observations`.
 - [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF).
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.

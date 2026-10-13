@@ -18,6 +18,7 @@ from typing import Any
 
 from . import _platform as _platform
 from . import aggregate as _aggregate
+from . import observations as _observations
 from . import algorithms as _algorithms
 from . import bench as _bench
 from .detect import certs as _certs
@@ -427,12 +428,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"warning: {warning}", file=sys.stderr)
 
     # --aggregate is a top-level alternate mode; bail before per-host probing.
+    if args.observations and not args.aggregate:
+        print("--observations requires --aggregate DIR", file=sys.stderr)
+        return 2
     if args.aggregate:
         d = Path(args.aggregate)
         if not d.is_dir():
             print(f"--aggregate: {d} is not a directory", file=sys.stderr)
             return 2
-        body, code = _aggregate.run_aggregator(d, output=args.aggregate_format)
+        try:
+            body, code = _aggregate.run_aggregator(
+                d,
+                output=args.aggregate_format,
+                observations=Path(args.observations) if args.observations else None,
+                observations_max_age_days=args.observations_max_age_days,
+            )
+        except _observations.ObservationFileError as e:
+            print(f"--observations: {e}", file=sys.stderr)
+            return 2
         return code if emit(body) else EXIT_OUTPUT_WRITE_FAILED
 
     _runtime_offline.apply_root(ap, args)
