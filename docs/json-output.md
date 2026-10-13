@@ -1,7 +1,7 @@
 # JSON output reference
 
 `./pqc_readiness.py --json` emits a stable, schema-versioned document.
-The current `schema_version` is `"1.3"`. It follows the bump rules in
+The current `schema_version` is `"1.4"`. It follows the bump rules in
 [docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
 a rename, removal, or re-type is a major bump; an additive change
 (including normalising an "absent" value to `null`) is a minor bump.
@@ -14,6 +14,7 @@ does not match, so mixed-version fleets show up under `skipped`.
 | `1.1` | Added the role-aware `memory` object. |
 | `1.2` | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_method` are `null` (was `{}` / `""`) when not run; `trust_store` gained `total_found` / `scanned_count` / `max_certs` / `truncated`; `host_fs_detections_unavailable` documented for `kernel_crypto_hw` / `ktls`. |
 | `1.3` | `benchmark.pqc.<algo>.skipped` (algorithm not provided by the local OpenSSL; never benchmarked); `benchmark.classical.rsa2048_kem` and `benchmark.classical.rsa2048_signature` rows. `trust_store` counts are per unique certificate, every certificate in bundle files is inspected, and PQC certificates are classified by DER OID (#116). |
+| `1.4` | `packages.source` (`rpmdb-sqlite` \| `rpm-cli`) and `packages.db_root` on RPM hosts; the rpm database is read in-process and, under `--host-mount`, from the **host** (earlier releases inventoried the scanner image). `nss.tool` may be `rpmdb (sqlite)` or `rpm -qa`. `host_fs_detections_unavailable` gained `packages` and `nss` keys (#125). |
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -31,7 +32,7 @@ nothing was found.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Schema version string, currently `"1.3"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
+| `schema_version` | Schema version string, currently `"1.4"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. |
 | `os` | OS family token (`linux`, `darwin`). |
@@ -59,14 +60,14 @@ nothing was found.
 | `memory_bandwidth_method` | How the bandwidth value was obtained (e.g. `STREAM-triad (numpy)`), or the reason it could not be measured (e.g. `unavailable: numpy not installed`). `null` when `--bench` was not set. |
 | `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan PQC and hybrid IKE state. |
-| `nss` | NSS PQC algorithm exposure. |
+| `nss` | NSS PQC algorithm exposure: `{available, tool, version, pqc_capable, note?}`. `tool` is `certutil --version`, `rpmdb (sqlite)` (package `nss` / `mozilla-nss` read from the rpm database in-process) or `rpm -qa` (CLI fallback). Under `--host-mount` the host rpm database is consulted before `certutil`, because `certutil` belongs to the scanner image. |
 | `kernel_info` | Kernel version, build flags relevant to crypto, and module list. |
 | `fips_pqc_conflict` | Detected when kernel FIPS is on but PQC is exposed only via a non-FIPS provider. |
 | `cnsa_2_0` | CNSA 2.0 compliance summary (algorithm coverage, hash, FIPS state). |
 | `trust_store` | Trust-store summary. Populated only when `--scan-trust-store` is set (`{}` otherwise). Certificates are classified from the signature-algorithm and SubjectPublicKeyInfo OIDs in their DER encoding (independent of the installed OpenSSL), every certificate in multi-certificate bundle files is inspected, and counts are per **unique certificate** (SHA-256 of the DER; a `TRUSTED CERTIFICATE` block counts as its embedded certificate). Keys: `available`, `scanned_dirs`, `total_certs` (unique certificates whose DER parsed), `pqc_certs` (signature or key algorithm is ML-DSA / SLH-DSA), `hybrid_certs` (pre-standard hybrid OIDs), `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found` (unique certificates found across all `*.pem` / `*.crt` files after symlink de-duplication), `scanned_count` (certificates classified, ≤ `max_certs`), `max_certs` (cap in effect, default 500, set by `--trust-store-max-certs`), and `truncated` (true when `total_found > max_certs`; certificates are taken in sorted file order, then file order, so a capped scan is deterministic). Earlier releases counted *files*, read only the first certificate in each, and missed PQC certificates on OpenSSL ≥ 3.5 (#116); the field shapes are unchanged, but the count semantics changed in schema `1.3`, so counts from older reports are not comparable (the fleet aggregator already refuses to mix versions). |
 | `runtime_environment` | How the probe is running (bare metal, container, DaemonSet, …). |
-| `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
-| `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. |
+| `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
+| `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (rpm database read in-process; EL9+, Fedora, Amazon Linux 2023, Oracle Linux 9+) or `rpm-cli` (Berkeley DB on EL8, ndb on SUSE, or a failed direct read) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` (id, version, like-chain). |
 | `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
@@ -116,4 +117,4 @@ CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 asset-level schema — the asset-level projection is already provided by
 `--cbom`. No `--json` field renames are recommended at this time, so
 no major (`2.0`) bump is planned; the current `SCHEMA_VERSION` is
-`"1.3"` from additive changes only.
+`"1.4"` from additive changes only.

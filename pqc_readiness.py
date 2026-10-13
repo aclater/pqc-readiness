@@ -55,6 +55,7 @@ import select
 import shutil
 import socket
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -72,7 +73,7 @@ from typing import Any, Callable, Iterable, Iterator
 log = logging.getLogger("pqc-readiness")
 
 SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
 # the tool runs inside a container with the host's /proc /sys /dev /etc
@@ -1498,38 +1499,79 @@ def parse_nss_version(text: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3) or "0"))
 
 
-def detect_nss() -> dict[str, Any]:
-    """Probe NSS version via certutil --version (preferred) or
-    `rpm -q nss` as a fallback.  PQC capability is inferred from version
-    >= NSS_PQC_MIN_VERSION (3.108)."""
-    if shutil.which("certutil"):
-        rc, out = _run(["certutil", "--version"], timeout=5)
-        if rc == 0:
-            ver = parse_nss_version(out)
-            return {
-                "available": True,
-                "tool": "certutil --version",
-                "version": "%d.%d.%d" % ver if ver else "unknown",
-                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
-            }
-    if shutil.which("rpm"):
-        rc, out = _run(["rpm", "-q", "--qf", "%{VERSION}\\n", "nss"], timeout=5)
-        if rc == 0 and out.strip():
-            # rpm -q can return multiple lines when the package is installed
-            # for several arches (i686 + x86_64); take the first version line.
-            first = out.strip().splitlines()[0].strip()
-            ver = parse_nss_version(first)
-            return {
-                "available": True,
-                "tool": "rpm -q nss",
-                "version": ("%d.%d.%d" % ver) if ver else first,
-                "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
-                "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
-            }
+# Package names that carry the NSS libraries: `nss` on RHEL/Fedora,
+# `mozilla-nss` on SLES/openSUSE.
+NSS_RPM_PACKAGE_NAMES = ("nss", "mozilla-nss")
+
+
+def _nss_from_rpmdb() -> dict[str, Any] | None:
+    """NSS version from the shared rpm inventory (#125), or None when the
+    inventory is unavailable or has no NSS package.  Multi-arch installs
+    (i686 + x86_64) report the highest parsed version."""
+    inv = query_rpm_packages()
+    if not inv.get("available"):
+        return None
+    versions = [
+        p["version"] for p in inv["packages"] if p["name"] in NSS_RPM_PACKAGE_NAMES
+    ]
+    if not versions:
+        return None
+    parsed = [(parse_nss_version(v), v) for v in versions]
+    known = [(ver, raw) for ver, raw in parsed if ver is not None]
+    ver, raw = max(known) if known else (None, versions[0])
+    tool = "rpmdb (sqlite)" if inv["source"] == "rpmdb-sqlite" else "rpm -qa"
     return {
-        "available": False,
-        "reason": "neither certutil nor a package manager that can query nss is on PATH",
+        "available": True,
+        "tool": tool,
+        "version": ("%d.%d.%d" % ver) if ver else raw,
+        "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+        "note": "rpm-only check; NSS version reflects RHEL/Fedora package, not necessarily upstream",
     }
+
+
+def _nss_from_certutil() -> dict[str, Any] | None:
+    if not shutil.which("certutil"):
+        return None
+    rc, out = _run(["certutil", "--version"], timeout=5)
+    if rc != 0:
+        return None
+    ver = parse_nss_version(out)
+    return {
+        "available": True,
+        "tool": "certutil --version",
+        "version": "%d.%d.%d" % ver if ver else "unknown",
+        "pqc_capable": ver is not None and ver >= NSS_PQC_MIN_VERSION,
+    }
+
+
+def detect_nss() -> dict[str, Any]:
+    """Probe NSS version via certutil --version (preferred) or the rpm
+    database as a fallback.  PQC capability is inferred from version
+    >= NSS_PQC_MIN_VERSION (3.108).
+
+    Under --host-mount the order flips: certutil is the container image's
+    binary, so the host's rpm database is consulted first and certutil is
+    only a last resort (flagged as reflecting the image)."""
+    if HOST_PREFIX:
+        found = _nss_from_rpmdb()
+        if found is None:
+            found = _nss_from_certutil()
+            if found is not None:
+                found["note"] = (
+                    "certutil belongs to the scanner image; no NSS package "
+                    "found in the host rpm database"
+                )
+    else:
+        found = _nss_from_certutil() or _nss_from_rpmdb()
+    if found is None:
+        return {
+            "available": False,
+            "reason": "neither certutil nor a package manager that can query nss is on PATH",
+        }
+    note = _host_fs_note_for("nss")
+    if note:
+        found.update(note)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -2509,6 +2551,16 @@ _HOST_FS_DEPENDENT_DETECTIONS: tuple[tuple[str, str, str], ...] = (
         "PKCS#11 module scan",
         "/usr/lib*/<arch>/ and /usr/lib*/pkcs11/ under host /usr",
     ),
+    (
+        "packages",
+        "RPM package inventory",
+        "the rpm database (/usr/lib/sysimage/rpm, /var/lib/rpm or /usr/share/rpm)",
+    ),
+    (
+        "nss",
+        "NSS version detection",
+        "certutil and the rpm database (/usr/lib/sysimage/rpm, /var/lib/rpm or /usr/share/rpm)",
+    ),
 )
 
 
@@ -2684,6 +2736,294 @@ def classify_bundled_crypto(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Direct RPM database reader (#125)
+# ---------------------------------------------------------------------------
+#
+# Reading rpmdb.sqlite in-process replaces the `rpm -qa` fork (the single
+# most expensive call in a --scan-packages run) and, more importantly,
+# lets --host-mount read the *host's* database: `rpm -qa` inside the
+# DaemonSet/quadlet image would inventory the image instead.
+#
+# Database directories, checked in order.  Measured 2026-10-13 across 19
+# distro images (matrix on #125): /var/lib/rpm exists everywhere, as the
+# real directory on EL8/EL9/Oracle Linux 9/Amazon Linux 2023 and as a
+# relative symlink to /usr/lib/sysimage/rpm on EL10, Fedora and SUSE.  It
+# must be checked first: Oracle Linux 9 ships a stray, empty
+# /usr/lib/sysimage/rpm/rpmdb.sqlite next to the live /var/lib/rpm db.
+# /usr/share/rpm is the rpm-ostree location (RHCOS / Fedora CoreOS); not
+# verified on hardware.
+RPMDB_DIRS: tuple[str, ...] = (
+    "/var/lib/rpm",
+    "/usr/lib/sysimage/rpm",
+    "/usr/share/rpm",
+)
+# Database files probed inside each directory.  The backend is decided
+# by file magic, never by file name or distro version: hosts upgraded in
+# place can keep an older format.
+_RPMDB_FILES: tuple[str, ...] = ("rpmdb.sqlite", "Packages.db", "Packages")
+_SQLITE_MAGIC = b"SQLite format 3\0"
+_NDB_MAGIC = b"RpmP"
+# Berkeley DB hash magic 0x00061561 at offset 12, in the writer's byte
+# order (little-endian on x86_64/aarch64, big-endian on s390x).
+_BDB_HASH_MAGICS = (b"\x00\x06\x15\x61", b"\x61\x15\x06\x00")
+# Header tags we read (rpmtag.h) and the data types they use.
+_RPMTAG_NAMES: dict[int, str] = {
+    1000: "name",
+    1001: "version",
+    1002: "release",
+    1003: "epoch",
+    1022: "arch",
+}
+_RPM_TYPE_INT32 = 4
+_RPM_TYPE_STRING = 6
+_RPM_TYPE_I18NSTRING = 9
+# Sanity limits mirroring rpm's own (HEADER_TAGS_MAX / HEADER_DATA_MAX):
+# a blob claiming more is corrupt, not merely large.
+_RPM_HEADER_MAX_TAGS = 0x0000FFFF
+_RPM_HEADER_MAX_DATA = 0x0FFFFFFF
+class RpmdbError(Exception):
+    """The rpm database could not be read in-process; callers fall back."""
+
+
+def parse_rpm_header(blob: bytes) -> dict[str, Any]:
+    """Extract name/version/release/epoch/arch from an rpmdb header blob.
+
+    rpmdb stores headers without the 8-byte magic: big-endian `il`
+    (index entry count) and `dl` (data length), then `il` 16-byte entries
+    `{tag, type, offset, count}`, then `dl` bytes of data.  Every offset is
+    bounds-checked; anything inconsistent raises RpmdbError so the caller
+    can discard the whole read rather than emit a partial inventory."""
+    if len(blob) < 8:
+        raise RpmdbError("header blob shorter than its preamble")
+    il, dl = struct.unpack_from(">II", blob, 0)
+    if not 0 < il <= _RPM_HEADER_MAX_TAGS or dl > _RPM_HEADER_MAX_DATA:
+        raise RpmdbError(f"implausible header sizes il={il} dl={dl}")
+    base = 8 + 16 * il
+    if base + dl > len(blob):
+        raise RpmdbError("header blob truncated")
+    out: dict[str, Any] = {}
+    for i in range(il):
+        tag, typ, off, _count = struct.unpack_from(">IIII", blob, 8 + 16 * i)
+        key = _RPMTAG_NAMES.get(tag)
+        if key is None:
+            continue
+        if off >= dl:
+            raise RpmdbError(f"tag {tag} offset {off} outside data ({dl})")
+        start = base + off
+        if typ in (_RPM_TYPE_STRING, _RPM_TYPE_I18NSTRING):
+            end = blob.find(b"\0", start, base + dl)
+            if end < 0:
+                raise RpmdbError(f"tag {tag} string not terminated")
+            out[key] = blob[start:end].decode("utf-8", "replace")
+        elif typ == _RPM_TYPE_INT32:
+            if off + 4 > dl:
+                raise RpmdbError(f"tag {tag} int32 overruns data")
+            out[key] = struct.unpack_from(">I", blob, start)[0]
+    if "name" not in out or "version" not in out:
+        raise RpmdbError("header has no NAME/VERSION")
+    return out
+
+
+def rpmdb_backend_by_magic(path: Path) -> str | None:
+    """Return "sqlite", "ndb" or "bdb" from a database file's magic bytes,
+    or None when the file is unreadable or unrecognised."""
+    try:
+        with path.open("rb") as fh:
+            head = fh.read(16)
+    except OSError as e:
+        log.debug("rpmdb: cannot read %s: %s", path, e)
+        return None
+    if head.startswith(_SQLITE_MAGIC):
+        return "sqlite"
+    if head.startswith(_NDB_MAGIC):
+        return "ndb"
+    if len(head) >= 16 and head[12:16] in _BDB_HASH_MAGICS:
+        return "bdb"
+    return None
+
+
+def resolve_under_prefix(path: str, prefix: str, max_links: int = 40) -> str:
+    """Resolve symlinks in host path `path` as the host would, reading
+    each component under `prefix` and re-rooting absolute link targets
+    under it too, so a host symlink is never followed into the scanner
+    container's own filesystem.  Returns the resolved host-relative path.
+    With an empty prefix this is plain symlink resolution."""
+    pending = [c for c in path.split("/") if c]
+    done: list[str] = []
+    links = 0
+    while pending:
+        part = pending.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            if done:
+                done.pop()
+            continue
+        candidate = prefix + "/" + "/".join([*done, part])
+        if os.path.islink(candidate):
+            links += 1
+            if links > max_links:
+                raise RpmdbError(f"too many symlinks resolving {path}")
+            target = os.readlink(candidate)
+            if target.startswith("/"):
+                done = []
+            pending = [c for c in target.split("/") if c] + pending
+            continue
+        done.append(part)
+    return "/" + "/".join(done)
+
+
+def locate_rpmdb() -> tuple[str, Path, str] | None:
+    """Find the host rpm database.  Returns (host-relative directory, the
+    directory as seen by this process, backend) for the first directory in
+    RPMDB_DIRS holding a database file whose magic identifies a backend.
+    Under --host-mount every path is resolved under HOST_PREFIX."""
+    seen: set[str] = set()
+    for d in RPMDB_DIRS:
+        try:
+            host_dir = resolve_under_prefix(d, HOST_PREFIX)
+        except RpmdbError as e:
+            log.debug("rpmdb: %s", e)
+            continue
+        if host_dir in seen:
+            continue
+        seen.add(host_dir)
+        local_dir = Path(HOST_PREFIX + host_dir)
+        for fname in _RPMDB_FILES:
+            f = local_dir / fname
+            if not f.is_file():
+                continue
+            backend = rpmdb_backend_by_magic(f)
+            if backend is not None:
+                return host_dir, local_dir, backend
+            log.debug("rpmdb: %s has no recognised magic; skipping", f)
+    return None
+
+
+def read_rpmdb_sqlite(db_file: Path) -> list[dict[str, Any]]:
+    """Read every installed package header from an rpmdb.sqlite file.
+
+    Opened read-only.  A read-only bind mount of a WAL-mode database
+    cannot open with mode=ro when the -shm file is missing, so retry with
+    immutable=1 in that case only (verified with a ro podman mount).
+    Raises RpmdbError on any failure; never returns a partial list."""
+    try:
+        import sqlite3
+    except ImportError as e:  # minimal Python builds can lack _sqlite3
+        raise RpmdbError(f"sqlite3 module unavailable: {e}") from e
+    from urllib.parse import quote
+
+    uri_path = quote(str(db_file))
+    last_err: Exception | None = None
+    for params in ("mode=ro", "mode=ro&immutable=1"):
+        try:
+            con = sqlite3.connect(f"file:{uri_path}?{params}", uri=True, timeout=2)
+        except sqlite3.Error as e:
+            last_err = e
+            log.debug("rpmdb: open %s (%s) failed: %s", db_file, params, e)
+            continue
+        try:
+            rows = con.execute("SELECT blob FROM Packages").fetchall()
+        except sqlite3.Error as e:
+            last_err = e
+            log.debug("rpmdb: query %s (%s) failed: %s", db_file, params, e)
+            continue
+        finally:
+            con.close()
+        if not rows:
+            # An empty database is never a real install: Oracle Linux 9
+            # ships a stray empty rpmdb.sqlite.  Treat it as invalid.
+            raise RpmdbError(f"{db_file} holds 0 packages; treating as invalid")
+        return [parse_rpm_header(bytes(blob)) for (blob,) in rows]
+    raise RpmdbError(f"cannot read {db_file}: {last_err}")
+
+
+def parse_rpm_qa_nvra(text: str) -> list[dict[str, Any]]:
+    """Parse `rpm -qa --queryformat '%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n'`.
+
+    _run merges stderr into stdout, and rpm prints diagnostics such as
+    `warning: Found bdb_ro Packages` (rpm >= 4.17 reading an EL8 database)
+    that also split into four fields, so only lines with exactly four
+    fields and no `warning:` / `error:` prefix are packages."""
+    out: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) != 4 or parts[0].rstrip(":") in ("warning", "error"):
+            if line.strip():
+                log.debug("rpm -qa: ignoring non-package line %r", line)
+            continue
+        pkg: dict[str, Any] = {"name": parts[0], "version": parts[1], "release": parts[2]}
+        if parts[3] != "(none)":
+            pkg["arch"] = parts[3]
+        out.append(pkg)
+    return out
+
+
+_RPM_QA_ARGV = ["rpm", "-qa", "--queryformat", "%{NAME} %{VERSION} %{RELEASE} %{ARCH}\\n"]
+
+
+def _query_rpm_cli(db: tuple[str, Path, str] | None) -> dict[str, Any]:
+    """Fallback inventory through the rpm binary (bdb on EL8, ndb on SUSE,
+    no sqlite3 module, or a failed direct read).  Under --host-mount the
+    binary belongs to the scanner image, so it is pointed at the host with
+    --root plus the located --dbpath (interpreted inside the root); with no
+    host database located it refuses rather than silently reporting the
+    image's own packages."""
+    if HOST_PREFIX and db is None:
+        return {
+            "available": False,
+            "reason": f"no rpm database found under {HOST_PREFIX} "
+            f"({', '.join(RPMDB_DIRS)}); is the host rpmdb mounted?",
+        }
+    if not shutil.which("rpm"):
+        return {"available": False, "reason": "rpm not on PATH"}
+    argv = list(_RPM_QA_ARGV)
+    if HOST_PREFIX and db is not None:
+        argv[1:1] = ["--root", HOST_PREFIX, "--dbpath", db[0]]
+    rc, out = _run(argv, timeout=30)
+    if rc != 0:
+        return {"available": False, "reason": f"rpm -qa failed (rc={rc})"}
+    return {
+        "available": True,
+        "source": "rpm-cli",
+        "db_root": db[0] if db else None,
+        "backend": db[2] if db else None,
+        "packages": parse_rpm_qa_nvra(out),
+    }
+
+
+@functools.lru_cache(maxsize=None)
+def _query_rpm_packages_cached(host_prefix: str) -> dict[str, Any]:
+    # host_prefix is the cache key only; locate_rpmdb() reads HOST_PREFIX.
+    db = locate_rpmdb()
+    if db is not None and db[2] == "sqlite":
+        try:
+            pkgs = read_rpmdb_sqlite(db[1] / "rpmdb.sqlite")
+        except RpmdbError as e:
+            log.debug("rpmdb: direct read failed, falling back to rpm CLI: %s", e)
+        else:
+            return {
+                "available": True,
+                "source": "rpmdb-sqlite",
+                "db_root": db[0],
+                "backend": "sqlite",
+                "packages": pkgs,
+            }
+    return _query_rpm_cli(db)
+
+
+def query_rpm_packages() -> dict[str, Any]:
+    """Installed-RPM inventory, read once per process and shared by
+    scan_packages() and detect_nss().  Prefers the in-process sqlite read;
+    BDB (EL8), ndb (SUSE), a missing sqlite3 module or any read error take
+    the rpm CLI path.  Result: {available, source, db_root, backend,
+    packages: [{name, version, release?, epoch?, arch?}]} or
+    {available: False, reason}.  Tests reset the cache with
+    _query_rpm_packages_cached.cache_clear()."""
+    return _query_rpm_packages_cached(HOST_PREFIX)
+
+
 # Per-family commands for --scan-packages.  The first tuple element is the
 # argv to invoke; the second is the parser to apply.  When the family has
 # no entry (or the tool is missing on PATH), scan_packages reports
@@ -2711,8 +3051,12 @@ PACKAGE_QUERY_BY_FAMILY: dict[
 def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     """Family-aware package inventory.  Returns the same shape regardless
     of which tool produced it: {available, total_packages, bundled_crypto},
-    so consumers don't have to special-case rpm/dpkg/pacman/apk output."""
+    so consumers don't have to special-case rpm/dpkg/pacman/apk output.
+    RPM families read the rpm database through query_rpm_packages() and
+    additionally report `source` and `db_root` (#125)."""
     family = (os_release or {}).get("family", "unknown")
+    if family in ("rhel", "suse"):
+        return _scan_rpm_packages(family)
     plan = PACKAGE_QUERY_BY_FAMILY.get(family)
     if plan is None:
         return {
@@ -2735,6 +3079,28 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
         "total_packages": len(pkgs),
         "bundled_crypto": classify_bundled_crypto(pkgs, family),
     }
+
+
+def _scan_rpm_packages(family: str) -> dict[str, Any]:
+    inv = query_rpm_packages()
+    if not inv.get("available"):
+        reason = str(inv.get("reason", "rpm database unavailable"))
+        if reason == "rpm not on PATH":
+            reason = f"rpm not on PATH ({_install_hint('rpm', family)})"
+        return {"available": False, "reason": reason}
+    pkgs = [{"name": p["name"], "version": p["version"]} for p in inv["packages"]]
+    out: dict[str, Any] = {
+        "available": True,
+        "package_manager": "rpm",
+        "source": inv["source"],
+        "db_root": inv["db_root"],
+        "total_packages": len(pkgs),
+        "bundled_crypto": classify_bundled_crypto(pkgs, family),
+    }
+    note = _host_fs_note_for("packages")
+    if note:
+        out.update(note)
+    return out
 
 
 # ---------------------------------------------------------------------------

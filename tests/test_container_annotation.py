@@ -295,7 +295,7 @@ def test_build_host_fs_detections_unavailable_populated_in_container(
     # Every catalogued probe should be present.
     expected = {
         "accelerators", "kernel_crypto_hw", "ktls", "fips", "tpm_pqc",
-        "kernel_info", "os_release", "pkcs11_modules",
+        "kernel_info", "os_release", "pkcs11_modules", "packages", "nss",
     }
     assert set(out) == expected
     for key, note in out.items():
