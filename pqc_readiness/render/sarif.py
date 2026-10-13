@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import report as _report
 from .. import registry as _registry
+from ..detect import config_policy as _config_policy
 
 
 # ---------------------------------------------------------------------------
@@ -165,6 +166,23 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         ),
         default_level="error",
         help_uri=f"{SARIF_HELP_BASE}/pqc-007-fips-without-algorithm-fence.md",
+    ),
+    RuleSpec(
+        id="pqc-008-crypto-policy-blocks-pqc",
+        short_description=(
+            "OpenSSL supports PQC TLS groups but the system crypto policy "
+            "keeps them out."
+        ),
+        full_description=(
+            "The installed OpenSSL exposes hybrid or pure ML-KEM TLS 1.3 "
+            "groups, but the active system-wide crypto policy lists none in "
+            "its OpenSSL back-end, so applications using the system default "
+            "never negotiate PQC.  Measured on RHEL-family 9.8 hosts, whose "
+            "DEFAULT policy enables no PQC; the PQ subpolicy (EL9) or "
+            "TEST-PQ (EL10 / Fedora) turns it on, and NO-PQ turns it off."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-008-crypto-policy-blocks-pqc.md",
     ),
 )
 
@@ -336,6 +354,28 @@ def build_findings(r: _report.Report) -> list[Finding]:
                 ),
                 properties={
                     "fips:algorithms_reachable_outside_fence": outside,
+                },
+            )
+        )
+
+    cp = r.crypto_policy
+    if _config_policy.policy_blocks_capable_pqc(cp, osinfo):
+        tg = osinfo.get("tls_groups") or {}
+        findings.append(
+            Finding(
+                rule_id="pqc-008-crypto-policy-blocks-pqc",
+                level="warning",
+                message=(
+                    f"Crypto policy {cp.get('active')} allows no PQC TLS groups, "
+                    "although OpenSSL supports "
+                    + ", ".join((tg.get("hybrid") or []) + (tg.get("pure_pqc") or []))
+                    + "."
+                ),
+                properties={
+                    "crypto_policy:active": cp.get("active"),
+                    "crypto_policy:available_subpolicies": cp.get(
+                        "available_subpolicies"
+                    ),
                 },
             )
         )

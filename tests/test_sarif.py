@@ -62,6 +62,14 @@ def _full_trigger_report() -> pr.Report:
             "kem_algorithms": ["ML-KEM-768"],
             "sig_algorithms": ["ML-DSA-65", "SLH-DSA-SHA2-128s"],
             "upgrade_path": {"recommendation": "upgrade to OpenSSL 3.5"},
+            "tls_groups": {"hybrid": ["X25519MLKEM768"], "pure_pqc": []},
+        },
+        # EL9.8-style DEFAULT policy: OpenSSL can, policy won't (pqc-008).
+        crypto_policy={
+            "available": True,
+            "active": "DEFAULT",
+            "available_subpolicies": ["PQ"],
+            "pqc_enabled": {"tls_key_exchange": False},
         },
         fips={
             "kernel": True,
@@ -121,7 +129,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 7
+    assert len(rules) == 8
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -130,6 +138,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-005-slh-dsa-in-tls-context",
         "pqc-006-no-network-hsm-pqc-firmware",
         "pqc-007-fips-without-algorithm-fence",
+        "pqc-008-crypto-policy-blocks-pqc",
     }
     assert {r["id"] for r in rules} == expected_ids
     for r in rules:

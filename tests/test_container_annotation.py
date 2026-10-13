@@ -329,6 +329,7 @@ def test_build_host_fs_detections_unavailable_populated_in_container(
         "os_release",
         "pkcs11_modules",
         "packages",
+        "crypto_policy",
         "nss",
     }
     assert set(out) == expected

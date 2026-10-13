@@ -158,6 +158,10 @@ from .detect.protocols import (  # noqa: F401
     parse_ssh_kex,
     parse_ssh_version,
 )
+from .detect.config_policy import (  # noqa: F401
+    detect_crypto_policy,
+    policy_blocks_capable_pqc,
+)
 from .detect.certs import (  # noqa: F401
     COMPOSITE_SIG_OID_RE,
     DERError,
@@ -321,6 +325,7 @@ __all__ = [
     "cpu_freq_mhz",
     "cpu_model",
     "detect_accelerators",
+    "detect_crypto_policy",
     "detect_fips_mode",
     "detect_fips_mode_from_providers_text",
     "detect_ipsec_pqc",
@@ -381,6 +386,7 @@ __all__ = [
     "parse_ssh_version",
     "parse_whitespace_pkg_lines",
     "per_algo_verdict",
+    "policy_blocks_capable_pqc",
     "production_estimate",
     "query_rpm_named",
     "query_rpm_named_from_inventory",
