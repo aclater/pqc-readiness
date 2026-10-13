@@ -147,3 +147,30 @@ def test_el8_cadence_names_its_per_pr_workflow() -> None:
     assert "ci-ubi8.yml" in cadence
     assert "every PR" in cadence
     assert "not a booted EL8 host" in cadence
+
+
+def test_tier2_ubuntu_matches_weekly_workflow_and_fixture() -> None:
+    """The Tier 2 Ubuntu release rotates (#115): an interim release that
+    hits end of life must leave the README row, the weekly workflow
+    matrix and the os-release fixture together.  Pin the three to the
+    same version so a rotation cannot update one and forget the others
+    (the README previously kept Ubuntu 25.10 after its EOL)."""
+    rows = {tier: (distros, cadence) for tier, distros, cadence in _tier_rows()}
+    distros, _cadence = rows["2"]
+    m = re.search(r"Ubuntu (\d{2}\.\d{2})", distros)
+    assert m, f"Tier 2 row names no Ubuntu release: {distros!r}"
+    version = m.group(1)
+
+    weekly = (WORKFLOWS_DIR / "ci-tier2-weekly.yml").read_text()
+    tags = re.findall(r"docker\.io/library/ubuntu:(\S+)", weekly)
+    assert tags == [version], (
+        f"README Tier 2 lists Ubuntu {version} but ci-tier2-weekly.yml "
+        f"runs ubuntu:{tags}"
+    )
+
+    fixture = (
+        REPO_ROOT / "tests" / "fixtures" / "os-release"
+        / f"ubuntu-{version.replace('.', '')}.txt"
+    )
+    assert fixture.is_file(), f"missing os-release fixture {fixture.name}"
+    assert f'VERSION_ID="{version}"' in fixture.read_text()

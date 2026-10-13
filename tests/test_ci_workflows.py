@@ -133,6 +133,36 @@ def test_ci_runs_detect_secrets_with_precommit_version() -> None:
     assert f"detect-secrets=={m.group(1)}" in body
 
 
+@pytest.mark.parametrize(
+    ("hook_repo", "package"),
+    [
+        ("astral-sh/ruff-pre-commit", "ruff"),
+        ("pre-commit/mirrors-mypy", "mypy"),
+    ],
+)
+def test_ci_lint_pins_match_precommit_revs(hook_repo: str, package: str) -> None:
+    """ci.yml's pinned ruff/mypy must equal the pre-commit hook revs (#114).
+
+    CI pins these tools so an upstream release cannot silently change lint
+    policy (#97).  If the pre-commit hook drifts from that pin, a
+    contributor's local hook and CI lint with different rule sets and can
+    disagree about the same code.
+    """
+    import re
+
+    body = _read_workflow("ci.yml")
+    precommit = REPO_ROOT / ".pre-commit-config.yaml"
+    if not precommit.exists():
+        pytest.skip(f"pre-commit config not present in this checkout: {precommit}")
+    m = re.search(
+        rf"{re.escape(hook_repo)}\s*\n\s*rev:\s*v?([0-9.]+)", precommit.read_text()
+    )
+    assert m, f"{hook_repo} hook not found in .pre-commit-config.yaml"
+    assert f"{package}=={m.group(1)}" in body, (
+        f"pre-commit pins {package} {m.group(1)} but ci.yml does not"
+    )
+
+
 @pytest.mark.parametrize("image", ["ubi10", "debian"])
 def test_containers_workflow_runs_pytest_inside_image(image: str) -> None:
     """ci-containers.yml must run the full pytest suite inside the UBI 10
