@@ -28,6 +28,7 @@ from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
 from .detect import packages as _packages
 from .detect import protocols as _protocols
+from .detect import protocols_signing as _signing
 from .detect import runtime as _runtime
 from .detect import runtime_services as _runtime_services
 from . import recommendation as _recommendation
@@ -221,6 +222,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
         packages_info = _packages.scan_packages(os_release)
+    signing_keys_info: dict[str, Any] = {}
+    if getattr(args, "scan_signing_keys", False):
+        signing_keys_info = _signing.scan_signing_keys(os_release)
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
         services_info = _runtime_services.scan_services()
@@ -304,6 +308,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         service_crypto_linkage=services_info,
         host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
+        signing_keys=signing_keys_info,
         replace_required=replace_required,
         os_release=os_release,
         benchmark=bench,

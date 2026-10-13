@@ -102,6 +102,21 @@ def _full_trigger_report() -> pr.Report:
                 "pqc_capable": False,
             },
         ],
+        signing_keys={
+            "available": True,
+            "family": "rhel",
+            "keys": [
+                {"algorithm": "RSA", "key_id": "199E2F91FD431D51"},
+                {"algorithm": "RSA", "key_id": "5054E4A45A6340B3"},
+            ],
+            "summary": {
+                "total": 2,
+                "classical": 2,
+                "hybrid": 0,
+                "pure_pqc": 0,
+                "all_classical": True,
+            },
+        },
     )
 
 
@@ -129,7 +144,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 8
+    assert len(rules) == 9
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -139,6 +154,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-006-no-network-hsm-pqc-firmware",
         "pqc-007-fips-without-algorithm-fence",
         "pqc-008-crypto-policy-blocks-pqc",
+        "pqc-009-classical-package-signing-keys",
     }
     assert {r["id"] for r in rules} == expected_ids
     for r in rules:

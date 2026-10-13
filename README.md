@@ -99,6 +99,7 @@ versions.
 |---|---|---|---|
 | Default scan | 0.38 s | 0.38 s | unchanged |
 | `--scan-packages` | 0.79 s | 0.36 s | 2.2× faster |
+| `--scan-signing-keys` | Inventory the package manager's trusted signing keys: rpm `gpg-pubkey` entries (read in-process from sqlite / Berkeley DB / ndb) and repo `gpgkey=file://` files, apt `trusted.gpg(.d)` and `signed-by` keyrings, pacman keyrings, apk keys. Reports algorithm, size or curve, fingerprint and RFC 9980 PQC category (`signing_keys` in JSON; SARIF `pqc-009` when every key is classical). Public keys only. |
 | `--scan-trust-store --scan-packages` | 1.61 s | 0.38 s | 4.2× faster |
 | Trust-store classification alone | 0.70 s, one `openssl` per file | 0.04 s, no subprocesses | ~17× faster |
 
@@ -601,6 +602,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/scope.md`](docs/scope.md) — where this project fits in the wider PQC tooling ecosystem; how host-level scanning composes with network, source-code, dependency, and TLS-handshake categories.
 - [`docs/json-output.md`](docs/json-output.md) — full `--json` top-level field reference, `--ansible` wrapper, and `--recommend --json` variant.
 - [`docs/recommendation-policies.md`](docs/recommendation-policies.md) — authority, source document, and engine-encoded position for every `--policy`.
+- [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF).
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party-product reference policy, the README ↔ `--help` rule.
