@@ -572,6 +572,30 @@ def _render_text_verdict(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_pqc_failures(r: _report.Report) -> list[str]:
+    """Software that will fail at PQC (#193): the per-service / library /
+    connection findings, so they are visible without a SARIF viewer."""
+    from . import sarif as _sarif  # deferred: sarif imports detection modules
+
+    found = _sarif.pqc_failure_findings(r)
+    if not found:
+        return []
+    fails = [f for f in found if f.rule_id != _sarif._UNDETERMINED]
+    unknown = [f for f in found if f.rule_id == _sarif._UNDETERMINED]
+    L: list[str] = [C.wrap(C.BOLD, "Will fail at PQC")]
+    for f in fails:
+        rule = f.rule_id.split("-", 2)
+        L.append(C.wrap(C.YELLOW, f"   [{rule[0]}-{rule[1]}] {f.message}"))
+    if unknown:
+        L.append(
+            C.wrap(C.DIM, f"   Could not determine ({len(unknown)}; verify by hand):")
+        )
+        for f in unknown:
+            L.append(C.wrap(C.DIM, f"     - {f.message}"))
+    L.append("")
+    return L
+
+
 def _render_text_signing_keys(r: _report.Report) -> list[str]:
     """Package-signing trust anchors (--scan-signing-keys, #153)."""
     sk = r.signing_keys
@@ -732,6 +756,8 @@ def render_text_offline(r: _report.Report) -> str:
     L.extend(_render_text_offline_openssl(r))
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_signing_keys(r))
+    L.extend(_render_text_crypto_libraries(r))
+    L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_verdict(r))
     # Reused live sections carry live numbering ("9.", "11."); offline
     # headings are unnumbered.
@@ -839,6 +865,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_signing_keys(r))
     L.extend(_render_text_crypto_libraries(r))
     L.extend(_render_text_processes(r))
+    L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_verdict(r))
     return "\n".join(L)
 
