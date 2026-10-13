@@ -399,6 +399,43 @@
     "packages": {},
     "per_algo": {},
     "pkcs11_modules": [],
+    "pqc_deployment_gap": {
+      "gaps": [],
+      "protocols": {
+        "ipsec": {
+          "capable": null,
+          "configured": null,
+          "evidence": {
+            "capable": [],
+            "configured": []
+          },
+          "state": "not_present"
+        },
+        "ssh": {
+          "capable": null,
+          "configured": false,
+          "evidence": {
+            "capable": [],
+            "configured": [
+              "sshd.pqc_offered"
+            ]
+          },
+          "state": "unknown"
+        },
+        "tls": {
+          "capable": null,
+          "configured": null,
+          "evidence": {
+            "capable": [],
+            "configured": []
+          },
+          "state": "not_present"
+        }
+      },
+      "services": {
+        "available": false
+      }
+    },
     "pqc_sizes": {
       "ML-DSA-65": {
         "pk": 1952,

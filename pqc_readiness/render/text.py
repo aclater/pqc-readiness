@@ -574,6 +574,30 @@ def _render_text_verdict(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_pqc_failures(r: _report.Report) -> list[str]:
+    """Software that will fail at PQC (#193): the per-service / library /
+    connection findings, so they are visible without a SARIF viewer."""
+    from . import sarif as _sarif  # deferred: sarif imports detection modules
+
+    found = _sarif.pqc_failure_findings(r)
+    if not found:
+        return []
+    fails = [f for f in found if f.rule_id != _sarif._UNDETERMINED]
+    unknown = [f for f in found if f.rule_id == _sarif._UNDETERMINED]
+    L: list[str] = [C.wrap(C.BOLD, "Will fail at PQC")]
+    for f in fails:
+        rule = f.rule_id.split("-", 2)
+        L.append(C.wrap(C.YELLOW, f"   [{rule[0]}-{rule[1]}] {f.message}"))
+    if unknown:
+        L.append(
+            C.wrap(C.DIM, f"   Could not determine ({len(unknown)}; verify by hand):")
+        )
+        for f in unknown:
+            L.append(C.wrap(C.DIM, f"     - {f.message}"))
+    L.append("")
+    return L
+
+
 def _render_text_signing_keys(r: _report.Report) -> list[str]:
     """Package-signing trust anchors (--scan-signing-keys, #153)."""
     sk = r.signing_keys
@@ -751,6 +775,49 @@ def _render_text_offline_openssl(r: _report.Report) -> list[str]:
     return L
 
 
+_GAP_LABELS = {
+    "deployed": "deployed",
+    "capable_not_configured": "capable, NOT configured",
+    "configured_not_capable": "configured, NOT capable",
+    "not_capable": "not capable",
+    "unknown": "unknown",
+    "not_present": "not present",
+}
+
+
+def _render_text_deployment_gap(r: _report.Report) -> list[str]:
+    """Capability vs configuration per protocol and service (#107)."""
+    g = r.pqc_deployment_gap or {}
+    protocols = g.get("protocols") or {}
+    if not protocols:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "PQC deployment gap (capable vs configured)")]
+    for name in ("tls", "ssh", "ipsec"):
+        v = protocols.get(name) or {}
+        state = str(v.get("state", "unknown"))
+        line = f"   {name.upper():<6} {_GAP_LABELS.get(state, state)}"
+        if v.get("note"):
+            line += f"  ({v['note']})"
+        L.append(line)
+    services = g.get("services") or {}
+    for svc in services.get("items") or []:
+        if svc.get("follows_host_default"):
+            continue
+        state = str(svc.get("state", "unknown"))
+        fams = ",".join(svc.get("crypto_families") or [])
+        L.append(
+            f"   {str(svc.get('process')):<14} {svc.get('protocol')}/{svc.get('port'):<6} "
+            f"[{fams}] {_GAP_LABELS.get(state, state)}"
+        )
+    same = sum(
+        1 for svc in services.get("items") or [] if svc.get("follows_host_default")
+    )
+    if same:
+        L.append(f"   ({same} more service(s) follow the host defaults above)")
+    L.append("")
+    return L
+
+
 def _render_text_crypto_libraries(r: _report.Report) -> list[str]:
     """Crypto libraries besides OpenSSL / NSS (--scan-crypto-libraries, #110)."""
     cl = r.crypto_libraries
@@ -839,6 +906,8 @@ def render_text_offline(r: _report.Report) -> str:
     L.extend(_render_text_offline_openssl(r))
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_signing_keys(r))
+    L.extend(_render_text_crypto_libraries(r))
+    L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_verdict(r))
     # Reused live sections carry live numbering ("9.", "11."); offline
     # headings are unnumbered.
@@ -948,6 +1017,8 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_processes(r))
     L.extend(_render_text_boot_chain(r))
     L.extend(_render_text_kerberos(r))
+    L.extend(_render_text_pqc_failures(r))
+    L.extend(_render_text_deployment_gap(r))
     L.extend(_render_text_verdict(r))
     return "\n".join(L)
 

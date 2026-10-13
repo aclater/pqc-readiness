@@ -1,4 +1,4 @@
-# pqc-021-kerberos-weak-enctypes
+# pqc-031-kerberos-weak-enctypes
 
 **Default level:** warning (note when only 128-bit enctypes or PKINIT are the concern)
 

@@ -730,3 +730,27 @@ def test_cli_end_to_end(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     out = json.loads(capsys.readouterr().out)
     assert out["observations"]["max_age_days"] == 1.0
     assert out["observations"]["by_status"] == {"matched": 1}
+
+
+def test_jsonl_bare_carriage_return_is_one_bad_record(tmp_path: Path) -> None:
+    # Found validating #107 on real VMs: `ssh -vv` output captured with a
+    # trailing \r put a raw carriage return inside a JSON string.  The
+    # record is invalid, but it is ONE record on line 2; splitlines()
+    # used to split it in two and shift every later line number.
+    good = json.dumps(_record(observation_schema_version="1.0", fqdn="a.example"))
+    bad = good.replace("X25519MLKEM768", "X25519MLKEM768\r")
+    f = tmp_path / "obs.jsonl"
+    # write_bytes: Path.write_text(newline=) needs Python 3.10; CI runs 3.9.
+    f.write_bytes(("\n".join([good, bad, good]) + "\n").encode())
+    loaded = obs.load_observations(f)
+    assert len(loaded.records) == 2
+    assert [i["record"] for i in loaded.invalid] == [2]
+
+
+def test_jsonl_crlf_line_endings_still_load(tmp_path: Path) -> None:
+    good = json.dumps(_record(observation_schema_version="1.0", fqdn="a.example"))
+    f = tmp_path / "obs.jsonl"
+    f.write_bytes(("\r\n".join([good, good]) + "\r\n").encode())
+    loaded = obs.load_observations(f)
+    assert len(loaded.records) == 2
+    assert loaded.invalid == []

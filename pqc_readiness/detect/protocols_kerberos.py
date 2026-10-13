@@ -581,7 +581,7 @@ def _summary(
 
 
 def describe_findings(kb: dict[str, Any]) -> tuple[str | None, list[str]]:
-    """(SARIF level or None, one sentence per issue) for pqc-021."""
+    """(SARIF level or None, one sentence per issue) for pqc-031."""
     if not kb.get("available"):
         return None, []
     s = kb.get("summary") or {}

@@ -71,8 +71,40 @@ def test_finding_uid_is_stable_and_shared_with_sarif() -> None:
     first = [e["finding_info"]["uid"] for e in _events(r)[1:]]
     second = [e["finding_info"]["uid"] for e in _events(r)[1:]]
     assert first == second
-    rules = [e["compliance"]["control"] for e in _events(r)[1:]]
-    assert first == [sarif.finding_fingerprint(r.hostname, rule) for rule in rules]
+    expected = [
+        sarif.finding_fingerprint(r.hostname, f.rule_id, f.subject)
+        for f in sarif.build_findings(r)
+    ]
+    assert first == expected
+    # Host-level rules keep the earlier host + rule identity (#193).
+    host_level = [
+        e for e in _events(r)[1:] if "subject" not in e["unmapped"]["pqc_readiness"]
+    ]
+    assert host_level
+    for e in host_level:
+        rule = e["compliance"]["control"]
+        assert e["finding_info"]["uid"] == sarif.finding_fingerprint(r.hostname, rule)
+
+
+def test_per_subject_findings_get_distinct_stable_uids() -> None:
+    # Two failing services on one host: same rule, different identities,
+    # each stable across runs (#193).
+    r = _full_trigger_report()
+    second = dict(r.service_crypto_linkage["listeners"][0])
+    second["port"] = 8444
+    r.service_crypto_linkage["listeners"].append(second)
+    uids = [
+        e["finding_info"]["uid"]
+        for e in _events(r)[1:]
+        if e["compliance"]["control"] == "pqc-011-service-crypto-library-without-pqc"
+    ]
+    assert len(uids) == 2 and len(set(uids)) == 2
+    again = [
+        e["finding_info"]["uid"]
+        for e in _events(r)[1:]
+        if e["compliance"]["control"] == "pqc-011-service-crypto-library-without-pqc"
+    ]
+    assert uids == again
 
 
 def test_event_uid_changes_per_run_but_finding_uid_does_not() -> None:

@@ -366,14 +366,14 @@ def test_sarif_levels(host: Path) -> None:
     )
     r = pr.Report(kerberos=kb.scan_kerberos())
     f = [
-        x for x in pr.build_findings(r) if x.rule_id == "pqc-021-kerberos-weak-enctypes"
+        x for x in pr.build_findings(r) if x.rule_id == "pqc-031-kerberos-weak-enctypes"
     ]
     assert len(f) == 1 and f[0].level == "note"
     (host / "etc/krb5.conf").write_text(
         "[libdefaults]\n permitted_enctypes = aes256-cts\n"
     )
     r = pr.Report(kerberos=kb.scan_kerberos())
-    assert not [x for x in pr.build_findings(r) if x.rule_id.startswith("pqc-021")]
+    assert not [x for x in pr.build_findings(r) if x.rule_id.startswith("pqc-031")]
 
 
 def test_text_section(host: Path) -> None:
