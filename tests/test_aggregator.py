@@ -9,7 +9,10 @@ mixed schema versions, malformed JSON, and CSV format on an empty dir.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +96,56 @@ def test_run_aggregator_single_host(tmp_path: Path) -> None:
     assert rollup["by_isa_tier"] == {"excellent": 1}
     assert rollup["unique_cpu_models"] == ["AMD EPYC"]
     assert rollup["skipped"] == []
+
+
+def _assert_all_finite(value: Any, path: str = "rollup") -> None:
+    """Recursively assert no NaN/Inf hides anywhere in a rollup."""
+    if isinstance(value, float):
+        assert math.isfinite(value), f"{path} is {value!r}"
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            _assert_all_finite(v, f"{path}.{k}")
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            _assert_all_finite(v, f"{path}[{i}]")
+
+
+def test_aggregate_reports_single_host_counts_are_one() -> None:
+    """Degenerate one-host fleet: every populated counter is exactly 1 and
+    no averaging/division artifact (NaN/Inf) appears."""
+    report = _valid_report()
+    report["accelerators"] = [{"kind": "hsm"}, {"kind": "hsm"}]
+    report["replace_required"] = True
+    report["host_fs_detections_unavailable"] = {
+        "tpm_pqc": {"unavailable_in_container": True},
+    }
+    rollup = pr.aggregate_reports([report])
+    assert rollup["total_hosts"] == 1
+    assert rollup["replace_required_count"] == 1
+    assert rollup["unique_cpu_models"] == ["AMD EPYC"]
+    for key in _ROLLUP_COUNTER_KEYS:
+        assert all(v == 1 for v in rollup[key].values()), (key, rollup[key])
+    # Duplicate accelerator kinds on one host still count that host once.
+    assert rollup["accelerator_kinds_host_count"] == {"hsm": 1}
+    assert rollup["host_fs_detections_unavailable_host_count"] == {"tpm_pqc": 1}
+    assert rollup["by_verdict"] == {"EXCELLENT": 1}
+    _assert_all_finite(rollup)
+    # And the rollup is strict-JSON serialisable (json rejects NaN/Inf).
+    json.dumps(rollup, allow_nan=False)
+
+
+def test_aggregate_to_csv_single_host() -> None:
+    rollup = pr.aggregate_reports([_valid_report()])
+    rows = list(csv.reader(io.StringIO(pr.aggregate_to_csv(rollup))))
+    assert rows[0] == ["group", "key", "count"]
+    assert ["total_hosts", "", "1"] in rows
+    assert ["replace_required_count", "", "0"] in rows
+    assert ["by_arch", "x86_64", "1"] in rows
+    assert ["by_isa_tier", "excellent", "1"] in rows
+    assert ["unique_cpu_models", "AMD EPYC", "1"] in rows
+    for row in rows[1:]:
+        assert len(row) == 3
+        assert row[2].lower() not in ("nan", "inf", "-inf"), row
 
 
 def test_run_aggregator_mixed_schema_skips_old_version(tmp_path: Path) -> None:
