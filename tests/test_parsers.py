@@ -87,6 +87,30 @@ def test_parse_classical_speed_finds_rsa_eddsa_ecdh() -> None:
     assert ecdh_keys, f"no ECDH/X25519 row in {list(out)}"
 
 
+def test_parse_classical_speed_keeps_rsa_kem_and_signature_blocks() -> None:
+    # OpenSSL 3.5 always benchmarks rsa2048 three ways (#117).  The legacy
+    # block keeps the bare key with unchanged values; the KEM and
+    # signature blocks are captured instead of discarded.
+    text = _read(FIXTURES / "openssl-speed" / "classical.txt")
+    out = pr.parse_classical_speed(text)
+    assert out["rsa2048"] == {
+        "sign/s": 5681.8,
+        "verify/s": 94943.0,
+        "encr./s": 90551.0,
+        "decr./s": 5531.3,
+    }
+    assert out["rsa2048_kem"] == {
+        "keygens/s": 32.0,
+        "encaps/s": 88047.5,
+        "decaps/s": 5638.0,
+    }
+    assert out["rsa2048_signature"] == {
+        "keygens/s": 38.2,
+        "sign/s": 5616.0,
+        "verify/s": 96760.6,
+    }
+
+
 # ---------------------------------------------------------------------------
 # detect_fips_mode_from_providers_text — record-based provider parser
 # ---------------------------------------------------------------------------

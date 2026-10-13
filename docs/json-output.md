@@ -1,7 +1,7 @@
 # JSON output reference
 
 `./pqc_readiness.py --json` emits a stable, schema-versioned document.
-The current `schema_version` is `"1.2"`. It follows the bump rules in
+The current `schema_version` is `"1.3"`. It follows the bump rules in
 [docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
 a rename, removal, or re-type is a major bump; an additive change
 (including normalising an "absent" value to `null`) is a minor bump.
@@ -13,6 +13,7 @@ does not match, so mixed-version fleets show up under `skipped`.
 | `1.0` | Initial stable schema. |
 | `1.1` | Added the role-aware `memory` object. |
 | `1.2` | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_method` are `null` (was `{}` / `""`) when not run; `trust_store` gained `total_found` / `scanned_count` / `max_certs` / `truncated`; `host_fs_detections_unavailable` documented for `kernel_crypto_hw` / `ktls`. |
+| `1.3` | `benchmark.pqc.<algo>.skipped` (algorithm not provided by the local OpenSSL; never benchmarked); `benchmark.classical.rsa2048_kem` and `benchmark.classical.rsa2048_signature` rows. |
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -30,7 +31,7 @@ nothing was found.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Schema version string, currently `"1.2"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
+| `schema_version` | Schema version string, currently `"1.3"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. |
 | `os` | OS family token (`linux`, `darwin`). |
@@ -68,7 +69,7 @@ nothing was found.
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
 | `os_release` | Parsed `/etc/os-release` (id, version, like-chain). |
-| `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. |
+| `benchmark` | Microbenchmark results object from `--bench`. `null` when `--bench` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. `pqc` maps each planned algorithm (`ML-KEM-768`, `ML-DSA-65`, `SLH-DSA-SHA2-128s`) to its per-second rates, or to `{"skipped": "algorithm not provided by this OpenSSL"}` when the local OpenSSL does not expose it (the benchmark is never attempted, since `openssl speed` given an unknown name runs every algorithm in that class), or to `{"error": ...}` / `{"raw": ...}` when it ran but failed or could not be parsed. `classical` holds the baseline rows: `rsa2048` (legacy block: `sign/s`, `verify/s`, `encr./s`, `decr./s`), `ecdh` (`op/s`), `eddsa` (`sign/s`, `verify/s`), plus `rsa2048_kem` (`keygens/s`, `encaps/s`, `decaps/s`) and `rsa2048_signature` (`keygens/s`, `sign/s`, `verify/s`) on OpenSSL builds that also run RSA as a KEM and signature scheme. |
 | `benchmark_tls_handshake` | TLS 1.3 handshake bench results object from `--bench-tls`. `null` when `--bench-tls` is not set. When the bench ran but could not execute, an object with `available: false` and `reason`. |
 | `pqc_sizes` | Wire-size and key-size constants for the PQC primitives, used by the recommendation engine and by sizing notes in the human report. |
 | `per_algo` | Per-algorithm tier and reasoning (ML-KEM-512/768/1024, ML-DSA-44/65/87, SLH-DSA variants). |
@@ -115,4 +116,4 @@ CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 asset-level schema — the asset-level projection is already provided by
 `--cbom`. No `--json` field renames are recommended at this time, so
 no major (`2.0`) bump is planned; the current `SCHEMA_VERSION` is
-`"1.2"` from additive changes only.
+`"1.3"` from additive changes only.
