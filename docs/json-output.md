@@ -66,7 +66,9 @@ nothing was found.
 | `fips_pqc_conflict` | `{in_conflict, explanation}`: `in_conflict` is true when kernel FIPS mode is on but PQC algorithms are exposed only through the non-FIPS default provider. See [`fips_pqc_conflict`](#fips_pqc_conflict). |
 | `cnsa_2_0` | CNSA 2.0 evaluation: overall `status` plus per-category compliance booleans and gap notes. See [`cnsa_2_0`](#cnsa_2_0). |
 | `trust_store` | Trust-store summary. Populated only when `--scan-trust-store` is set (`{}` otherwise). Certificates are classified from the signature-algorithm and SubjectPublicKeyInfo OIDs in their DER encoding (independent of the installed OpenSSL), every certificate in multi-certificate bundle files is inspected, and counts are per **unique certificate** (SHA-256 of the DER; a `TRUSTED CERTIFICATE` block counts as its embedded certificate). Keys: `available`, `scanned_dirs`, `total_certs` (unique certificates whose DER parsed), `pqc_certs` (signature or key algorithm is ML-DSA / SLH-DSA), `hybrid_certs` (pre-standard hybrid OIDs), `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found` (unique certificates found across all `*.pem` / `*.crt` files after symlink de-duplication), `scanned_count` (certificates classified, ≤ `max_certs`), `max_certs` (cap in effect, default 500, set by `--trust-store-max-certs`), and `truncated` (true when `total_found > max_certs`; certificates are taken in sorted file order, then file order, so a capped scan is deterministic). Earlier releases counted *files*, read only the first certificate in each, and missed PQC certificates on OpenSSL ≥ 3.5 (#116); the field shapes are unchanged, but the count semantics changed in schema `1.3`, so counts from older reports are not comparable (the fleet aggregator already refuses to mix versions). |
+| `crypto_material` | Filesystem discovery of certificates, private keys and Java keystores (#108). Populated only when `--scan-crypto-material` is set (`{}` otherwise); see [`crypto_material`](#crypto_material). Private keys are reported as metadata only — their content is never read into the report. |
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
+| `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `replace_required` | Top-level boolean for fleet planning: true when the host cannot run NIST PQC at production speed without an accelerator. |
@@ -308,12 +310,78 @@ lists hybrid or pure PQC groups but `pqc_enabled.tls_key_exchange` is false.
 
 `{}` unless `--scan-trust-store`. When the scan ran: `available`, `scanned_dirs`, `total_certs`, `pqc_certs`, `hybrid_certs`, `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc` counts), `total_found`, `scanned_count`, `max_certs`, `truncated`, as described in the [top-level table](#top-level-keys).
 
+`certificates` lists every classified certificate (≤ `max_certs`), one object per unique certificate. It is the per-certificate contract the CycloneDX 1.7 emitter projects into `certificate` assets (#138):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `sha256` | string | SHA-256 of the certificate DER, lowercase hex. The join key (CycloneDX 1.7 `fingerprint`). |
+| `serial` | string | Serial number as hex of the DER INTEGER content. |
+| `subject` / `issuer` | string | RFC 4514 names, most specific RDN first. |
+| `not_before` / `not_after` | string | Validity window, ISO 8601 UTC. |
+| `category` | string | `classical`, `hybrid_composite` or `pure_pqc`, from the signature and key algorithm OIDs. |
+| `role` | string | `ca` (basicConstraints cA=TRUE, or a self-signed certificate without basicConstraints, i.e. a v1 root) or `leaf`. |
+| `key_algorithm` | string | Subject public key algorithm: `RSA`, `RSASSA-PSS`, `EC <curve>` (e.g. `EC P-256`), `DSA`, `Ed25519`, `Ed448`, `X25519`, `X448`, `ML-DSA-44/65/87`, `SLH-DSA-*`, `ML-KEM-512/768/1024`, or the dotted OID when unknown. |
+| `key_size` | int \| null | Key size in bits for RSA (modulus) and EC/EdDSA/X25519 curves; null for PQC parameter sets, whose strength is in the name. |
+
+### `crypto_material`
+
+`{}` unless `--scan-crypto-material`. Walks `--crypto-material-path` (repeatable; default: common service locations such as `/etc/pki`, `/etc/ssl`, `/etc/httpd`, `/etc/nginx`, `/etc/letsencrypt`, `/etc/kubernetes/pki`, `/usr/lib/jvm`) under `--host-mount` when set. Symlinked directories are not followed; symlinked files resolve inside the host tree and are de-duplicated. SSH host keys are left to the sshd detection (#105).
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | Always true when the scan ran. |
+| `scanned_paths` | list[string] | Requested paths that exist on the host. |
+| `files_examined` | int | Candidate files (by suffix: certificates, keys, keystores) examined. |
+| `max_files` | int | Cap in effect (`--crypto-material-max-files`, default 5000). |
+| `truncated` | bool | The cap stopped the walk; files are visited in sorted order so a capped scan is deterministic. |
+| `malformed_certificates` | int | Certificate blocks that failed to parse (logged under `--debug`). |
+| `summary` | object | Counts: `certificates`, `leaf_certificates`, `ca_certificates`, `cert_categories` (`classical` / `hybrid_composite` / `pure_pqc`), `expired`, `valid_past_2030_classical` (classical certificates still valid after 2030-12-31), `private_keys`, `private_keys_world_readable`, `keystores`. |
+| `certificates` | list[object] | One object per unique certificate, with every key of [`trust_store.certificates`](#trust_store) plus `expiry_bucket` (`expired`, `lt_30d`, `lt_90d`, `lt_1y`, `gt_1y`), `valid_past_2030` / `valid_past_2035` (still valid after the NIST IR 8547 draft's deprecation / disallow years and OMB M-26-15's 2030-12-31 key-establishment date), and `paths` (host paths where it was found). |
+| `private_keys` | list[object] | One object per private-key file. **Metadata only**: `path`, `sha256` (of the whole file), `key_type` from the PEM header label (`RSA`, `EC`, `DSA`, `PKCS#8`, `PKCS#8 (encrypted)`, `OpenSSH`), `encrypted`, `mode` (octal permission bits), `group_readable`, `world_readable`, and `public_half` — `{certificate_sha256, key_algorithm, key_size, source}` taken from a certificate in the same file (`source`: `certificate in the same file`) or a certificate whose file has the same stem (`certificate with the same file stem (heuristic)`). Any certificate qualifies — `openssl req -x509` marks self-signed service certificates CA:TRUE — with a single leaf preferred; null when there is none or the match is ambiguous. |
+| `keystores` | list[object] | One object per Java keystore: `path`, `size_bytes`, `sha256`, `store_type` (`jks`, `jceks`, `pkcs12`, `unknown`), `listed` (its certificates were read), `method` (`in-process` for JKS — trusted-certificate entries and the public chains of key entries are stored unencrypted; `keytool (default cacerts password)` for a JDK `cacerts` in PKCS#12), `private_key_entries` (JKS), `certificates_found`, and `reason` when not listed (e.g. `password-protected; not opened`). |
+
 ### `runtime_environment`
 
 | Key | Type | Meaning |
 | --- | --- | --- |
 | `environment` | string | `container` or `host`. |
 | `evidence` | string | The marker that decided it: `/.dockerenv present`, `/run/.containerenv present`, `cgroup marker <m>`, or `no container markers`. |
+
+### `service_crypto_linkage`
+
+`{}` unless `--scan-services`. Built from `/proc/<pid>/net/{tcp,tcp6,udp,udp6}` (read once per network namespace), `/proc/<pid>/fd`, `/proc/<pid>/maps`, and the executable and libraries as the process itself sees them (`/proc/<pid>/root`, or `/proc/<pid>/map_files` for a deleted library). Without root, or CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, other users' processes can't be read. They are counted in `unreadable_pids`, never guessed.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | Scan ran. When false only `reason` follows (not Linux, or `/proc` unreadable). |
+| `listeners` | list[object] | One entry per listening TCP socket or bound, unconnected UDP socket; see the listener table below. |
+| `summary` | object | `listeners` (count), `unattributed_listeners` (no readable owning process), `listeners_by_crypto_family` (`openssl` / `libressl` / `boringssl` / `aws-lc` / `gnutls` / `nss` / `wolfssl` / `go` / `none` → count), `listeners_with_deleted_crypto_library` (the service still maps a library that an upgrade replaced: restart it to pick up the new one). |
+| `scanned_pids` | int | Processes inspected. |
+| `unreadable_pids` | int | Processes whose file-descriptor table could not be read (permissions). |
+| `truncated` | bool | The scan stopped at `limits.max_pids` or `limits.time_budget_s`, so later processes were not inspected. |
+| `limits` | object | `max_pids` (default 4096) and `time_budget_s` (default 15). |
+| `note` | string | Present when `unreadable_pids` > 0: how to get complete attribution. |
+| `reason` | string | Present when `available` is false, or with `unavailable_in_container` (running in a container without `--host-mount` / hostPID: the scan only sees the container's own processes). |
+
+Listener entries. `protocol`, `address`, `port` and `bind_scope` are the join keys that endpoint-observation ingestion (#149) matches against what a network scan saw on this host's addresses:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `protocol` | string | `tcp` or `udp` (UDP covers QUIC, DTLS and IKE listeners). |
+| `family` | string | `ipv4` or `ipv6`. |
+| `address` | string | Bound address as the kernel reports it (IPv4-mapped IPv6 kept as written). |
+| `port` | int | Bound port. |
+| `bind_scope` | string | `any` (wildcard), `loopback`, `multicast`, `link-local` or `specific`. A remote observation can only match `any` or `specific`. |
+| `network_namespace` | string | `host` (same namespace as PID 1) or `other` (e.g. a container with its own network: reachable from outside only through port mapping). |
+| `pid` | int \| null | Lowest owning PID; `null` when no readable process holds the socket. |
+| `pids` | list[int] | Every readable process holding the socket (e.g. a server's master and workers). |
+| `process` | string \| null | `comm` of `pid`. |
+| `exe` | string \| null | Executable path of `pid`, in its own mount namespace. |
+| `systemd_unit` | string \| null | Unit (`*.service` / `*.scope`) from the process's cgroup, when it has one. |
+| `cgroup` | string \| null | The process's cgroup path (last 200 characters). |
+| `crypto_libraries` | list[object] | Crypto libraries the process maps: `{family, path, version, version_source, deleted, library_pqc_capable}`. `family` is `openssl`, `libressl`, `boringssl`, `aws-lc`, `gnutls`, `nss` or `wolfssl` (OpenSSL forks share sonames and are told apart by their embedded strings). `version_source` is `embedded` (version string inside the library), `filename` (e.g. `libssl.so.3.5.9`), `sibling-libcrypto` (libssl takes the version of the libcrypto beside it) or `null`. `deleted` is true when the mapped file was replaced on disk. `library_pqc_capable` is whether that library *version* ships ML-KEM hybrid TLS key exchange (OpenSSL ≥ 3.5, NSS ≥ 3.108); `null` where no verified threshold is encoded yet. Whether the service turns it on is configuration (#106 / #107). |
+| `static_binary` | bool \| null | The executable has no ELF interpreter (statically linked); `null` when it could not be read. |
+| `go` | object \| null | For Go binaries: `go_version` (e.g. `go1.24.4`, from the embedded build info; `null` for pre-1.18 binaries), `main_module`, `cgo_enabled`, `default_hybrid_kex` and `godebug_reverts`. `default_hybrid_kex` is the hybrid key exchange crypto/tls offers when the program leaves `CurvePreferences` unset: `X25519MLKEM768` from Go 1.24 (which also removed the Kyber draft), `X25519Kyber768Draft00` on Go 1.23, else `null`. `godebug_reverts` lists `tlsmlkem` / `tlskyber` / `tlssecpmlkem` set to `0` by the binary's `DefaultGODEBUG` or the process's `GODEBUG` environment variable, which turn those defaults off. Only `GODEBUG` is read from the environment; nothing else is kept. |
 
 ### `host_fs_detections_unavailable`
 
@@ -567,6 +635,53 @@ from the scanner's are not merged.
 | `unique_cpu_models` | list[string] | Sorted distinct `cpu_model` values. |
 | `replace_required_count` | int | Hosts with `replace_required: true`. |
 | `skipped` | list[object] | Files not merged, each `{file, reason}` (unreadable, not a JSON object, or schema mismatch). |
+
+## `--ndjson` events
+
+`--ndjson` writes newline-delimited JSON for SIEMs (#146): one compact
+JSON object per line, shaped after [OCSF](https://schema.ocsf.io) 1.9.0.
+Every event validates against the OCSF 1.9.0 JSON Schema for its class
+(base class, no profiles), which CI checks. The first line is one
+**Device Inventory Info** event (class 5001) for the host. Each following
+line is one **Compliance Finding** event (class 2003) per matched rule:
+the same rules, in the same order, as `--sarif`. OCSF has no
+crypto-inventory class, so scanner-specific detail goes under
+`unmapped.pqc_readiness`. Integration recipes are in
+[docs/siem-ndjson.md](siem-ndjson.md).
+
+Fields common to both event types:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `class_uid` / `class_name` | int / string | `5001` Device Inventory Info, or `2003` Compliance Finding. |
+| `category_uid` / `category_name` | int / string | `5` Discovery, or `2` Findings. |
+| `activity_id` / `activity_name` | int / string | `1`: `Log` for 5001, `Create` for 2003. Each run is a snapshot; deduplicate on `finding_info.uid`. |
+| `type_uid` / `type_name` | int / string | `class_uid × 100 + activity_id`: `500101` or `200301`. |
+| `severity_id` / `severity` | int / string | 5001 is always `1` Informational. For 2003, the rule's `security-severity` on the CVSS v3.1 bands: `2` Low (< 4.0), `3` Medium (< 7.0), `4` High. |
+| `time` | int | `generated_at` in milliseconds since the Unix epoch (OCSF `timestamp_t`). |
+| `message` | string | 5001: `PQC readiness: <verdict>`. 2003: the finding message. |
+| `metadata` | object | `version` (OCSF version, `1.9.0`); `uid` (this event: hash of the finding identity and `generated_at`); `log_name` (`pqc_readiness`); `original_time` (`generated_at` as emitted); `product` = `{name, vendor_name, version, url_string}`. |
+| `device` | object | `hostname`; `type_id`/`type` (`0` Unknown, because the scanner does not classify the host); `os` = `{name, type_id, type}`, with `type_id` `200` Linux when `/etc/os-release` was read. |
+
+Compliance Finding (2003) only:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `status_id` / `status` | int / string | `1` New. Lifecycle is left to the SIEM. |
+| `finding_info` | object | `uid`: stable identity of host + rule, identical to the `--sarif-anchor` fingerprint. `title` / `desc`: the rule's short and full description. `types`: `["Post-Quantum Cryptography Readiness"]`. `src_url`: the rule help page. `analytic` = `{uid, name, type_id, type}`, the rule ID, with `type_id` `1` Rule. |
+| `compliance` | object | `control` (rule ID), `standards` (`["pqc-readiness"]`), `status` / `status_id` (`Fail` / `3`). |
+
+`unmapped.pqc_readiness`, the scanner-specific detail:
+
+| Field | Event | Meaning |
+|---|---|---|
+| `schema_version`, `verdict`, `exit_code`, `isa_tier`, `replace_required` | 5001 | As in the `--json` report. |
+| `cnsa_2_0_status` | 5001 | `cnsa_2_0.status`. |
+| `openssl_version`, `openssl_pqc_native` | 5001 | `openssl.version`, `openssl.pqc_native`. |
+| `tls_hybrid_groups`, `tls_pure_pqc_groups` | 5001 | `openssl.tls_groups.hybrid` / `.pure_pqc`. |
+| `findings_count` | 5001 | Number of 2003 events that follow. |
+| `rule_id`, `level`, `security_severity` | 2003 | Rule ID, SARIF level, and score. |
+| `properties` | 2003 | The SARIF result `properties` bag for the finding: the values that triggered the rule. |
 
 ## Schema alignment with CycloneDX 1.6
 
