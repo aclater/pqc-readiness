@@ -88,8 +88,8 @@ jobs:
               apt-get update &&
               apt-get install -y --no-install-recommends python3
               python3-pytest python3-jsonschema openssl openssh-client
-          - distro: ubuntu-25.10
-            image: docker.io/library/ubuntu:25.10
+          - distro: ubuntu-26.04
+            image: docker.io/library/ubuntu:26.04
             py: python3
             setup: >-
               apt-get update &&
