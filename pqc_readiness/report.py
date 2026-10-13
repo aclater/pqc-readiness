@@ -83,6 +83,9 @@ class Report:
     # Package-signing trust anchors (--scan-signing-keys, #153); {} when
     # not requested, like trust_store and packages.
     signing_keys: dict[str, Any] = field(default_factory=dict)
+    # GnuTLS / libgcrypt / libssh / wolfSSL / AWS-LC / JDK / Go PQC
+    # capability (--scan-crypto-libraries, #110); {} when not requested.
+    crypto_libraries: dict[str, Any] = field(default_factory=dict)
     replace_required: bool = False
     os_release: dict[str, Any] = field(default_factory=dict)
     # None when --bench / --bench-tls was not requested, so "not run" is
