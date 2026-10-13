@@ -69,7 +69,7 @@ from typing import Any, Callable, Iterable, Iterator
 log = logging.getLogger("pqc-readiness")
 
 SCRIPT_VERSION = "2.0.0"
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 # Host-filesystem prefix for DaemonSet / containerized invocations.  When
 # the tool runs inside a container with the host's /proc /sys /dev /etc
