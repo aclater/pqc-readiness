@@ -258,10 +258,11 @@ example Ansible playbooks already use the zipapp.
 | `--cbom` | CycloneDX 1.7 CBOM (`--cbom-version 1.6` for 1.6) | Cryptographic inventory pipelines |
 | `--spdx` | SPDX 3.0 JSON-LD | SPDX-native tooling |
 | `--sarif` | SARIF 2.1.0 findings | Code-scanning / security pipelines |
+| `--prometheus` | Prometheus text format | node_exporter textfile collector, fleet dashboards ([docs/prometheus.md](docs/prometheus.md)) |
 | `--ansible` | `ansible_facts` wrapper | Ansible `set_fact` |
 | `--recommend` | Policy-aware recommendation | Algorithm selection per host |
 
-`--json`, `--cbom`, `--spdx`, `--sarif`, and `--ansible` are mutually
+`--json`, `--cbom`, `--spdx`, `--sarif`, `--prometheus` and `--ansible` are mutually
 exclusive views of the same probe run. Detection logic is shared — a
 new detection rule shows up in every output format without per-renderer
 changes.
@@ -363,11 +364,11 @@ Flags below are grouped by purpose.
 
 | Flag | Purpose |
 | --- | --- |
-| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--ansible` | See [Output formats](#output-formats). |
+| `--json` / `--markdown` / `--cbom` / `--spdx` / `--sarif` / `--prometheus` / `--ansible` | See [Output formats](#output-formats). |
 | `--cbom-version {1.7,1.6}` | CycloneDX specVersion for `--cbom` (default `1.7`). `1.6` reproduces earlier releases' output exactly. |
 | `--check {excellent,good,marginal,poor,cnsa-2.0}` | Exit 4 if the verdict is below the named tier, or if `cnsa-2.0` is selected and the host is not CNSA 2.0 compliant. CI gating. |
 | `--save` | Write JSON to `~/.cache/pqc-readiness/`. The fleet aggregator reads exactly this directory layout. |
-| `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
+| `--output FILE` | Write the report to `FILE` instead of stdout. Works with every format, including `--aggregate`, `--recommend` and `--ansible`. The parent directory must already exist (it is never created). The file is replaced atomically (temp file in the same directory, then rename), so a reader such as node_exporter or the fleet aggregator never sees a partial report. Mutually exclusive with `--save`. Useful for volume mounts in quadlet / DaemonSet / Ansible `command:` tasks, where shell redirection is fragile. |
 | `--quiet` | Print only the verdict line. |
 | `--no-color` | Disable ANSI colour. Auto-disabled when stdout is not a TTY. |
 

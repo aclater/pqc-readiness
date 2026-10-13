@@ -234,6 +234,7 @@ from .render.spdx import (  # noqa: F401
     SPDX_VERSION,
     render_spdx,
 )
+from .render.prom import render_prometheus  # noqa: F401
 from .cli import (  # noqa: F401
     EXIT_OUTPUT_WRITE_FAILED,
     ansible_ignored_flag_warnings,

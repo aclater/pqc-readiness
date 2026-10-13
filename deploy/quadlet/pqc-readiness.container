@@ -63,6 +63,16 @@ SecurityLabelDisable=true
 # from the host), and --host-mount so detection sees host state.
 Exec=--host-mount /host --bench --seconds 1 --save --quiet
 
+# Prometheus metrics (#140): a quadlet takes one Exec, and --save and
+# --output are mutually exclusive, so export metrics from a sibling unit.
+# Copy this file to pqc-readiness-prom.container and change it to:
+#   Volume=/var/lib/node_exporter/textfile_collector:/textfile:rw,z
+#   Exec=--host-mount /host --prometheus --output /textfile/pqc_readiness.prom
+# (lowercase ,z: the directory is shared with node_exporter's container, so
+# it needs the shared SELinux label, not the private one ,Z gives).  Run
+# node_exporter with --collector.textfile.directory pointing at that
+# directory.  --output replaces the file atomically, as the collector needs.
+
 # Resource caps.  Numpy triad probe uses ~384 MB transiently.
 Memory=512M
 CPUQuota=200%
