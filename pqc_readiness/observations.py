@@ -265,7 +265,9 @@ def load_observations(path: Path) -> LoadedObservations:
     record per line.  Invalid records are reported, not fatal; a file that
     can't be read at all raises ObservationFileError."""
     try:
-        text = path.read_text(encoding="utf-8")
+        # Bytes, then decode: read_text()'s universal newlines would turn a
+        # bare \r inside a record into a line break before parsing.
+        text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as e:
         raise ObservationFileError(f"cannot read {path}: {e}") from e
     out = LoadedObservations()
@@ -290,7 +292,11 @@ def load_observations(path: Path) -> LoadedObservations:
         raw = [(n, r, str(version)) for n, r in enumerate(records, 1)]
     else:
         out.file_format = "jsonl"
-        for n, line in enumerate(text.splitlines(), 1):
+        # JSON Lines ends records with \n (CRLF files: the \r is stripped).
+        # str.splitlines() would also break on a bare \r inside a record,
+        # turning one bad record into two and shifting line numbers.
+        for n, line in enumerate(text.split("\n"), 1):
+            line = line.removesuffix("\r")
             if not line.strip():
                 continue
             try:
