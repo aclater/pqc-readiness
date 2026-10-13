@@ -110,6 +110,21 @@ def _stub_host(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda family="unknown": {"available": False},
     )
     monkeypatch.setattr(pr.detect.protocols, "detect_nss", lambda: {"available": False})
+    # Real parser over a captured EL9.8 policy tree, so the golden report
+    # carries the full crypto_policy shape deterministically (#104).
+    real_crypto_policy = pr.detect.config_policy.detect_crypto_policy
+
+    def _crypto_policy_from_fixture() -> dict[str, Any]:
+        saved = pr._platform.HOST_PREFIX
+        pr._platform.HOST_PREFIX = str(FIXTURES / "crypto_policies" / "el9-default")
+        try:
+            return real_crypto_policy()
+        finally:
+            pr._platform.HOST_PREFIX = saved
+
+    monkeypatch.setattr(
+        pr.detect.config_policy, "detect_crypto_policy", _crypto_policy_from_fixture
+    )
     monkeypatch.setattr(
         pr.detect.osinfo,
         "detect_kernel_info",

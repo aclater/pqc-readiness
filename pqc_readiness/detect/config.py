@@ -9,6 +9,7 @@ from typing import Any
 
 from .. import _platform as _platform
 from ..detect import hardware as _hardware
+from ..detect import config_openssl as _config_openssl
 
 log = logging.getLogger("pqc-readiness")
 
@@ -32,7 +33,9 @@ def parse_openssl_provider_records(text: str) -> dict[str, dict[str, str]]:
             continue
         if current is None:
             continue
-        f = re.match(r"^    (\S+):\s*(.*)$", line)
+        # Keys may contain spaces (`build info: ...`); deeper-indented
+        # parameter listings start with more than four spaces.
+        f = re.match(r"^    (\S[^:]*?):\s*(.*)$", line)
         if f:
             records[current][f.group(1).strip()] = f.group(2).strip()
     return records
@@ -513,11 +516,15 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     out["pqc_native"] = bool(out["version_tuple"]) and tuple(
         out["version_tuple"][:2]
     ) >= (3, 5)
-    rc, kems = _platform._run(["openssl", "list", "-kem-algorithms"], timeout=5)
+    rc_kem, kems = _platform._run(["openssl", "list", "-kem-algorithms"], timeout=5)
+    rc = rc_kem
     out["kem_algorithms"] = (
         sorted({a for a in re.findall(r"ML-KEM-\d+", kems)}) if rc == 0 else []
     )
-    rc, sigs = _platform._run(["openssl", "list", "-signature-algorithms"], timeout=5)
+    rc_sig, sigs = _platform._run(
+        ["openssl", "list", "-signature-algorithms"], timeout=5
+    )
+    rc = rc_sig
     out["sig_algorithms"] = (
         sorted({a for a in re.findall(r"ML-DSA-\d+|SLH-DSA-[A-Za-z0-9-]+", sigs)})
         if rc == 0
@@ -538,8 +545,21 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
         set(classified["pure_pqc"]) | set(classified["hybrid"])
     )
     rc, providers = _hardware._openssl_providers_verbose_text()
-    out["providers"] = (
-        sorted(parse_openssl_provider_records(providers)) if rc == 0 else []
-    )
+    records = parse_openssl_provider_records(providers) if rc == 0 else {}
+    out["providers"] = sorted(records)
+    # Providers and algorithms that don't ship with OpenSSL itself, e.g. a
+    # source-built OQS provider (#106).  Like the rest of this object they
+    # describe the scanner's own openssl binary under --host-mount.
+    out["third_party_providers"] = _config_openssl.third_party_providers(records)
+    out["third_party_algorithms"] = {
+        "kem": _config_openssl.third_party_algorithms(kems) if rc_kem == 0 else [],
+        "signature": (
+            _config_openssl.third_party_algorithms(sigs) if rc_sig == 0 else []
+        ),
+    }
     out["upgrade_path"] = openssl_upgrade_path(out["version_tuple"], os_release)
+    # What the host's openssl.cnf configures by default, read from files.
+    out["config"] = _config_openssl.detect_openssl_config(
+        os_release, out["version_tuple"]
+    )
     return out

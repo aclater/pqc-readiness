@@ -44,6 +44,237 @@
     "cpu_freq_mhz": 3000.0,
     "cpu_model": "Stub CPU @ 3.0GHz",
     "crypto_material": {},
+    "crypto_policy": {
+      "active": "DEFAULT",
+      "applied": true,
+      "available": true,
+      "available_subpolicies": [
+        "AD-SUPPORT",
+        "AD-SUPPORT-LEGACY",
+        "ECDHE-ONLY",
+        "NO-ENFORCE-EMS",
+        "NO-SHA1",
+        "OSPP",
+        "PQ",
+        "SHA1"
+      ],
+      "backends": {
+        "gnutls": {
+          "groups": [
+            "X25519",
+            "SECP256R1",
+            "X448",
+            "SECP521R1",
+            "SECP384R1",
+            "FFDHE2048",
+            "FFDHE3072",
+            "FFDHE4096",
+            "FFDHE6144",
+            "FFDHE8192"
+          ],
+          "pqc_groups": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "pqc_signature_algorithms": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "readable": true,
+          "signature_algorithms": [
+            "ECDSA-SHA3-256",
+            "ECDSA-SHA256",
+            "ECDSA-SECP256R1-SHA256",
+            "ECDSA-SHA3-384",
+            "ECDSA-SHA384",
+            "ECDSA-SECP384R1-SHA384",
+            "ECDSA-SHA3-512",
+            "ECDSA-SHA512",
+            "ECDSA-SECP521R1-SHA512",
+            "EdDSA-Ed25519",
+            "EdDSA-Ed448",
+            "RSA-PSS-SHA256",
+            "RSA-PSS-SHA384",
+            "RSA-PSS-SHA512",
+            "RSA-PSS-RSAE-SHA256",
+            "RSA-PSS-RSAE-SHA384",
+            "RSA-PSS-RSAE-SHA512",
+            "RSA-SHA3-256",
+            "RSA-SHA256",
+            "RSA-SHA3-384",
+            "RSA-SHA384",
+            "RSA-SHA3-512",
+            "RSA-SHA512",
+            "ECDSA-SHA224",
+            "RSA-SHA224",
+            "ECDSA-SHA3-224",
+            "RSA-SHA3-224"
+          ]
+        },
+        "libreswan": {
+          "ike_proposals": [
+            "aes_gcm256-sha2_512+sha2_256-dh19+dh14+dh31+dh21+dh20+dh15+dh16+dh18,chacha20_poly1305-sha2_512+sha2_256-dh19+dh14+dh31+dh21+dh20+dh15+dh16+dh18,aes256-sha2_512+sha2_256-dh19+dh14+dh31+dh21+dh20+dh15+dh16+dh18,aes_gcm128-sha2_512+sha2_256-dh19+dh14+dh31+dh21+dh20+dh15+dh16+dh18,aes128-sha2_256-dh19+dh14+dh31+dh21+dh20+dh15+dh16+dh18"
+          ],
+          "pqc_key_exchange": [],
+          "readable": true
+        },
+        "nss": {
+          "allowed": [
+            "HMAC-SHA256",
+            "HMAC-SHA1",
+            "HMAC-SHA384",
+            "HMAC-SHA512",
+            "CURVE25519",
+            "SECP256R1",
+            "SECP521R1",
+            "SECP384R1",
+            "aes256-gcm",
+            "chacha20-poly1305",
+            "aes256-cbc",
+            "aes128-gcm",
+            "aes128-cbc",
+            "SHA256",
+            "SHA384",
+            "SHA512",
+            "SHA224",
+            "ECDHE-RSA",
+            "ECDHE-ECDSA",
+            "RSA",
+            "DHE-RSA",
+            "ECDSA",
+            "ED25519",
+            "RSA-PSS",
+            "RSA-PKCS",
+            "tls-version-min=tls1.2",
+            "dtls-version-min=dtls1.2",
+            "DH-MIN=2048",
+            "DSA-MIN=2048",
+            "RSA-MIN=2048"
+          ],
+          "pqc_groups": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "pqc_signature_algorithms": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "readable": true
+        },
+        "openssh": {
+          "kex": [
+            "curve25519-sha256",
+            "curve25519-sha256@libssh.org",
+            "ecdh-sha2-nistp256",
+            "ecdh-sha2-nistp384",
+            "ecdh-sha2-nistp521",
+            "diffie-hellman-group-exchange-sha256",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group16-sha512",
+            "diffie-hellman-group18-sha512"
+          ],
+          "kex_groups": {
+            "classical": [
+              "curve25519-sha256",
+              "curve25519-sha256@libssh.org",
+              "diffie-hellman-group-exchange-sha256",
+              "diffie-hellman-group14-sha256",
+              "diffie-hellman-group16-sha512",
+              "diffie-hellman-group18-sha512",
+              "ecdh-sha2-nistp256",
+              "ecdh-sha2-nistp384",
+              "ecdh-sha2-nistp521"
+            ],
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "readable": true
+        },
+        "opensshserver": {
+          "kex": [
+            "curve25519-sha256",
+            "curve25519-sha256@libssh.org",
+            "ecdh-sha2-nistp256",
+            "ecdh-sha2-nistp384",
+            "ecdh-sha2-nistp521",
+            "diffie-hellman-group-exchange-sha256",
+            "diffie-hellman-group14-sha256",
+            "diffie-hellman-group16-sha512",
+            "diffie-hellman-group18-sha512"
+          ],
+          "kex_groups": {
+            "classical": [
+              "curve25519-sha256",
+              "curve25519-sha256@libssh.org",
+              "diffie-hellman-group-exchange-sha256",
+              "diffie-hellman-group14-sha256",
+              "diffie-hellman-group16-sha512",
+              "diffie-hellman-group18-sha512",
+              "ecdh-sha2-nistp256",
+              "ecdh-sha2-nistp384",
+              "ecdh-sha2-nistp521"
+            ],
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "readable": true
+        },
+        "opensslcnf": {
+          "groups": [
+            "X25519",
+            "secp256r1",
+            "X448",
+            "secp521r1",
+            "secp384r1",
+            "ffdhe2048",
+            "ffdhe3072",
+            "ffdhe4096",
+            "ffdhe6144",
+            "ffdhe8192"
+          ],
+          "pqc_groups": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "pqc_signature_algorithms": {
+            "hybrid": [],
+            "pure_pqc": []
+          },
+          "readable": true,
+          "signature_algorithms": [
+            "ECDSA+SHA256",
+            "ECDSA+SHA384",
+            "ECDSA+SHA512",
+            "ed25519",
+            "ed448",
+            "rsa_pss_pss_sha256",
+            "rsa_pss_pss_sha384",
+            "rsa_pss_pss_sha512",
+            "rsa_pss_rsae_sha256",
+            "rsa_pss_rsae_sha384",
+            "rsa_pss_rsae_sha512",
+            "RSA+SHA256",
+            "RSA+SHA384",
+            "RSA+SHA512",
+            "ECDSA+SHA224",
+            "RSA+SHA224"
+          ]
+        }
+      },
+      "base_policy": "DEFAULT",
+      "configured": "DEFAULT",
+      "pq_disabled_by_subpolicy": [],
+      "pq_subpolicies_active": [],
+      "pqc_enabled": {
+        "ike_key_exchange": false,
+        "ssh_key_exchange_client": false,
+        "ssh_key_exchange_server": false,
+        "tls_key_exchange": false,
+        "tls_signatures": false
+      },
+      "reboot_required": null,
+      "subpolicies": []
+    },
     "exit_code": 1,
     "fips": {
       "enabled": false,

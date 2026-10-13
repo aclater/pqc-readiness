@@ -193,7 +193,10 @@ Nothing was renamed or removed. The full field reference is in
    Intel QAT.
 3. **OS / library plumbing** — `/proc/crypto` hardware drivers, kernel
    TLS, kernel FIPS mode, OpenSSL ≥ 3.5 PQC algorithms and TLS 1.3
-   hybrid groups, OpenSSH `ssh -Q kex`, strongSwan / Libreswan, NSS.
+   hybrid groups, OpenSSH `ssh -Q kex`, strongSwan / Libreswan, NSS,
+   and the system-wide crypto policy: whether it actually lets PQC
+   through to OpenSSL, GnuTLS, NSS, OpenSSH and libreswan (EL9 DEFAULT
+   does not; EL10, Fedora and SUSE 16 DEFAULT do).
    IPsec configuration is read too: every IKEv2 proposal in `swanctl.conf`
    / `ipsec.conf` is classified as classical, hybrid (RFC 9370 additional
    key exchange with ML-KEM) or pure ML-KEM, and connections that ask for
