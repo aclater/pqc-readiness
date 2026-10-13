@@ -421,7 +421,7 @@ def test_no_finding_without_scan() -> None:
 def test_text_section_and_json(host: Path) -> None:
     r = pr.Report(boot_chain=_full_host(host))
     text = pr.render_text(r)
-    assert "13. Boot chain" in text and "Module signing:   RSA-4096 / sha512" in text
+    assert "14. Boot chain" in text and "Module signing:   RSA-4096 / sha512" in text
     assert json.loads(json.dumps(r.boot_chain))["available"] is True
 
 

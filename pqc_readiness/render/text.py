@@ -613,7 +613,7 @@ def _render_text_boot_chain(r: _report.Report) -> list[str]:
     bc = r.boot_chain
     if not bc:
         return []
-    L: list[str] = [C.wrap(C.BOLD, "13. Boot chain")]
+    L: list[str] = [C.wrap(C.BOLD, "14. Boot chain")]
     if not bc.get("available"):
         L += [f"   Unavailable: {bc.get('reason')}", ""]
         return L
