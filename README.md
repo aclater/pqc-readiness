@@ -151,8 +151,8 @@ Flags below are grouped by purpose.
 | `--bench-tls` | Loopback TLS 1.3 handshake bench (classical / hybrid / pure-PQC). |
 | `--threads N` | Add an N-way scaling test alongside the single-thread bench. |
 | `--seconds N` | Override per-operation benchmark duration. Larger values reduce variance at the cost of run time. |
-| `--scan-trust-store` | Walk system trust-store directories; count PQC, hybrid composite, and classical certs. Slower than the default probe. |
-| `--trust-store-max-certs N` | Cap on certificates parsed by `--scan-trust-store` (default 500). Each cert costs one `openssl x509` call; when the cap is hit, `trust_store.truncated` is `true` and the text, CBOM, and SARIF outputs say how many files were skipped. |
+| `--scan-trust-store` | Walk system trust-store directories and classify every certificate (bundles included) as PQC, hybrid composite, or classical by reading its algorithm OIDs directly; no `openssl` binary needed. |
+| `--trust-store-max-certs N` | Cap on unique certificates classified by `--scan-trust-store` (default 500). When the cap is hit, `trust_store.truncated` is `true` and the text, CBOM, and SARIF outputs say how many certificates were not inspected. |
 | `--scan-packages` | Enumerate installed packages with bundled crypto. Branches on family: `rpm -qa` (rhel / suse), `dpkg-query -W` (debian), `pacman -Q` (arch), `apk info -v` (alpine). Normalises to `[{name, version}, ...]`. |
 | `--host-mount PATH` | Prefix for `/proc /sys /dev /etc` reads. DaemonSet pattern: host root mounted at `/host`, probe invoked with `--host-mount /host` so reads target the node, not the container image. |
 
