@@ -2196,10 +2196,52 @@ def categorise_cert_dump(dump: str) -> str:
     return "classical"
 
 
-def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
+# Default ceiling on certificates parsed by scan_trust_store.  Each cert
+# costs one `openssl x509` subprocess (3 s timeout), so an unbounded walk
+# of a pathological store (10k+ certs from a test PKI) could run for
+# hours.  Stock distro trust stores hold ~150 certs; 500 leaves headroom
+# for enterprise CA bundles.  Override with --trust-store-max-certs.
+TRUST_STORE_MAX_CERTS_DEFAULT = 500
+
+
+def _trust_store_candidates(target_dirs: list[str]) -> list[Path]:
+    """Enumerate *.pem / *.crt files under target_dirs, de-duplicated by
+    resolved path (distro trust stores are symlink farms) and in a
+    deterministic order so a capped scan always covers the same files."""
+    seen: set[str] = set()
+    out: list[Path] = []
+    for d in target_dirs:
+        p = Path(d)
+        if not p.is_dir():
+            continue
+        for cert in sorted(list(p.rglob("*.pem")) + list(p.rglob("*.crt"))):
+            try:
+                key = str(cert.resolve())
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(cert)
+    return out
+
+
+def scan_trust_store(
+    dirs: list[str] | None = None,
+    max_certs: int = TRUST_STORE_MAX_CERTS_DEFAULT,
+) -> dict[str, Any]:
+    """Categorise every certificate in the trust store, parsing at most
+    `max_certs` files.  `total_found` is the number of candidate files,
+    `scanned_count` the number actually handed to openssl, and
+    `truncated` is true when the cap left files unscanned.  `total_certs`
+    counts only files openssl parsed successfully."""
+    if max_certs < 1:
+        raise ValueError(f"max_certs must be >= 1, got {max_certs}")
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     target_dirs = dirs if dirs is not None else TRUST_STORE_DIRS
+    candidates = _trust_store_candidates(target_dirs)
+    to_scan = candidates[:max_certs]
     total = 0
     pqc_certs = 0
     hybrid_certs = 0
@@ -2208,40 +2250,28 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
         "hybrid_composite": 0,
         "pure_pqc": 0,
     }
-    seen: set[str] = set()
-    for d in target_dirs:
-        p = Path(d)
-        if not p.is_dir():
+    for cert in to_scan:
+        rc, dump = _run(
+            [
+                "openssl",
+                "x509",
+                "-in",
+                str(cert),
+                "-noout",
+                "-text",
+                "-certopt",
+                "no_validity,no_serial,no_pubkey,no_sigdump",
+            ],
+            timeout=3,
+        )
+        if rc != 0:
             continue
-        for cert in list(p.rglob("*.pem")) + list(p.rglob("*.crt")):
-            try:
-                key = str(cert.resolve())
-            except OSError:
-                continue
-            if key in seen:
-                continue
-            seen.add(key)
-            rc, dump = _run(
-                [
-                    "openssl",
-                    "x509",
-                    "-in",
-                    str(cert),
-                    "-noout",
-                    "-text",
-                    "-certopt",
-                    "no_validity,no_serial,no_pubkey,no_sigdump",
-                ],
-                timeout=3,
-            )
-            if rc != 0:
-                continue
-            total += 1
-            if PQC_OID_RE.search(dump):
-                pqc_certs += 1
-            if any(p.search(dump) for p in HYBRID_OID_RES):
-                hybrid_certs += 1
-            cert_categories[categorise_cert_dump(dump)] += 1
+        total += 1
+        if PQC_OID_RE.search(dump):
+            pqc_certs += 1
+        if any(p.search(dump) for p in HYBRID_OID_RES):
+            hybrid_certs += 1
+        cert_categories[categorise_cert_dump(dump)] += 1
     return {
         "available": True,
         "scanned_dirs": [d for d in target_dirs if Path(d).is_dir()],
@@ -2249,6 +2279,10 @@ def scan_trust_store(dirs: list[str] | None = None) -> dict[str, Any]:
         "pqc_certs": pqc_certs,
         "hybrid_certs": hybrid_certs,
         "cert_categories": cert_categories,
+        "total_found": len(candidates),
+        "scanned_count": len(to_scan),
+        "max_certs": max_certs,
+        "truncated": len(candidates) > max_certs,
     }
 
 
@@ -4633,6 +4667,10 @@ def _canonical_trust_store_assets(r: Report) -> list[CryptoAsset]:
                 str(cats.get(cat, 0)),
             )
         )
+    if "truncated" in ts:
+        props.append(("trust_store:total_found", str(ts.get("total_found", 0))))
+        props.append(("trust_store:scanned_count", str(ts.get("scanned_count", 0))))
+        props.append(("trust_store:truncated", str(bool(ts["truncated"])).lower()))
     for d in ts.get("scanned_dirs") or []:
         props.append(("trust_store:scanned_dir", d))
     return [
@@ -5030,6 +5068,13 @@ def build_findings(r: Report) -> list[Finding]:
                     f"Scanned {ts.get('total_certs', 0)} certificates across "
                     f"{len(ts.get('scanned_dirs') or [])} trust-store "
                     "directories; every cert uses classical signatures."
+                    + (
+                        f" Scan was capped at {ts.get('scanned_count')} of "
+                        f"{ts.get('total_found')} files; unscanned files "
+                        "were not inspected."
+                        if ts.get("truncated")
+                        else ""
+                    )
                 ),
                 properties={
                     "trust_store:total_certs": ts.get("total_certs"),
@@ -5038,6 +5083,7 @@ def build_findings(r: Report) -> list[Finding]:
                     "trust_store:scanned_dirs": list(
                         ts.get("scanned_dirs") or []
                     ),
+                    "trust_store:truncated": bool(ts.get("truncated")),
                 },
             )
         )
@@ -5911,6 +5957,16 @@ def _render_text_trust_store(r: Report) -> list[str]:
         f"   Scanned dirs:     {', '.join(r.trust_store.get('scanned_dirs', []))}"
     )
     L.append(f"   Total certs:      {r.trust_store.get('total_certs', 0)}")
+    if r.trust_store.get("truncated"):
+        L.append(
+            "   "
+            + C.wrap(
+                C.YELLOW,
+                f"Truncated:        scanned {r.trust_store.get('scanned_count')} of "
+                f"{r.trust_store.get('total_found')} files "
+                "(raise with --trust-store-max-certs)",
+            )
+        )
     L.append(f"   PQC certs:        {r.trust_store.get('pqc_certs', 0)}")
     L.append(f"   Hybrid certs:     {r.trust_store.get('hybrid_certs', 0)}")
     cats = r.trust_store.get("cert_categories") or {}
@@ -6068,6 +6124,17 @@ def render_markdown(r: Report) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _positive_int(value: str) -> int:
+    """argparse `type=` for flags that must be >= 1."""
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -6125,6 +6192,17 @@ def main() -> int:
         "--scan-trust-store",
         action="store_true",
         help="walk system trust store dirs and count PQC / hybrid certs (slow)",
+    )
+    ap.add_argument(
+        "--trust-store-max-certs",
+        type=_positive_int,
+        default=TRUST_STORE_MAX_CERTS_DEFAULT,
+        metavar="N",
+        help=(
+            "cap on certificates parsed by --scan-trust-store "
+            f"(default {TRUST_STORE_MAX_CERTS_DEFAULT}); "
+            "trust_store.truncated is set when the cap is hit"
+        ),
     )
     ap.add_argument(
         "--scan-packages",
@@ -6263,7 +6341,7 @@ def main() -> int:
     cnsa_2_0 = evaluate_cnsa_2_0(osinfo, proc_crypto_text)
     trust_store_info: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
-        trust_store_info = scan_trust_store()
+        trust_store_info = scan_trust_store(max_certs=args.trust_store_max_certs)
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
         packages_info = scan_packages(os_release)
