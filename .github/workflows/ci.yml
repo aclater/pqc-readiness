@@ -88,3 +88,23 @@ jobs:
 
       - name: Scan tracked files against .secrets.baseline
         run: git ls-files -z | xargs -0 detect-secrets-hook --baseline .secrets.baseline
+
+  pre-commit:
+    # Runs every pre-commit hook on every file (#122), so formatting and
+    # hook config can't drift from what contributors run locally.  Hook
+    # versions come from .pre-commit-config.yaml (kept in step with the
+    # CI pins by tests/test_ci_workflows.py).
+    name: pre-commit (all files)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-python@v6.2.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pre-commit
+        run: pip install pre-commit==4.7.0
+
+      - name: Run all hooks
+        run: pre-commit run --all-files --show-diff-on-failure
