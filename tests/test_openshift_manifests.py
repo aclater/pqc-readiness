@@ -116,3 +116,67 @@ def test_containerfile_sets_exactly_the_two_file_capabilities() -> None:
     assert flags == "ep"
     assert re.findall(r"^USER (\S+)", text, re.M)[-1] == "1001"
     assert f'"{CAPPED_PYTHON}", "-I"' in text
+
+
+# ---------------------------------------------------------------- host mounts (#187)
+
+QUADLET = REPO / "deploy" / "quadlet" / "pqc-readiness.container"
+OUTPUT_VOLUME = "readiness-output"
+
+
+def _host_path_volumes(path: Path) -> dict[str, dict[str, Any]]:
+    vols = _docs(path)["DaemonSet"]["spec"]["template"]["spec"]["volumes"]
+    return {v["name"]: v["hostPath"] for v in vols if "hostPath" in v}
+
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_host_paths_never_create_on_the_node(path: Path) -> None:
+    # CRI-O creates a missing hostPath source (MkdirAll) when no type is set,
+    # which would write to the host, and DirectoryOrCreate does so
+    # explicitly.  Every read-only host mount must therefore be typed
+    # Directory/File; only the output directory may be created.
+    for name, hp in _host_path_volumes(path).items():
+        if name == OUTPUT_VOLUME:
+            continue
+        assert hp.get("type") in ("Directory", "File"), (name, hp)
+
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_host_usr_is_mounted_read_only_as_one_volume(path: Path) -> None:
+    c = _container(_docs(path)["DaemonSet"])
+    mounts = {m["mountPath"]: m for m in c["volumeMounts"]}
+    assert mounts["/host/usr"].get("readOnly") is True
+    assert _host_path_volumes(path)["host-usr"] == {"path": "/usr", "type": "Directory"}
+    # /usr/etc/ssh exists only on SUSE / ostree nodes; mounting it (or any
+    # other /usr subdirectory) on its own would fail or create it elsewhere.
+    assert not [p for p in mounts if p.startswith("/host/usr/")]
+
+
+def test_every_host_namespace_is_reachable_through_a_base_mount() -> None:
+    from pqc_readiness import _platform
+
+    c = _container(_docs(BASE)["DaemonSet"])
+    mounted = [
+        m["mountPath"].removeprefix("/host")
+        for m in c["volumeMounts"]
+        if m["mountPath"].startswith("/host/")
+    ]
+    # /var/lib/dpkg only exists on Debian-family hosts, which OpenShift
+    # nodes (RHCOS / RHEL) are not.
+    not_on_openshift = {"/var/lib/dpkg"}
+    for ns in _platform._HOST_NAMESPACES:
+        if ns in not_on_openshift:
+            continue
+        assert any(ns == m or ns.startswith(m + "/") for m in mounted), ns
+
+
+def test_quadlet_mounts_host_usr_read_only_and_nothing_narrower() -> None:
+    volumes = [
+        line.split("=", 1)[1]
+        for line in QUADLET.read_text().splitlines()
+        if line.startswith("Volume=")
+    ]
+    assert "/usr:/host/usr:ro" in volumes
+    # podman refuses a missing bind-mount source, so distro-specific /usr
+    # subdirectories (e.g. /usr/etc/ssh on SUSE) must not be mounted.
+    assert not [v for v in volumes if v.split(":")[0].startswith("/usr/")]

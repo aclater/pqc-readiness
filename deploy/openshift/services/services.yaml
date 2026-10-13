@@ -190,14 +190,12 @@ spec:
             - name: host-etc
               mountPath: /host/etc
               readOnly: true
-            - name: host-os-release
-              mountPath: /host/usr/lib/os-release
+            # Same host /usr mount as the base DaemonSet (#187).
+            - name: host-usr
+              mountPath: /host/usr
               readOnly: true
             - name: host-rpmdb
               mountPath: /host/var/lib/rpm
-              readOnly: true
-            - name: host-crypto-policies
-              mountPath: /host/usr/share/crypto-policies
               readOnly: true
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
@@ -221,17 +219,13 @@ spec:
           hostPath:
             path: /etc
             type: Directory
-        - name: host-os-release
+        - name: host-usr
           hostPath:
-            path: /usr/lib/os-release
-            type: File
+            path: /usr
+            type: Directory
         - name: host-rpmdb
           hostPath:
             path: /var/lib/rpm
-            type: Directory
-        - name: host-crypto-policies
-          hostPath:
-            path: /usr/share/crypto-policies
             type: Directory
         - name: readiness-output
           hostPath:
