@@ -11,11 +11,13 @@ network calls during pytest."""
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from typing import Any
 
 import pytest
 
 import pqc_readiness as pr
+from pqc_readiness import gap
 from conftest import FIXTURES
 
 SCHEMA_PATH = FIXTURES / "sarif" / "sarif-2.1.0.schema.json"
@@ -50,7 +52,7 @@ def _empty_report() -> pr.Report:
 def _full_trigger_report() -> pr.Report:
     """A Report that trips every rule at once — used for the all-rules-
     fire test and for the schema-validation smoke test."""
-    return pr.Report(
+    r = pr.Report(
         generated_at="2026-04-28T12:00:00+00:00",
         hostname="testhost.example",
         os="Fedora Linux 44",
@@ -128,6 +130,10 @@ def _full_trigger_report() -> pr.Report:
             },
         },
     )
+    # The deployment-gap verdict (#107) is computed from the fields above,
+    # as collect_report does; TLS and SSH are capable-not-configured here.
+    r.pqc_deployment_gap = gap.compute_gap(asdict(r))
+    return r
 
 
 def test_render_sarif_top_level_shape() -> None:
@@ -154,7 +160,7 @@ def test_render_sarif_empty_report_has_no_results() -> None:
 def test_render_sarif_rules_have_required_metadata() -> None:
     log = json.loads(pr.render_sarif(_empty_report()))
     rules = log["runs"][0]["tool"]["driver"]["rules"]
-    assert len(rules) == 10
+    assert len(rules) == 11
     expected_ids = {
         "pqc-001-openssl-pre-3.5",
         "pqc-002-fips-pqc-conflict",
@@ -166,6 +172,7 @@ def test_render_sarif_rules_have_required_metadata() -> None:
         "pqc-008-crypto-policy-blocks-pqc",
         "pqc-009-classical-package-signing-keys",
         "pqc-010-sshd-pqc-kex-not-offered",
+        "pqc-020-pqc-capable-not-configured",
     }
     assert {r["id"] for r in rules} == expected_ids
     for r in rules:

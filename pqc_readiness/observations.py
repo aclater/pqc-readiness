@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from . import gap as _gap
+
 from . import algorithms as _algorithms
 from .detect import config as _config
 from .detect import protocols as _protocols
@@ -370,24 +372,8 @@ def _bool_or_none(value: object) -> bool | None:
 
 
 def _compact_listener(ln: dict[str, Any]) -> dict[str, Any]:
-    libs = ln.get("crypto_libraries") or []
-    go = ln.get("go") or None
-    families = sorted({str(x.get("family")) for x in libs if x.get("family")})
-    if go:
-        families.append("go")
-    capable_flags = [x.get("library_pqc_capable") for x in libs]
-    go_capable: bool | None = None
-    if go:
-        reverted = {"tlsmlkem"} & set(go.get("godebug_reverts") or [])
-        go_capable = bool(go.get("default_hybrid_kex")) and not reverted
-    if True in capable_flags or go_capable:
-        capable: bool | None = True
-    elif (
-        capable_flags and all(f is False for f in capable_flags)
-    ) or go_capable is False:
-        capable = False
-    else:
-        capable = None
+    # Capability judgement shared with the per-host verdict (#107).
+    cap = _gap.listener_capability(ln)
     address = ln.get("address")
     return {
         "protocol": ln.get("protocol"),
@@ -397,9 +383,9 @@ def _compact_listener(ln: dict[str, Any]) -> dict[str, Any]:
         "network_namespace": ln.get("network_namespace"),
         "process": ln.get("process"),
         "systemd_unit": ln.get("systemd_unit"),
-        "crypto_families": families,
-        "library_pqc_capable": capable,
-        "go_default_hybrid": bool(go_capable),
+        "crypto_families": cap["crypto_families"],
+        "library_pqc_capable": cap["library_pqc_capable"],
+        "go_default_hybrid": cap["go_default_hybrid"],
     }
 
 
@@ -417,21 +403,13 @@ def _host_entry(report: dict[str, Any]) -> HostEntry:
             fp = c.get("sha256")
             if isinstance(fp, str) and _HEX64.match(fp):
                 certs.add(fp.lower())
-    policy = (report.get("crypto_policy") or {}).get("pqc_enabled") or {}
-    openssl_cfg = (report.get("openssl") or {}).get("config") or {}
-    tls_configured = _bool_or_none(policy.get("tls_key_exchange"))
-    if tls_configured is None:
-        tls_configured = _bool_or_none(openssl_cfg.get("pqc_key_exchange_by_default"))
-    kex = (report.get("ssh_pqc") or {}).get("kex_groups") or {}
-    ssh_capable: bool | None = None
-    if kex:
-        ssh_capable = bool(kex.get("hybrid") or kex.get("pure_pqc"))
-    ipsec = report.get("ipsec_pqc") or {}
-    # IKEv2: the configured proposals (#154) say more than the policy.
-    ike_summary = (ipsec.get("configured") or {}).get("summary") or {}
-    ike_configured = _bool_or_none(policy.get("ike_key_exchange"))
-    if ike_summary.get("connections"):
-        ike_configured = bool(ike_summary.get("connections_offering_pqc"))
+    # The capable / configured judgements are the per-host verdict's
+    # (#107), so an endpoint's state can't disagree with its host's.
+    tls_configured, _ = _gap.tls_configured(report)
+    ssh_configured, _ = _gap.ssh_configured(report)
+    ike_configured, _ = _gap.ike_configured(report)
+    ssh_capable, _ = _gap.ssh_capable(report)
+    ike_capable, _ = _gap.ike_capable(report)
     return HostEntry(
         hostname=str(report.get("hostname") or ""),
         generated_at=_parse_time(report.get("generated_at")),
@@ -439,10 +417,10 @@ def _host_entry(report: dict[str, Any]) -> HostEntry:
         listeners=listeners,
         cert_sha256=certs,
         tls_configured=tls_configured,
-        ssh_configured=_bool_or_none(policy.get("ssh_key_exchange_server")),
+        ssh_configured=ssh_configured,
         ike_configured=ike_configured,
         ssh_capable=ssh_capable,
-        ike_capable=_bool_or_none(ipsec.get("pqc")),
+        ike_capable=ike_capable,
     )
 
 
@@ -595,6 +573,7 @@ def join_observations(
     by_status: Counter[str] = Counter()
     by_class: Counter[str] = Counter()
     states: Counter[tuple[str, str, str]] = Counter()
+    gap_states: Counter[tuple[str, str, str]] = Counter()
     per_host: dict[str, dict[str, Any]] = {}
     stale_count = 0
     matches: list[dict[str, Any]] = []
@@ -620,6 +599,7 @@ def join_observations(
             "listener": None,
             "capable": None,
             "configured": None,
+            "state": None,
             "certificate_on_host": None,
             "stale": None,
             "note": None,
@@ -655,6 +635,8 @@ def join_observations(
             if m["status"] in ("matched", "no_service_scan"):
                 m["capable"] = _capable(entry, listener, rec["protocol"])
                 m["configured"] = _configured(entry, listener, rec["protocol"])
+                m["state"] = _gap.classify(m["capable"], m["configured"])
+                gap_states[(rec["protocol"], m["state"], cls)] += 1
                 h = per_host.setdefault(
                     entry.hostname,
                     {
@@ -688,6 +670,10 @@ def join_observations(
         "states": [
             {"capable": c, "configured": g, "observed": o, "endpoints": n}
             for (c, g, o), n in sorted(states.items())
+        ],
+        "by_gap_state": [
+            {"protocol": p, "state": st, "observed": o, "endpoints": n}
+            for (p, st, o), n in sorted(gap_states.items())
         ],
         "per_host": dict(sorted(per_host.items())),
         "matches": matches,

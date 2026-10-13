@@ -16,6 +16,7 @@ fails if a registered rule has no page.
 | [pqc-008-crypto-policy-blocks-pqc](pqc-008-crypto-policy-blocks-pqc.md) | warning | OpenSSL can do PQC TLS groups; the system crypto policy keeps them out |
 | [pqc-009-classical-package-signing-keys](pqc-009-classical-package-signing-keys.md) | note | Every trusted package-signing key is classical |
 | [pqc-010-sshd-pqc-kex-not-offered](pqc-010-sshd-pqc-kex-not-offered.md) | warning | OpenSSH can do a PQC key exchange; sshd doesn't offer it (note: offered but not first) |
+| [pqc-020-pqc-capable-not-configured](pqc-020-pqc-capable-not-configured.md) | warning | PQC-capable software (TLS, SSH, IPsec or a service) is configured to stay classical (note: only restates pqc-008 / pqc-010) |
 
 Sources are cited with their status. **Draft** means the document is not
 final, for example NIST IR 8547, which is still an initial public draft.
