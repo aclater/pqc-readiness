@@ -1,0 +1,5 @@
+gpg-pubkey d4082792 5b32db75 (none)
+gpg-pubkey fd431d51 4ae0493b (none)
+libgpg-error 1.31 1.el8 x86_64
+nss 3.124.0 5.el8_10 i686
+nss 3.124.0 5.el8_10 x86_64
