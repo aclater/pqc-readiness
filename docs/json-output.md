@@ -1,7 +1,7 @@
 # JSON output reference
 
 `pqc-readiness --json` emits a stable, schema-versioned document.
-The current `schema_version` is `"1.4"`. It follows the bump rules in
+The current `schema_version` is `"1.5"`. It follows the bump rules in
 [docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
 a rename, removal, or re-type is a major bump; an additive change
 (including normalising an "absent" value to `null`) is a minor bump.
@@ -15,6 +15,7 @@ does not match, so mixed-version fleets show up under `skipped`.
 | `1.2` | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_method` are `null` (was `{}` / `""`) when not run; `trust_store` gained `total_found` / `scanned_count` / `max_certs` / `truncated`; `host_fs_detections_unavailable` documented for `kernel_crypto_hw` / `ktls`. |
 | `1.3` | `benchmark.pqc.<algo>.skipped` (algorithm not provided by the local OpenSSL; never benchmarked); `benchmark.classical.rsa2048_kem` and `benchmark.classical.rsa2048_signature` rows. `trust_store` counts are per unique certificate, every certificate in bundle files is inspected, and PQC certificates are classified by DER OID (#116). |
 | `1.4` | `packages.source` (`rpmdb-sqlite` \| `rpm-cli`) and `packages.db_root` on RPM hosts; the rpm database is read in-process and, under `--host-mount`, from the **host** (earlier releases inventoried the scanner image). `nss.tool` may be `rpmdb (sqlite)` or `rpm -qa`. `host_fs_detections_unavailable` gained `packages` and `nss` keys (#125). |
+| `1.5` | Additive only. New top-level objects: `crypto_policy` (system crypto policy and whether it lets PQC through, #104), `crypto_material` (`--scan-crypto-material` filesystem certificate / key / keystore discovery, #108), `service_crypto_linkage` (`--scan-services` listening service → crypto library, #111), `signing_keys` (`--scan-signing-keys` package-manager signing trust anchors, #153) and `inventory_metadata` (`--inventory-metadata FILE`, #144). New nested fields: `openssl.config` (effective OpenSSL configuration and providers, #106), `openssl.tls_group_references` and `ssh_pqc.kex_references` (RFC codepoints and status, #139), `cnsa_2_0.tls_key_exchange` (#139), `trust_store.certificates` (per-certificate CycloneDX 1.7 fields, #108), and `ipsec_pqc.configured` / `ipsec_pqc.note` (configured IKEv2 proposals classified for ML-KEM and RFC 9370, #154). `packages.source` also takes `rpmdb-bdb` / `rpmdb-ndb` (#134). The `--recommend` document gained `policy_sources` and per-record `timeline` (#141). |
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -32,7 +33,7 @@ nothing was found.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Schema version string, currently `"1.4"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
+| `schema_version` | Schema version string, currently `"1.5"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. |
 | `os` | Human-readable OS name: `os_release.pretty_name`, or `<system> <kernel release>` (e.g. `Linux 6.12.0`) when `/etc/os-release` gave none. |
@@ -752,4 +753,4 @@ CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 asset-level schema — the asset-level projection is already provided by
 `--cbom`. No `--json` field renames are recommended at this time, so
 no major (`2.0`) bump is planned; the current `SCHEMA_VERSION` is
-`"1.4"` from additive changes only.
+`"1.5"` from additive changes only.
