@@ -16,6 +16,12 @@
 # Version tags are never moved: a tag that already exists is refused
 # unless the dispatch sets overwrite=true.  There is no floating tag.
 #
+# Attest-only mode (#251): a dispatch with attest_only set to a variant
+# skips building and pushing, and only adds the CycloneDX SBOM attestation
+# to that variant's already-published digest.  It refuses to run unless the
+# version tag currently points at the given digest, so it can backfill an
+# attestation without rebuilding or moving anything.
+#
 # Each image is signed with cosign (keyless, GitHub OIDC) and gets two
 # attestations pushed to the registry: SLSA build provenance and a
 # CycloneDX package SBOM, produced by this project's own scanner from the
@@ -43,6 +49,15 @@ on:
         description: "Replace image tags that already exist for this version"
         type: boolean
         default: false
+      attest_only:
+        description: "Attest-only: add the SBOM attestation to this variant's published digest (no build, no push)"
+        type: choice
+        options: [none, ubi10, ubi8, debian, services]
+        default: none
+      attest_digest:
+        description: "Attest-only: the published digest (sha256:...) the version tag must point at"
+        required: false
+        default: ""
 
 concurrency:
   group: release-images-${{ github.event.release.tag_name || inputs.tag }}
@@ -60,6 +75,9 @@ env:
 jobs:
   image:
     name: image (${{ matrix.variant }})
+    # Skipped in attest-only mode; services and digests need this job, so
+    # they skip with it.
+    if: github.event_name == 'release' || inputs.attest_only == 'none'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -342,3 +360,73 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$TAG" container-images.txt --clobber --repo "$GITHUB_REPOSITORY"
+
+  attest-sbom:
+    name: attest SBOM only (${{ inputs.attest_only }})
+    if: github.event_name == 'workflow_dispatch' && inputs.attest_only != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push the attestation to the registry
+      id-token: write
+      attestations: write
+    env:
+      VARIANT: ${{ inputs.attest_only }}
+      DIGEST: ${{ inputs.attest_digest }}
+    steps:
+      - name: Resolve the image reference
+        run: |
+          case "$TAG" in v[0-9]*) ;; *) echo "tag must look like vX.Y.Z, got '$TAG'"; exit 1 ;; esac
+          case "$DIGEST" in sha256:*) ;; *) echo "attest_digest must be sha256:<64 hex>"; exit 1 ;; esac
+          echo "$DIGEST" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "attest_digest must be sha256:<64 hex>"; exit 1; }
+          VERSION="${TAG#v}"
+          case "$VARIANT" in
+            ubi10)    IMAGE=$REPO_IMAGE;     REF_TAG=$VERSION ;;
+            ubi8)     IMAGE=$REPO_IMAGE;     REF_TAG=$VERSION-ubi8 ;;
+            debian)   IMAGE=$REPO_IMAGE;     REF_TAG=$VERSION-debian ;;
+            services) IMAGE=$SERVICES_IMAGE; REF_TAG=$VERSION ;;
+            *) echo "unknown variant '$VARIANT'"; exit 1 ;;
+          esac
+          { echo "VERSION=$VERSION"; echo "IMAGE=$IMAGE"; echo "REF_TAG=$REF_TAG"; } >> "$GITHUB_ENV"
+
+      - name: Log in to ghcr.io
+        run: |
+          mkdir -p "$HOME/.docker"
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          echo "${{ github.token }}" | podman login ghcr.io -u "${{ github.actor }}" \
+            --password-stdin --authfile "$HOME/.docker/config.json"
+
+      - name: Refuse unless the version tag points at this digest
+        run: |
+          current=$(skopeo inspect --format '{{.Digest}}' "docker://$IMAGE:$REF_TAG")
+          [ "$current" = "$DIGEST" ] || { echo "$IMAGE:$REF_TAG is $current, not $DIGEST; refusing"; exit 1; }
+          echo "attesting $IMAGE@$DIGEST ($IMAGE:$REF_TAG)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download and verify the release zipapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'pqc-readiness.pyz' --pattern 'pqc-readiness.pyz.sha256' --dir dist
+          (cd dist && sha256sum -c pqc-readiness.pyz.sha256)
+          python3 dist/pqc-readiness.pyz --version | grep -qx "pqc-readiness $VERSION (schema .*)"
+
+      - name: Generate the package SBOM from the published image
+        # Same generation as the build jobs, from the pulled digest's rootfs.
+        run: |
+          podman pull "$IMAGE@$DIGEST"
+          mkdir rootfs
+          cid=$(podman create "$IMAGE@$DIGEST")
+          podman export "$cid" | tar -x -C rootfs
+          podman rm "$cid" >/dev/null
+          python3 dist/pqc-readiness.pyz --root rootfs --sbom --output sbom.cdx.json
+          python3 -c "import json; d = json.load(open('sbom.cdx.json')); assert d['components'], 'empty SBOM'"
+
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
