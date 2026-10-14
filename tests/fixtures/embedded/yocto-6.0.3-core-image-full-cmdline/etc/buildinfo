@@ -1,0 +1,13 @@
+-----------------------
+Build Configuration:  |
+-----------------------
+DISTRO = poky
+DISTRO_VERSION = 6.0.3
+IMAGE_BASENAME = core-image-full-cmdline
+IMAGE_NAME = core-image-full-cmdline-qemux86-64.rootfs-20260819091134
+-----------------------
+Layer Revisions:      |
+-----------------------
+meta              = wrynose:ef022bf82d79015802309d14c28b13373ebe53f5
+meta-yocto-bsp    = wrynose:1b132647002eea43a2c7a7f857f63f42dacbc26c
+meta-poky         = wrynose:1b132647002eea43a2c7a7f857f63f42dacbc26c

@@ -65,6 +65,16 @@ changes it.
 - **Hosts with libcrypto but no `openssl` CLI** (OpenWrt, minimal images)
   report the library's version instead of "openssl not on PATH", so
   pqc-001 fires for a pre-3.5 library (#225).
+  2.2.0 services image carries only the provenance attestation.
+- **`--sbom` covers OpenWrt and Yocto** (#227). Families without a package
+  tool are read from whichever database the tree has, as `--scan-packages`
+  does; before, the SBOM had no components on them. opkg packages get
+  `pkg:generic/<vendor>/…` (purl-spec has no opkg type), OpenWrt 25.12's apk
+  packages `pkg:apk/openwrt/…`, and Yocto packages the spec's recipe purl
+  `pkg:yocto/<recipe>@<PV>` from the rpm SOURCERPM tag. A Yocto image's OS
+  component comes from `/etc/buildinfo` when it has no os-release. Packages
+  that get no purl are counted (`pqc-readiness:sbom:packages-without-purl`)
+  instead of dropped silently.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
