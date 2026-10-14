@@ -412,6 +412,87 @@ def _elf_info(fh: Any) -> dict[str, Any] | None:
     return {"static": not interp, "buildinfo": buildinfo}
 
 
+def elf_dynamic(fh: Any) -> dict[str, list[str]] | None:
+    """``{needed, runpath}`` from an ELF file's dynamic section, or None if
+    it is not ELF.  DT_RPATH entries are folded into ``runpath``; a static
+    binary returns empty lists.  Bounded reads; malformed input raises
+    ValueError / struct.error, which callers treat as unreadable."""
+    ident = fh.read(16)
+    if ident[:4] != b"\x7fELF":
+        return None
+    bo = "<" if ident[5] == 1 else ">"
+    is64 = ident[4] == 2
+    fh.seek(0)
+    hdr = fh.read(64 if is64 else 52)
+    if is64:
+        (e_phoff,) = struct.unpack_from(bo + "Q", hdr, 32)
+        e_phentsize, e_phnum = struct.unpack_from(bo + "HH", hdr, 54)
+    else:
+        (e_phoff,) = struct.unpack_from(bo + "I", hdr, 28)
+        e_phentsize, e_phnum = struct.unpack_from(bo + "HH", hdr, 42)
+    if e_phnum > 4096 or e_phentsize < (56 if is64 else 32):
+        raise ValueError("implausible ELF program header table")
+    fh.seek(e_phoff)
+    ph = fh.read(e_phentsize * e_phnum)
+    loads: list[tuple[int, int, int]] = []
+    dyn: tuple[int, int] | None = None
+    for i in range(e_phnum):
+        base = i * e_phentsize
+        if is64:
+            p_type, _f, p_offset, p_vaddr, _pa, p_filesz = struct.unpack_from(
+                bo + "IIQQQQ", ph, base
+            )
+        else:
+            p_type, p_offset, p_vaddr, _pa, p_filesz = struct.unpack_from(
+                bo + "IIIII", ph, base
+            )
+        if p_type == 1:  # PT_LOAD
+            loads.append((p_vaddr, p_offset, p_filesz))
+        elif p_type == 2:  # PT_DYNAMIC
+            dyn = (p_offset, min(p_filesz, 1 << 16))
+    out: dict[str, list[str]] = {"needed": [], "runpath": []}
+    if dyn is None:
+        return out
+    fh.seek(dyn[0])
+    raw = fh.read(dyn[1])
+    entsize = 16 if is64 else 8
+    fmt = bo + ("qQ" if is64 else "iI")
+    needed: list[int] = []
+    runpath: list[int] = []
+    strtab = strsz = None
+    for off in range(0, len(raw) - entsize + 1, entsize):
+        tag, val = struct.unpack_from(fmt, raw, off)
+        if tag == 0:  # DT_NULL
+            break
+        if tag == 1:  # DT_NEEDED
+            needed.append(val)
+        elif tag in (15, 29):  # DT_RPATH, DT_RUNPATH
+            runpath.append(val)
+        elif tag == 5:  # DT_STRTAB (a virtual address)
+            strtab = val
+        elif tag == 10:  # DT_STRSZ
+            strsz = val
+    if strtab is None:
+        return out
+    str_off = next(
+        (off + strtab - va for va, off, sz in loads if va <= strtab < va + sz), None
+    )
+    if str_off is None:
+        return out
+    fh.seek(str_off)
+    strings: bytes = fh.read(min(strsz or (1 << 16), 1 << 20))
+
+    def at(i: int) -> str:
+        end = strings.find(b"\0", i)
+        return strings[i : end if end >= 0 else len(strings)].decode("utf-8", "replace")
+
+    out["needed"] = [at(i) for i in needed if i < len(strings)]
+    out["runpath"] = [
+        d for i in runpath if i < len(strings) for d in at(i).split(":") if d
+    ]
+    return out
+
+
 # analyze_executable() result when the executable can't be read.
 _EXE_UNKNOWN: dict[str, Any] = {"static": None, "go": None}
 
@@ -589,6 +670,270 @@ class _Cache:
         self.libs: dict[tuple[int, int], tuple[str, str | None, bool | None]] = {}
         self.by_maps: dict[tuple[str, int], tuple[str, str | None, bool | None]] = {}
         self.exes: dict[tuple[int, int], dict[str, Any]] = {}
+        # Worker attribution (#240): ppid of every scanned pid (built on
+        # first use) and dynamic sections of files read through a root.
+        self.ppids: dict[int, int] | None = None
+        self.dynamic: dict[str, dict[str, list[str]] | None] = {}
+
+
+# ---------------------------------------------------------------------------
+# Master/worker daemons (#240)
+# ---------------------------------------------------------------------------
+#
+# Some daemons accept connections in a master process that never does TLS
+# itself: Postfix's `master` owns ports 25/587 and hands each connection to
+# an `smtpd` child, which is the process that loads OpenSSL.  When the
+# listener's owner maps no crypto library, the library is taken, in order,
+# from (1) another process holding the same listening socket (a worker that
+# inherited it), (2) a descendant of the owner that maps one, or (3) the
+# executables those descendants run from, by following their DT_NEEDED
+# entries (workers spawned on demand are often not running when the scan
+# happens).  The listener records where the libraries came from.
+
+# Directories of general-purpose executables: siblings there say nothing
+# about the daemon, so (3) never scans them.
+_SHARED_BIN_DIRS = frozenset(
+    {"/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin"}
+)
+# Libraries that never lead to a TLS stack the daemon serves with; not
+# followed when walking DT_NEEDED.  (libsasl2 / libldap / libkrb5 link
+# libcrypto for their own protocols, not for the daemon's TLS listener.)
+_NOT_FOLLOWED = re.compile(
+    r"^(?:libc|libm|libdl|libpthread|librt|libresolv|libutil|libnsl|libcrypt|"
+    r"ld-linux[\w.-]*|libgcc_s|libstdc\+\+|libz|libzstd|liblzma|libbz2|liblz4|"
+    r"libselinux|libpcre2?-?\d*|libcap|libsystemd|libudev|libdb-[\d.]+|"
+    r"libicu\w+|libsasl2|libldap[\w.-]*|liblber[\w.-]*|libgssapi_krb5|libkrb5|"
+    r"libk5crypto|libcom_err|libkeyutils|libtirpc)\.so"
+)
+_DEFAULT_LIB_DIRS = (
+    "/lib64",
+    "/usr/lib64",
+    "/lib/x86_64-linux-gnu",
+    "/usr/lib/x86_64-linux-gnu",
+    "/lib/aarch64-linux-gnu",
+    "/usr/lib/aarch64-linux-gnu",
+    "/lib/s390x-linux-gnu",
+    "/usr/lib/s390x-linux-gnu",
+    "/lib",
+    "/usr/lib",
+)
+_WORKER_MAX_DESCENDANTS = 64
+_WORKER_MAX_BINARIES = 96
+# ELF files opened per listener when walking worker binaries' DT_NEEDED.
+_WORKER_ELF_BUDGET = 256
+_WORKER_NEEDED_DEPTH = 2
+
+
+def _ppid(pid: int) -> int | None:
+    """Parent pid from /proc/<pid>/stat (the comm field may hold spaces and
+    parentheses, so parse after the last ')')."""
+    try:
+        text = _proc(pid, "stat").read_text()
+        return int(text[text.rindex(")") + 2 :].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _descendants(owner: int, pids: list[int], cache: _Cache) -> list[int]:
+    """Descendants of owner among the scanned pids, nearest first."""
+    if cache.ppids is None:
+        cache.ppids = {}
+        for p in pids:
+            pp = _ppid(p)
+            if pp is not None:
+                cache.ppids[p] = pp
+    children: dict[int, list[int]] = {}
+    for p, pp in cache.ppids.items():
+        children.setdefault(pp, []).append(p)
+    out: list[int] = []
+    frontier = [owner]
+    while frontier and len(out) < _WORKER_MAX_DESCENDANTS:
+        nxt: list[int] = []
+        for p in frontier:
+            nxt.extend(sorted(children.get(p, [])))
+        out.extend(nxt)
+        frontier = nxt
+    return out[:_WORKER_MAX_DESCENDANTS]
+
+
+def _lib_dirs(owner: int) -> list[str]:
+    """Library search directories for the owner's root: the directory its
+    libc is mapped from first (multiarch layouts differ), then the usual
+    ones."""
+    dirs: list[str] = []
+    try:
+        for line in _proc(owner, "maps").read_text().splitlines():
+            path = line.split(None, 5)[-1].strip()
+            if re.search(r"/libc\.so\.\d+$", path):
+                dirs.append(os.path.dirname(path))
+                break
+    except OSError:
+        pass
+    return dirs + [d for d in _DEFAULT_LIB_DIRS if d not in dirs]
+
+
+def _dynamic_through(
+    root: Path, path: str, cache: _Cache
+) -> dict[str, list[str]] | None:
+    key = f"{root}\0{path}"
+    if key not in cache.dynamic:
+        result = None
+        try:
+            with (root / path.lstrip("/")).open("rb") as fh:
+                result = elf_dynamic(fh)
+        except (OSError, ValueError, struct.error) as e:
+            log.debug("services: cannot read dynamic section of %s: %s", path, e)
+        cache.dynamic[key] = result
+    return cache.dynamic[key]
+
+
+def _linked_crypto_libraries(
+    root: Path, binary: str, lib_dirs: list[str], cache: _Cache, budget: list[int]
+) -> list[str]:
+    """Crypto library paths reachable from binary's DT_NEEDED entries (two
+    levels: Postfix's smtpd -> libpostfix-tls.so -> libssl.so.3), resolved
+    the way the dynamic linker would for that root: RUNPATH/RPATH (with
+    $ORIGIN) first, then the system library directories."""
+    found: list[str] = []
+    seen: set[str] = set()
+    queue: list[tuple[str, int]] = [(binary, 0)]
+    while queue and budget[0] > 0:
+        path, depth = queue.pop(0)
+        if f"{root}\0{path}" not in cache.dynamic:
+            budget[0] -= 1
+        dyn = _dynamic_through(root, path, cache)
+        if not dyn:
+            continue
+        origin = os.path.dirname(path)
+        dirs = [
+            d.replace("${ORIGIN}", origin).replace("$ORIGIN", origin)
+            for d in dyn["runpath"]
+        ] + lib_dirs
+        for name in dyn["needed"]:
+            if name in seen or _NOT_FOLLOWED.match(name):
+                continue
+            seen.add(name)
+            resolved = next(
+                (
+                    os.path.join(d, name)
+                    for d in dirs
+                    if d.startswith("/")
+                    and _platform.safe_is_file(root / d.lstrip("/") / name)
+                ),
+                None,
+            )
+            if resolved is None:
+                continue
+            if any(p.match(name) for _f, p in _LIBRARIES):
+                found.append(resolved)
+            if depth < _WORKER_NEEDED_DEPTH:
+                queue.append((resolved, depth + 1))
+    return found
+
+
+def _has_tls_library(paths: list[str]) -> bool:
+    """A TLS library, not only libcrypto: daemons and their helpers map
+    libcrypto for hashing or through Kerberos/SASL, which says less about
+    the TLS stack a worker serves with than libssl / GnuTLS / NSS do."""
+    return any(not os.path.basename(p).startswith("libcrypto.") for p in paths)
+
+
+def _worker_binary_libraries(
+    owner: int, worker_dirs: list[str], cache: _Cache
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Crypto libraries linked by an executable in the directories the
+    owner's workers run from, and that executable's path."""
+    root = _proc(owner, "root")
+    lib_dirs = _lib_dirs(owner)
+    budget = [_WORKER_ELF_BUDGET]
+    fallback: tuple[list[str], str] | None = None
+    chosen: tuple[list[str], str] | None = None
+    for d in worker_dirs:
+        try:
+            names = sorted(os.listdir(root / d.lstrip("/")))[:_WORKER_MAX_BINARIES]
+        except OSError:
+            continue
+        for name in names:
+            path = os.path.join(d, name)
+            if not _platform.safe_is_file(root / path.lstrip("/")):
+                continue
+            libs = _linked_crypto_libraries(root, path, lib_dirs, cache, budget)
+            if libs and _has_tls_library(libs):
+                chosen = (libs, path)
+                break
+            if libs and fallback is None:
+                fallback = (libs, path)
+            if budget[0] <= 0:
+                break
+        if chosen or budget[0] <= 0:
+            break
+    chosen = chosen or fallback
+    if chosen is None:
+        return [], None
+    entries = []
+    for lib_path in chosen[0]:
+        base = os.path.basename(lib_path)
+        family = next(f for f, p in _LIBRARIES if p.match(base))
+        m = _SONAME_VERSION_RE.search(base)
+        entries.append(
+            _library_details(
+                owner,
+                {
+                    "family": family,
+                    "path": lib_path,
+                    "soname_version": m.group(1) if m else None,
+                    "deleted": False,
+                    "map_range": "",
+                    "maps_key": None,
+                },
+                cache,
+            )
+        )
+    return _inherit_libssl_version(entries), chosen[1]
+
+
+def _worker_crypto(
+    owner: int,
+    holders: list[int],
+    pids: list[int],
+    details: dict[int, dict[str, Any]],
+    cache: _Cache,
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """Libraries and their source for an owner that maps none itself (see
+    the section comment above), or None."""
+    descendants = _descendants(owner, pids, cache)
+    candidates = [p for p in holders if p not in (owner, 1)]
+    candidates += [p for p in descendants if p not in candidates]
+
+    def from_process(pid: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return details[pid]["crypto_libraries"], {
+            "source": "socket-holder" if pid in holders else "descendant",
+            "pid": pid,
+            "process": details[pid]["process"],
+            "exe": details[pid]["exe"],
+        }
+
+    crypto_only: int | None = None
+    for pid in candidates:
+        if pid not in details:
+            details[pid] = _process_details(pid, cache)
+        paths = [lib["path"] for lib in details[pid]["crypto_libraries"]]
+        if paths and _has_tls_library(paths):
+            return from_process(pid)
+        if paths and crypto_only is None:
+            crypto_only = pid
+    worker_dirs: list[str] = []
+    for pid in descendants:
+        exe = _exe(pid)
+        d = os.path.dirname(exe) if exe else ""
+        if d and d not in _SHARED_BIN_DIRS and d not in worker_dirs:
+            worker_dirs.append(d)
+    if worker_dirs:
+        libs, binary = _worker_binary_libraries(owner, worker_dirs, cache)
+        if libs:
+            return libs, {"source": "worker-binary", "binary": binary}
+    # Last resort: a worker that maps only libcrypto.
+    return from_process(crypto_only) if crypto_only is not None else None
 
 
 def _library_details(pid: int, lib: dict[str, Any], cache: _Cache) -> dict[str, Any]:
@@ -790,6 +1135,11 @@ def scan_services(
             if owner not in details:
                 details[owner] = _process_details(owner, cache)
             entry.update(details[owner])
+            if not entry["crypto_libraries"] and entry["go"] is None:
+                worker = _worker_crypto(owner, pids_for, pids, details, cache)
+                if worker is not None:
+                    entry["crypto_libraries"] = worker[0]
+                    entry["crypto_libraries_from"] = worker[1]
         else:
             entry.update(
                 {

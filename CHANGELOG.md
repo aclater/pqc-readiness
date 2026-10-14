@@ -92,6 +92,15 @@ changes it.
   Include comes before any `KexAlgorithms`, `kex_source` is
   `unreadable-config` and the offered list is null. Service configs move
   includes of absent files from `unreadable` to a new `missing` list.
+  2.2.0 services image carries only the provenance attestation.
+- **Postfix and other master/worker daemons get a deployment-gap verdict**
+  (#240). Postfix's `master` owns ports 25/587 but never loads OpenSSL; its
+  `smtpd` workers do. `--scan-services` reported those listeners with no
+  crypto library, so `pqc_deployment_gap.services` skipped them. Such a
+  listener now takes its libraries from a worker holding the socket, a
+  descendant process, or (when no worker is running) the libraries a worker
+  executable links, and says which in the new
+  `service_crypto_linkage.listeners[].crypto_libraries_from`.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |

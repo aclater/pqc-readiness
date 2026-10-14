@@ -130,18 +130,25 @@ class FakeHost:
         cgroup: str = "0::/init.scope\n",
         environ: bytes = b"",
         fd_readable: bool = True,
+        ppid: int = 1,
+        exe_path: str | None = None,
     ) -> None:
         d = self.root / "proc" / str(pid)
         (d / "ns").mkdir(parents=True)
         os.symlink(ns, d / "ns" / "net")
         (d / "net").mkdir()
         (d / "comm").write_text(comm + "\n")
+        # Real stat lines can have spaces and parentheses in comm.
+        (d / "stat").write_text(f"{pid} ({comm} (x)) S {ppid} {pid} {pid} 0 -1\n")
         (d / "cgroup").write_text(cgroup)
         (d / "maps").write_text(maps)
         (d / "environ").write_bytes(environ)
         os.symlink(self.root / "fs", d / "root")
         if exe is not None:
             os.symlink(exe, d / "exe")
+        elif exe_path is not None:
+            # As the kernel shows it: the path inside the process's root.
+            os.symlink(exe_path, d / "exe")
         fd = d / "fd"
         fd.mkdir()
         for i, inode in enumerate(sockets, start=3):
@@ -688,3 +695,301 @@ def test_pid1_only_owner_is_still_reported(host: FakeHost) -> None:
     host.net(1, "tcp", [(_hex_v4("0.0.0.0", 7), ANY4, "0A", 6002)])
     os.symlink("socket:[6002]", host.root / "proc" / "1" / "fd" / "90")
     assert _by_port(rs.scan_services(), "tcp", 7)["pid"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Master/worker daemons (#240)
+# ---------------------------------------------------------------------------
+
+
+def _elf_dyn(needed: list[str], runpath: str | None = None, is64: bool = True) -> bytes:
+    """Minimal dynamically linked ELF: PT_LOAD covering the file, PT_DYNAMIC,
+    and a string table addressed by virtual address 0x400000 + offset."""
+    bo = "<"
+    base = 0x400000
+    strtab = b"\0"
+    offsets = []
+    for name in needed + ([runpath] if runpath else []):
+        offsets.append(len(strtab))
+        strtab += name.encode() + b"\0"
+    ehsize, phentsize = (64, 56) if is64 else (52, 32)
+    phoff = ehsize
+    str_off = phoff + 2 * phentsize
+    dyn_off = str_off + len(strtab)
+    entries = [(1, o) for o in offsets[: len(needed)]]
+    if runpath:
+        entries.append((29, offsets[-1]))
+    entries += [(5, base + str_off), (10, len(strtab)), (0, 0)]
+    entfmt = bo + ("qQ" if is64 else "iI")
+    dyn = b"".join(struct.pack(entfmt, t, v) for t, v in entries)
+    total = dyn_off + len(dyn)
+    ident = b"\x7fELF" + bytes([2 if is64 else 1, 1, 1]) + b"\0" * 9
+    if is64:
+        ehdr = ident + struct.pack(
+            bo + "HHIQQQIHHHHHH",
+            3,
+            62,
+            1,
+            0,
+            phoff,
+            0,
+            0,
+            ehsize,
+            phentsize,
+            2,
+            64,
+            0,
+            0,
+        )
+        load = struct.pack(bo + "IIQQQQQQ", 1, 5, 0, base, base, total, total, 0x1000)
+        dynph = struct.pack(
+            bo + "IIQQQQQQ",
+            2,
+            6,
+            dyn_off,
+            base + dyn_off,
+            base + dyn_off,
+            len(dyn),
+            len(dyn),
+            8,
+        )
+    else:
+        ehdr = ident + struct.pack(
+            bo + "HHIIIIIHHHHHH",
+            3,
+            3,
+            1,
+            0,
+            phoff,
+            0,
+            0,
+            ehsize,
+            phentsize,
+            2,
+            40,
+            0,
+            0,
+        )
+        load = struct.pack(bo + "IIIIIIII", 1, 0, base, base, total, total, 5, 0x1000)
+        dynph = struct.pack(
+            bo + "IIIIIIII",
+            2,
+            dyn_off,
+            base + dyn_off,
+            base + dyn_off,
+            len(dyn),
+            len(dyn),
+            6,
+            4,
+        )
+    return ehdr + load + dynph + strtab + dyn
+
+
+@pytest.mark.parametrize("is64", [True, False])
+def test_elf_dynamic_reads_needed_and_runpath(tmp_path: Path, is64: bool) -> None:
+    p = tmp_path / "smtpd"
+    p.write_bytes(
+        _elf_dyn(["libpostfix-tls.so", "libc.so.6"], "/usr/lib64/postfix", is64)
+    )
+    with p.open("rb") as fh:
+        assert rs.elf_dynamic(fh) == {
+            "needed": ["libpostfix-tls.so", "libc.so.6"],
+            "runpath": ["/usr/lib64/postfix"],
+        }
+
+
+def test_elf_dynamic_static_not_elf_and_truncated(tmp_path: Path) -> None:
+    static = tmp_path / "static"
+    static.write_bytes(_elf(interp=False, buildinfo=None))
+    with static.open("rb") as fh:
+        assert rs.elf_dynamic(fh) == {"needed": [], "runpath": []}
+    script = tmp_path / "script"
+    script.write_bytes(b"#!/bin/sh\n")
+    with script.open("rb") as fh:
+        assert rs.elf_dynamic(fh) is None
+    cut = tmp_path / "cut"
+    cut.write_bytes(_elf_dyn(["libssl.so.3"])[:70])
+    with cut.open("rb") as fh, pytest.raises((ValueError, struct.error)):
+        rs.elf_dynamic(fh)
+
+
+def _postfix(host: FakeHost, *, layout: str = "el") -> None:
+    """Postfix as measured on Rocky 9 / Ubuntu 26.04 (#240): master owns :25
+    and maps no crypto library; smtpd links libpostfix-tls.so (via RPATH or
+    RUNPATH), which links libssl/libcrypto."""
+    if layout == "el":
+        daemon, private, libdir = (
+            "/usr/libexec/postfix",
+            "/usr/lib64/postfix",
+            "/usr/lib64",
+        )
+    else:
+        daemon, private, libdir = (
+            "/usr/lib/postfix/sbin",
+            "/usr/lib/postfix",
+            "/usr/lib/x86_64-linux-gnu",
+        )
+    host.file(f"{libdir}/libc.so.6", _elf_dyn([]))
+    host.file(f"{libdir}/libcrypto.so.3", LIBCRYPTO)
+    host.file(f"{libdir}/libssl.so.3", _elf_dyn(["libcrypto.so.3", "libc.so.6"]))
+    host.file(f"{private}/libpostfix-util.so", _elf_dyn(["libdb-5.3.so", "libc.so.6"]))
+    host.file(
+        f"{private}/libpostfix-tls.so",
+        _elf_dyn(["libssl.so.3", "libcrypto.so.3", "libc.so.6"]),
+    )
+    host.file(f"{daemon}/master", _elf_dyn(["libpostfix-util.so"], private))
+    host.file(f"{daemon}/qmgr", _elf_dyn(["libpostfix-util.so"], private))
+    host.file(f"{daemon}/postfix-script", b"#!/bin/sh\n")
+    host.file(
+        f"{daemon}/smtpd",
+        _elf_dyn(["libpostfix-tls.so", "libpostfix-util.so", "libc.so.6"], private),
+    )
+    host.net(1, "tcp", [(_hex_v4("0.0.0.0", 25), ANY4, "0A", 7001)])
+    libc_map = f"7f00-7f01 r-xp 00000000 fd:00 9 {libdir}/libc.so.6\n"
+    unit = "0::/system.slice/postfix.service\n"
+    host.process(
+        900,
+        comm="master",
+        sockets=(7001,),
+        exe_path=f"{daemon}/master",
+        cgroup=unit,
+        maps=libc_map,
+    )
+    host.process(
+        901,
+        comm="qmgr",
+        exe_path=f"{daemon}/qmgr",
+        cgroup=unit,
+        ppid=900,
+        maps=libc_map,
+    )
+
+
+@pytest.mark.parametrize("layout", ["el", "debian"])
+def test_idle_master_takes_crypto_from_worker_binaries(
+    host: FakeHost, layout: str
+) -> None:
+    # Regression for #240: an idle Postfix (no smtpd running) used to report
+    # :25 with no crypto library, so the deployment-gap verdict skipped it.
+    _postfix(host, layout=layout)
+    entry = _by_port(rs.scan_services(), "tcp", 25)
+    assert entry["process"] == "master" and entry["pid"] == 900
+    assert {(lib["family"], lib["version"]) for lib in entry["crypto_libraries"]} == {
+        ("openssl", "3.5.9")
+    }
+    daemon = "/usr/libexec/postfix" if layout == "el" else "/usr/lib/postfix/sbin"
+    assert entry["crypto_libraries_from"] == {
+        "source": "worker-binary",
+        "binary": f"{daemon}/smtpd",
+    }
+
+
+def test_master_takes_crypto_from_worker_holding_the_socket(host: FakeHost) -> None:
+    # After a connection, smtpd holds the inherited listening socket and maps
+    # libssl itself: that process is the evidence, not the binaries on disk.
+    _postfix(host)
+    smtpd_maps = (
+        "7f10-7f11 r-xp 00000000 fd:00 1 /usr/lib64/libcrypto.so.3\n"
+        "7f12-7f13 r-xp 00000000 fd:00 2 /usr/lib64/libssl.so.3\n"
+    )
+    host.process(
+        950,
+        comm="smtpd",
+        sockets=(7001,),
+        maps=smtpd_maps,
+        exe_path="/usr/libexec/postfix/smtpd",
+        ppid=900,
+    )
+    entry = _by_port(rs.scan_services(), "tcp", 25)
+    assert entry["pid"] == 900 and entry["pids"] == [900, 950]
+    assert entry["crypto_libraries_from"]["source"] == "socket-holder"
+    assert entry["crypto_libraries_from"]["pid"] == 950
+    assert entry["crypto_libraries_from"]["process"] == "smtpd"
+    assert {lib["version"] for lib in entry["crypto_libraries"]} == {"3.5.9"}
+
+
+def test_master_takes_crypto_from_a_descendant(host: FakeHost) -> None:
+    # A worker that maps the TLS library but doesn't hold the socket (e.g.
+    # tlsmgr) settles which library the daemon uses.
+    _postfix(host)
+    host.process(
+        960,
+        comm="tlsmgr",
+        maps=(
+            "7f10-7f11 r-xp 00000000 fd:00 1 /usr/lib64/libcrypto.so.3\n"
+            "7f12-7f13 r-xp 00000000 fd:00 2 /usr/lib64/libssl.so.3\n"
+        ),
+        exe_path="/usr/libexec/postfix/tlsmgr",
+        ppid=900,
+    )
+    entry = _by_port(rs.scan_services(), "tcp", 25)
+    assert entry["crypto_libraries_from"]["source"] == "descendant"
+    assert entry["crypto_libraries_from"]["process"] == "tlsmgr"
+
+
+def test_libcrypto_only_descendant_loses_to_a_tls_linked_worker_binary(
+    host: FakeHost,
+) -> None:
+    # Measured on Rocky 9.8: an idle Postfix's pickup maps libcrypto (not
+    # libssl).  That is weaker evidence than smtpd's link to libssl, so the
+    # worker binary wins; the libcrypto-only process is a last resort.
+    _postfix(host)
+    host.process(
+        961,
+        comm="pickup",
+        maps="7f10-7f11 r-xp 00000000 fd:00 1 /usr/lib64/libcrypto.so.3\n",
+        exe_path="/usr/libexec/postfix/pickup",
+        ppid=900,
+    )
+    entry = _by_port(rs.scan_services(), "tcp", 25)
+    assert entry["crypto_libraries_from"] == {
+        "source": "worker-binary",
+        "binary": "/usr/libexec/postfix/smtpd",
+    }
+
+
+def test_libcrypto_only_descendant_is_the_last_resort(host: FakeHost) -> None:
+    host.file("/usr/lib64/libcrypto.so.3", LIBCRYPTO)
+    host.file("/opt/d/daemon", _elf_dyn(["libc.so.6"]))
+    host.file("/opt/d/helper", _elf_dyn(["libc.so.6"]))
+    host.net(1, "tcp", [(_hex_v4("0.0.0.0", 9100), ANY4, "0A", 7301)])
+    host.process(990, comm="daemon", sockets=(7301,), exe_path="/opt/d/daemon")
+    host.process(
+        991,
+        comm="helper",
+        maps="7f10-7f11 r-xp 00000000 fd:00 1 /usr/lib64/libcrypto.so.3\n",
+        exe_path="/opt/d/helper",
+        ppid=990,
+    )
+    entry = _by_port(rs.scan_services(), "tcp", 9100)
+    assert entry["crypto_libraries_from"]["source"] == "descendant"
+    assert entry["crypto_libraries_from"]["process"] == "helper"
+
+
+def test_standalone_daemon_does_not_borrow_sibling_binaries(host: FakeHost) -> None:
+    # No workers: a daemon in a shared private directory (here one beside a
+    # binary that links libcrypto) must not be credited with that library.
+    host.file("/usr/lib64/libcrypto.so.3", LIBCRYPTO)
+    host.file("/usr/lib/systemd/systemd-networkd", _elf_dyn(["libc.so.6"]))
+    host.file("/usr/lib/systemd/systemd-resolved", _elf_dyn(["libcrypto.so.3"]))
+    host.net(1, "udp", [(_hex_v4("0.0.0.0", 68), ANY4, "07", 7101)])
+    host.process(
+        970,
+        comm="systemd-network",
+        sockets=(7101,),
+        exe_path="/usr/lib/systemd/systemd-networkd",
+    )
+    entry = _by_port(rs.scan_services(), "udp", 68)
+    assert entry["crypto_libraries"] == [] and "crypto_libraries_from" not in entry
+
+
+def test_workers_in_shared_bin_dirs_are_not_scanned(host: FakeHost) -> None:
+    host.file("/usr/lib64/libcrypto.so.3", LIBCRYPTO)
+    host.file("/usr/bin/openssl", _elf_dyn(["libcrypto.so.3"]))
+    host.file("/usr/bin/sh", _elf_dyn(["libc.so.6"]))
+    host.file("/opt/srv/srv", _elf_dyn(["libc.so.6"]))
+    host.net(1, "tcp", [(_hex_v4("0.0.0.0", 9000), ANY4, "0A", 7201)])
+    host.process(980, comm="srv", sockets=(7201,), exe_path="/opt/srv/srv")
+    host.process(981, comm="sh", exe_path="/usr/bin/sh", ppid=980)
+    entry = _by_port(rs.scan_services(), "tcp", 9000)
+    assert entry["crypto_libraries"] == []
