@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Collect one CycloneDX CBOM per host for a cryptographic posture
+# platform or other CBOM importer (docs/integrations/posture-platforms.md).
+#
+# Each target runs the zipapp with --cbom and writes the document on the
+# target with --output (atomic write); the controller fetches it to
+#
+#   {{ cbom_dir }}/<inventory_hostname>.cdx.json
+#
+# One file per host, named by host, so an importer can replace the
+# previous document for the same host on every run.
+#
+# Build the zipapp first on the controller: python3 scripts/build_zipapp.py
+# Passes `ansible-playbook --syntax-check` with `ansible-core 2.21.5`.
+---
+- name: Collect a CBOM from every target
+  hosts: pqc_targets
+  gather_facts: false
+  # Root sees every service, key and configuration file; without it the
+  # CBOM still renders but lists less. Override with -e pqc_become=false.
+  become: "{{ pqc_become | default(true) }}"
+  vars:
+    cbom_dir: "{{ playbook_dir }}/.cbom"
+    target_output: /var/tmp/pqc-readiness.cdx.json
+    cbom_flags: >-
+      --cbom --cbom-version 1.7
+      --scan-packages --scan-trust-store --scan-crypto-material
+      --scan-crypto-libraries --scan-services --scan-signing-keys
+  tasks:
+    - name: Write the CBOM on the target
+      ansible.builtin.script:
+        cmd: "../../dist/pqc-readiness.pyz {{ cbom_flags }} --output {{ target_output }}"
+      register: pqc_run
+      changed_when: false
+      # Exit codes 0-3 are the readiness verdict, not failures.
+      failed_when: pqc_run.rc not in [0, 1, 2, 3]
+
+    - name: Fetch the CBOM to the controller
+      ansible.builtin.fetch:
+        src: "{{ target_output }}"
+        dest: "{{ cbom_dir }}/{{ inventory_hostname }}.cdx.json"
+        flat: true

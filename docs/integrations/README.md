@@ -12,6 +12,7 @@ says what was tested, on which version and date, and what wasn't.
 | SUSE Multi-Linux Manager / Uyuni | `--json`, `--ndjson` | [suse-multi-linux-manager.md](suse-multi-linux-manager.md) | No: tested against a local XML-RPC stand-in |
 | ACM and Compliance Operator | per-node summary ConfigMaps | [openshift-node-summaries.md](openshift-node-summaries.md) | No: manifests validated, not run on a cluster |
 | SBOM and supply-chain graph tools | `--sbom` | [sbom-graph-tools.md](sbom-graph-tools.md) | No: schema-validated only |
+| Cryptographic posture platforms (CBOM importers) | `--cbom` | [posture-platforms.md](posture-platforms.md) | No: CBOMs, joins and merges validated with the CycloneDX CLI and schemas; no platform import |
 
 Related recipes elsewhere in `docs/`:
 
