@@ -805,11 +805,16 @@ def _linked_crypto_libraries(
         if not dyn:
             continue
         origin = os.path.dirname(path)
+        # DT_NEEDED / RUNPATH come from files on the scanned host: keep
+        # every lookup inside the root.  Normalising an absolute path drops
+        # any "..", and a needed name may not be a path of its own.
         dirs = [
-            d.replace("${ORIGIN}", origin).replace("$ORIGIN", origin)
+            os.path.normpath(d.replace("${ORIGIN}", origin).replace("$ORIGIN", origin))
             for d in dyn["runpath"]
         ] + lib_dirs
         for name in dyn["needed"]:
+            if "/" in name or name in ("", ".", ".."):
+                continue
             if name in seen or _NOT_FOLLOWED.match(name):
                 continue
             seen.add(name)

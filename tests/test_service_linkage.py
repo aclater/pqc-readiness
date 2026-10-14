@@ -993,3 +993,27 @@ def test_workers_in_shared_bin_dirs_are_not_scanned(host: FakeHost) -> None:
     host.process(981, comm="sh", exe_path="/usr/bin/sh", ppid=980)
     entry = _by_port(rs.scan_services(), "tcp", 9000)
     assert entry["crypto_libraries"] == []
+
+
+def test_worker_binary_lookups_stay_inside_the_root(host: FakeHost) -> None:
+    # DT_NEEDED and RUNPATH are read from files on the scanned host: a name
+    # with a path in it or a RUNPATH climbing out with ".." must not make
+    # the scanner read outside the process's root (AI review on #250).
+    outside = host.root / "outside"
+    outside.mkdir()
+    (outside / "libssl.so.3").write_bytes(_elf_dyn(["libcrypto.so.3"]))
+    (outside / "libcrypto.so.3").write_bytes(LIBCRYPTO)
+    host.file(
+        "/opt/evil/worker",
+        # From /opt/evil, three ".." reach the directory above the root.
+        _elf_dyn(
+            ["../../../outside/libssl.so.3", "libssl.so.3"],
+            "/opt/evil:/opt/evil/../../../outside",
+        ),
+    )
+    host.file("/opt/evil/daemon", _elf_dyn(["libc.so.6"]))
+    host.net(1, "tcp", [(_hex_v4("0.0.0.0", 9200), ANY4, "0A", 7401)])
+    host.process(995, comm="daemon", sockets=(7401,), exe_path="/opt/evil/daemon")
+    host.process(996, comm="worker", exe_path="/opt/evil/worker", ppid=995)
+    entry = _by_port(rs.scan_services(), "tcp", 9200)
+    assert entry["crypto_libraries"] == [] and "crypto_libraries_from" not in entry
