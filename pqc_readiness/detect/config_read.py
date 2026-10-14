@@ -31,6 +31,10 @@ PERMISSION_HINT = "run as root or with CAP_DAC_READ_SEARCH"
 
 _ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR})
 
+# Every config read is capped: a scanned tree may be hostile, and real
+# configs are a few KiB.
+DEFAULT_MAX_BYTES = 1024 * 1024
+
 
 class ConfigUnreadable(Exception):
     """A host config path exists (or may exist) but can't be read."""
@@ -67,10 +71,12 @@ def host_file(path: str) -> Path:
     return Path(_platform.HOST_PREFIX + resolved)
 
 
-def read_host_text(path: str, max_bytes: int | None = None) -> str | None:
+def read_host_text(path: str, max_bytes: int = DEFAULT_MAX_BYTES) -> str | None:
     """Text of host config file `path`; None when it doesn't exist.
     Raises ConfigUnreadable when it exists but can't be read, isn't a
-    regular file, or is larger than `max_bytes`."""
+    regular file, or is larger than `max_bytes`.  The read itself is
+    bounded too, since st_size can understate (a file growing after
+    stat(), or a pseudo-file reporting 0)."""
     p = host_file(path)
     try:
         st = p.stat()
@@ -81,15 +87,22 @@ def read_host_text(path: str, max_bytes: int | None = None) -> str | None:
         raise ConfigUnreadable(path, reason) from e
     if not stat.S_ISREG(st.st_mode):
         raise ConfigUnreadable(path, "not a regular file")
-    if max_bytes is not None and st.st_size > max_bytes:
-        raise ConfigUnreadable(path, f"larger than {max_bytes} bytes; skipped")
+    too_big = ConfigUnreadable(path, f"larger than {max_bytes} bytes; skipped")
+    if st.st_size > max_bytes:
+        raise too_big
     try:
-        return p.read_text(errors="replace")
+        with p.open("rb") as f:
+            data = f.read(max_bytes + 1)
     except OSError as e:
         reason = reason_for(e)
         if reason is None:  # removed between stat() and open()
             return None
         raise ConfigUnreadable(path, reason) from e
+    if len(data) > max_bytes:
+        raise too_big
+    # Universal newlines, as Path.read_text() gave the parsers before.
+    text = data.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def list_host_dir(path: str) -> list[str] | None:

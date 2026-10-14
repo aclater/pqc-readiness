@@ -93,6 +93,20 @@ def test_reader_unsearchable_parent_is_unreadable_not_absent(host, locked) -> No
     assert cr.probe("/etc/priv/a.conf") is not None
 
 
+def test_reader_caps_by_default(host) -> None:
+    # Callers that pass no limit (crypto-policies, openssl.cnf) are still
+    # bounded: a hostile --root tree can't make the scan read a huge file.
+    _tree(host, {"/etc/huge.conf": "x" * (cr.DEFAULT_MAX_BYTES + 1)})
+    with pytest.raises(cr.ConfigUnreadable, match="larger than"):
+        cr.read_host_text("/etc/huge.conf")
+
+
+def test_reader_keeps_universal_newlines(host) -> None:
+    (host / "etc").mkdir()
+    (host / "etc/crlf.conf").write_bytes(b"a\r\nb\rc\n")
+    assert cr.read_host_text("/etc/crlf.conf") == "a\nb\nc\n"
+
+
 def test_reader_size_cap(host) -> None:
     _tree(host, {"/etc/big.conf": "x" * 100})
     with pytest.raises(cr.ConfigUnreadable, match="larger than 10 bytes"):

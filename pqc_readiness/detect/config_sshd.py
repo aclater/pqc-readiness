@@ -62,8 +62,6 @@ DEFAULT_HOST_KEYS = (
     "/etc/ssh/ssh_host_ed25519_key",
 )
 _MAX_INCLUDE_DEPTH = 16
-# sshd configs are a few KiB; a huge file is not a config to parse.
-_MAX_CONFIG_BYTES = 1024 * 1024
 _KEYWORDS = ("kexalgorithms", "hostkeyalgorithms")
 
 
@@ -83,7 +81,7 @@ def _read_host_file(path: str) -> str | None:
 def _read_config(path: str) -> str | None:
     """Config file text; None when absent.  Raises ConfigUnreadable when
     the file exists but this user can't read it (#232)."""
-    return _config_read.read_host_text(path, max_bytes=_MAX_CONFIG_BYTES)
+    return _config_read.read_host_text(path)
 
 
 def _glob_host(pattern: str) -> list[str]:
