@@ -32,7 +32,7 @@
 #     --build-arg BASE=localhost/pqc-readiness:ubi10 \
 #     -f deploy/openshift/services/Containerfile .
 
-ARG BASE=ghcr.io/aclater/pqc-readiness:2.2.0
+ARG BASE=ghcr.io/aclater/pqc-readiness:2.3.0
 FROM ${BASE}
 
 LABEL org.opencontainers.image.title="pqc-readiness-services"

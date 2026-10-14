@@ -8,10 +8,10 @@ from typing import Any
 from . import algorithms as _algorithms
 
 
-SCRIPT_VERSION = "2.2.0"
+SCRIPT_VERSION = "2.3.0"
 
 
-SCHEMA_VERSION = "1.6"
+SCHEMA_VERSION = "1.7"
 
 
 # ---------------------------------------------------------------------------

@@ -127,7 +127,7 @@ spec:
           # 2.2.0-ubi8 / 2.2.0-debian for the other bases), signed with
           # cosign.  Pin by digest in production: the release's
           # container-images.txt asset lists every digest.
-          image: ghcr.io/aclater/pqc-readiness:2.2.0
+          image: ghcr.io/aclater/pqc-readiness:2.3.0
           imagePullPolicy: IfNotPresent
           # Re-runs the probe every PQC_PROBE_INTERVAL seconds; default
           # 1 hour.  Each iteration writes a timestamped JSON to the

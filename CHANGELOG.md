@@ -11,175 +11,191 @@ JSON reports carry `schema_version`. The fleet aggregator only merges
 reports with the same schema version, so re-scan after an upgrade that
 changes it.
 
-## Unreleased
-
-- **OpenShift manifests work on a fresh cluster** (#220). `oc apply -k
-  deploy/openshift` now creates the `pqc-readiness` namespace; the base SCC
-  allows the seccomp `RuntimeDefault` profile the pod requests (admission
-  rejected every pod before); both DaemonSets write reports to an
-  `emptyDir`, because the non-root pod couldn't write the `hostPath`
-  directory the kubelet creates.
-- **Reports from a DaemonSet name the node, not the pod** (#220). The
-  scanner takes `hostname` from `PQC_HOSTNAME` (set from `spec.nodeName` by
-  both DaemonSets), then from the host's `/etc/hostname` under
-  `--host-mount`.
-- Live run on OpenShift 4.22 with the Compliance Operator, recorded in
-  [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md).
-- **The services image gets its SBOM attestation** (#230). The release
-  workflow now attests a CycloneDX package SBOM for
-  `pqc-readiness-services`, as it already did for the other images. The
-  published 2.2.0 services image was backfilled through a new attest-only
-  dispatch mode that attests an existing digest without rebuilding or
-  moving tags (#251).
-- **An unreadable path no longer aborts the scan** (#229). On Python
-  3.9-3.12, a directory the scanner can't read (an SELinux or AppArmor
-  denial in a confined container, a 0700 directory on bare metal) raised
-  `PermissionError` and the run ended with a traceback. Now that path reads
-  as absent for the one detection that needed it, and an opt-in scan that
-  still hits an unreadable path reports `available: false` with the path
-  in `reason` while every other section completes.
-- **CBOMs join with SBOMs and with each other** (#222). Library components
-  for a package the scan resolved carry the same exact purl `--sbom` emits
-  (full version-release, `arch`, `epoch`), so a purl join between a host's
-  CBOM and SBOM matches. `packages.bundled_crypto` and
-  `crypto_libraries.libraries.<lib>.packages` gain `release`, `epoch` and
-  `arch` where the database records them. New `--host-name NAME` names the
-  host in every output; offline `--root` trees without `/etc/hostname` no
-  longer all come out as `host/unknown`. New opt-in
-  `--cbom-namespaced-properties` prefixes every CBOM property name with
-  `pqc-readiness:`.
-- **The launcher spots a stripped Python** (#226). An interpreter that
-  reports 3.9+ but can't import the standard-library modules the scanner
-  loads (OpenWrt's `python3-light` has no `logging`) is skipped instead of
-  run into a `ModuleNotFoundError`; if it's the only one, the launcher says
-  so and exits 127. OpenWrt hosts get their own install hint
-  (`opkg install python3` up to 24.10, `apk add python3` from 25.12).
-- **OpenSSL facts come from the host, not the scanner image** (#228). Under
-  `--host-mount` (every DaemonSet and quadlet deployment) `openssl.version`
-  and `pqc_native` were the scanner image's, so a node with OpenSSL 3.0 or
-  3.2 was reported PQC-capable. They now come from the host's OpenSSL
-  package, else its libcrypto file (`openssl.version_source`); the
-  CLI-only lists (algorithms, TLS groups, providers) are `null` with the
-  reason in `openssl.cli_probe`, and the verdict, pqc-001, pqc-008 and the
-  FIPS check fall back to the host's version.
-- **Hosts with libcrypto but no `openssl` CLI** (OpenWrt, minimal images)
-  report the library's version instead of "openssl not on PATH", so
-  pqc-001 fires for a pre-3.5 library (#225).
-- **`--sbom` covers OpenWrt and Yocto** (#227). Families without a package
-  tool are read from whichever database the tree has, as `--scan-packages`
-  does; before, the SBOM had no components on them. opkg packages get
-  `pkg:generic/<vendor>/…` (purl-spec has no opkg type), OpenWrt 25.12's apk
-  packages `pkg:apk/openwrt/…`, and Yocto packages the spec's recipe purl
-  `pkg:yocto/<recipe>@<PV>` from the rpm SOURCERPM tag. A Yocto image's OS
-  component comes from `/etc/buildinfo` when it has no os-release. Packages
-  that get no purl are counted (`pqc-readiness:sbom:packages-without-purl`)
-  instead of dropped silently.
-- **Kubernetes, RKE2, K3s and Rancher** (#219). `kubectl apply -k
-  deploy/kubernetes` runs the OpenShift DaemonSet unchanged except that Pod
-  Security Admission labels replace the SCC and `/var/lib` replaces the
-  rpm-only package-database mount; `deploy/kubernetes/services` is the
-  opt-in service-scan variant. CI builds both, validates them with
-  kubeconform and runs the posture tests. Live run on a Rancher-managed RKE2
-  cluster recorded in
-  [docs/examples/rancher-rke2-live.md](docs/examples/rancher-rke2-live.md).
-- **Unreadable config files are no longer reported as missing** (#232).
-  An unprivileged scan of a host whose `sshd_config` is `0600 root` (RHCOS)
-  said "no sshd_config found". sshd, crypto-policies, `openssl.cnf` and the
-  service TLS readers now tell *absent* from *unreadable*: the `reason` names
-  the file and says to run as root or with `CAP_DAC_READ_SEARCH`, a new
-  `unreadable` list carries `{path, reason}`, and the SSH gap row is
-  `unknown` with a note instead of `not_present`. If an unreadable sshd
-  Include comes before any `KexAlgorithms`, `kex_source` is
-  `unreadable-config` and the offered list is null. Service configs move
-  includes of absent files from `unreadable` to a new `missing` list.
-- **Postfix and other master/worker daemons get a deployment-gap verdict**
-  (#240). Postfix's `master` owns ports 25/587 but never loads OpenSSL; its
-  `smtpd` workers do. `--scan-services` reported those listeners with no
-  crypto library, so `pqc_deployment_gap.services` skipped them. Such a
-  listener now takes its libraries from a worker holding the socket, a
-  descendant process, or (when no worker is running) the libraries a worker
-  executable links, and says which in the new
-  `service_crypto_linkage.listeners[].crypto_libraries_from`.
-- **Findings name the container and pod** (#233). A listener in a
-  Kubernetes container used to be named by its `crio-<64 hex>.scope` unit.
-  `--scan-services` now reports each listener's `container` (runtime, ID,
-  pod UID, and pod, namespace and container names read from the kubelet's
-  `/var/log/containers` entries), and SARIF/NDJSON messages say e.g.
-  `multus-admission-controller (pod openshift-multus/...)`. Process names
-  cut at 15 characters fall back to the executable's name. In a DaemonSet
-  the names need `/var/log/containers` mounted.
-- **Offline `--root` scans never describe the scanning machine** (#258). A
-  tree without `os-release` was reported as the scanner's own kernel
-  ("Linux 7.2.10-…"); now its OS comes from `/etc/buildinfo` (Yocto) or
-  `/etc/openwrt_release`, or is `null` with a `reason`
-  (`os_release.source` / `os_release.reason`, additive).
-  `os_release.package_manager` is looked up in the tree, not on the
-  scanner's `PATH`, and repo `$basearch` is the tree's architecture.
-  Absolute symlinks inside a tree are now resolved inside it everywhere: an
-  `/etc/os-release -> /usr/lib/os-release` link used to report the
-  scanning machine's OS, and linked trust-store certificates, libraries,
-  JDKs, the rpm database file, IKE includes and linked config directories
-  were read from (or missed on) the scanning machine.
-- **Process groups name their containers and pods** (#262).
-  `--scan-processes` groups now carry `containers` (the same identity
-  `--scan-services` listeners got in #233, at most ten per group, plus
-  `containers_omitted`) and `container_processes`. The text report and
-  `pqc-020` client entries name a group in one container as e.g.
-  `proxy (pod shop/web-0)`, and one spread over several containers by
-  executable with a count.
-
 | Version | Date | JSON schema |
 | --- | --- | --- |
+| [2.3.0](#230---2026-10-14-host-accurate-results-embedded-systems-and-joinable-outputs-schema-17) | 2026-10-14 | 1.7 |
 | [2.2.0](#220---2026-10-13-deployment-gap-verdict-and-pqc-failure-findings-schema-16) | 2026-10-13 | 1.6 |
 | [2.1.0](#210---2026-10-13-one-package-configuration-aware-detection-schema-15) | 2026-10-13 | 1.5 |
 | [Before 2.1.0](#before-210---2026-10-13-accuracy-fixes-faster-scans-schema-14) | 2026-10-13 | 1.4 |
-- **--cbom and --sbom name packages with the same purl on every family**
-  (#257). The CBOM now looks up the purl `--sbom` emits for a package
-  instead of rebuilding it, so the package database kind, Yocto's
-  `/etc/buildinfo` and recipe, and OpenWrt's opkg/apk types match. On the
-  official OpenWrt 24.10.8 and 25.12.5 and Yocto 6.0.3 images, every
-  distro library purl in the CBOM now appears verbatim in the SBOM; before,
-  OpenWrt and Yocto libraries got `pkg:generic/…` (or no join at all).
-- **Purls use the canonical percent-encoding** (#243): `+` is written
-  `%2B` and `:` is left as is, per ECMA-427 clause 5.4, in both `--sbom`
-  and `--cbom`. **Behaviour change for importers:** a version such as
-  `5.2.37-2+b10` now appears as `pkg:deb/debian/bash@5.2.37-2%2Bb10?…`
-  and a Debian epoch as `1:2.41.5-0%2Bdeb13u1` (it was `1%3A…`). Tools that
-  compare purls as strings will see these as new identifiers once;
-  spec-conformant tools decode both forms to the same package.
-  `deploy/cbom/cbom_tools.py join-packages` decodes before comparing, so it
-  joins either form.
-- **Offline `--root` scans report sshd's key exchange** (#247). They used
-  to leave `sshd` empty, so the SSH gap row read `not_present` even for a
-  tree with a configured sshd.
-  The tree's `sshd_config` and its `Include` chain are now parsed inside the
-  root (never `sshd -T`), and OpenSSH's PQC capability comes from the kex
-  methods compiled into the tree's `ssh` / `sshd` / `sshd-session`
-  binaries (`sshd.openssh_kex_evidence`), which keeps distro backports
-  right where a version table would not. When nothing sets KexAlgorithms,
-  the compiled-in default is read from the server binary if it holds a
-  single kex list (`sshd.kex_default_source`). The gap row and `pqc-010`
-  now work offline. Checked against booted Rocky 9, Fedora 44, Ubuntu
-  26.04, Leap 16 and Tumbleweed images: the parsed list equals `sshd -T`
-  and the binary's PQC methods equal `ssh -Q kex` on all five.
-- **OpenSSH is read from the host under `--host-mount` and `--root`**
-  (#256). `ssh_pqc` came from the scanner's own `ssh -V` / `ssh -Q kex`, so
-  every DaemonSet scan reported the image's OpenSSH 9.9p1 and its ML-KEM
-  kex: a Leap 16 node runs 10.0p2, and an Ubuntu 24.04 node (9.6p1) has
-  only the sntrup761 hybrid. The version and kex list now come from the
-  host's binaries, read the way #247 reads them offline, with the host's
-  OpenSSH package as the version fallback. New `ssh_pqc.version_source`,
-  `kex_source`, `package`, `binaries`, `cli_probe` and
-  `scanner_cli_version`. Offline `--root` scans now answer `ssh_pqc` from
-  the tree (it was not applicable), and a host with sshd but no `ssh`
-  client is no longer reported as having no OpenSSH.
-- **Kex methods read from OpenSSH binaries are exact on more builds**
-  (#256, refines #247). A name now counts only when the binary's kex table
-  points at it: plain string matching missed two methods on Alpine, whose
-  linker stores table names at the end of proposal lists, and Alpine's
-  `/usr/lib/ssh/sshd-session` wasn't searched. The list equals `ssh -Q
-  kex` on Fedora 44, Rocky 9, Leap 16, Ubuntu 24.04, Debian 13 and Alpine
-  3.22 (17 binaries).
+
+## Unreleased
+
+## 2.3.0 - 2026-10-14: host-accurate results, embedded systems and joinable outputs, schema 1.7
+
+Version **2.3.0**. All JSON changes are additive, so the schema goes to
+**1.7**. The fleet aggregator only merges reports with the same
+`schema_version`, so re-scan before mixing old and new reports.
+
+### Upgrade notes
+
+- **Package identifiers (purls) are canonical now** (#243). `+` is written
+  `%2B` and a Debian epoch keeps its `:` (it was `%3A`), per ECMA-427
+  clause 5.4, in both `--sbom` and `--cbom`. Tools that compare purls as
+  strings will see these as new identifiers once; spec-conformant tools
+  decode both forms to the same package. `deploy/cbom/cbom_tools.py
+  join-packages` decodes before comparing, so it joins either form.
+- **Under `--host-mount`, OpenSSL facts describe the host** (#228). Every
+  DaemonSet and quadlet deployment uses `--host-mount`, and until now
+  `openssl.version` and `pqc_native` were the scanner image's. They now come
+  from the host's OpenSSL package or libcrypto (`openssl.version_source`).
+  The CLI-only lists (algorithms, TLS groups, providers) are `null`, with
+  the reason in `openssl.cli_probe`. As a result **CNSA 2.0 reads `partial`
+  instead of `compliant`** in container scans: the old `compliant` came
+  from the image's algorithm lists, not the host's. OpenSSH is read from
+  the host the same way (#256): `ssh_pqc.version` and its kex list come
+  from the host's binaries or package, so a node can lose an ML-KEM kex it
+  was wrongly credited with (an Ubuntu 24.04 node has only sntrup761).
+- **Re-scan your fleet** after upgrading: schema 1.7 reports won't merge
+  with 1.6 ones.
+
+### New detections
+
+- **Per-service TLS configuration** (#216). `--scan-service-configs`
+  (implied by `--scan-services`) reads the TLS settings of nginx, Apache
+  httpd, HAProxy, stunnel, Squid, Postfix, Dovecot, PostgreSQL,
+  MariaDB/MySQL, Redis/Valkey, OpenLDAP, 389 Directory Server and Tomcat,
+  following includes, live, offline and under `--host-mount`. A daemon that
+  pins classical groups decides its own deployment-gap verdict, and SARIF
+  rule `pqc-021` reports each blocked endpoint with file and line. New
+  top-level key `service_tls_config`; new Prometheus metric
+  `pqc_readiness_service_tls_endpoints`. On booted Rocky 9, CentOS Stream
+  10, Fedora 44 and Ubuntu 26.04, the verdict matched the group an ML-KEM
+  client actually negotiated on all 50 endpoints compared.
+- **Embedded and minimal systems** (#217). OpenWrt is its own OS family.
+  Families without a package tool (OpenWrt, Yocto, Buildroot) are
+  inventoried from whichever package database the tree has (rpm, dpkg, apk,
+  opkg or pacman), and package-less trees take library versions from the
+  strings the libraries embed. New Mbed TLS probe. OpenSSL-compatible forks
+  are no longer mistaken for OpenSSL. Checked against OpenWrt 24.10.8 and
+  25.12.5, Yocto 6.0.3 and a Buildroot 2026.08 image.
+- **Offline `--root` scans report sshd's key exchange** (#247). The tree's
+  `sshd_config` and its `Include` chain are parsed inside the root (never
+  `sshd -T`), and OpenSSH's PQC capability comes from the kex methods
+  compiled into the tree's binaries (`sshd.openssh_kex_evidence`), which
+  keeps distro backports right. The SSH gap row and `pqc-010` now work
+  offline. On booted Rocky 9, Fedora 44, Ubuntu 26.04, Leap 16 and
+  Tumbleweed images, the parsed list equals `sshd -T` and the binary's PQC
+  methods equal `ssh -Q kex`.
+- **Findings name the container and pod** (#233). A listener in a
+  Kubernetes container used to be named by its `crio-<64 hex>.scope` unit.
+  `--scan-services` now reports each listener's `container` (runtime, ID,
+  pod UID, and pod, namespace and container names from the kubelet's
+  `/var/log/containers` entries, a directory listing only), and SARIF/NDJSON
+  messages name the pod. Both DaemonSets mount `/var/log/containers`
+  read-only.
+- **Process groups name their containers and pods** (#262).
+  `--scan-processes` groups carry `containers` (the same identity listeners
+  got in #233, at most ten per group, plus `containers_omitted`) and
+  `container_processes`. The text report and `pqc-020` client entries name
+  a group in one container as e.g. `proxy (pod shop/web-0)`.
+- **Postfix and other master/worker daemons get a verdict** (#240). A
+  listener whose owner maps no TLS library takes its libraries from a worker
+  holding the socket, a descendant process, or the libraries a worker
+  executable links, and says which in
+  `service_crypto_linkage.listeners[].crypto_libraries_from`.
+- **Hosts with libcrypto but no `openssl` CLI** (OpenWrt, minimal images)
+  report the library's version instead of "openssl not on PATH", so
+  `pqc-001` fires for a pre-3.5 library (#225).
+
+### Results that were wrong, now fixed
+
+- **OpenSSL version and PQC capability in container scans** came from the
+  scanner image (#228, see the upgrade notes). On OpenShift 4.22 the scan
+  now reports the node's OpenSSL 3.5.5, which sshd and haproxy actually
+  load, instead of the image's 3.5.8.
+- **OpenSSH version and kex list in container scans** came from the
+  scanner image (#256): every DaemonSet scan reported the image's OpenSSH
+  9.9p1 and its ML-KEM kex, though a Leap 16 node runs 10.0p2 and an
+  Ubuntu 24.04 node (9.6p1) has only the sntrup761 hybrid. They now come
+  from the host's binaries, with its OpenSSH package as the version
+  fallback (`ssh_pqc.version_source`, `kex_source`, `package`, `binaries`,
+  `cli_probe`, `scanner_cli_version`). Offline `--root` scans now answer
+  `ssh_pqc` from the tree, and a host with sshd but no `ssh` client is no
+  longer reported as having no OpenSSH. Kex names read from binaries now
+  count only when the binary's kex table points at them, which is exact
+  on Alpine too: the list equals `ssh -Q kex` on Fedora 44, Rocky 9, Leap
+  16, Ubuntu 24.04, Debian 13 and Alpine 3.22.
+- **An unreadable path no longer aborts the scan** (#229). On Python
+  3.9-3.12, one directory the scanner couldn't read ended the run with a
+  traceback. Now only the detection that needed it is affected, and an
+  opt-in scan that hits one reports `available: false` with the path.
+- **Unreadable config files are no longer reported as missing** (#232). An
+  unprivileged scan of a host whose `sshd_config` is `0600 root` said "no
+  sshd_config found". sshd, crypto-policies, `openssl.cnf` and the service
+  TLS readers now tell absent from unreadable, with the file named in
+  `reason` and new `unreadable` and `missing` lists, and the SSH gap row is
+  `unknown` with a note instead of `not_present`.
+- **Offline `--root` scans never describe the scanning machine** (#258). A
+  tree without `os-release` was reported as the scanner's own kernel; now
+  its OS comes from `/etc/buildinfo` (Yocto) or `/etc/openwrt_release`, or
+  is `null` with a reason (`os_release.source`, `os_release.reason`). The
+  package manager and repository architecture come from the tree, and
+  absolute symlinks inside a tree resolve inside it everywhere: an
+  `/etc/os-release -> /usr/lib/os-release` link used to report the scanning
+  machine's OS, and linked certificates, libraries, JDKs, the rpm database
+  and config directories were read from the scanning machine.
+- **Offline scans never write to the scanned tree** (#224). A WAL rpm
+  database is opened read-only and immutable, so no `rpmdb.sqlite-shm` is
+  created in the tree.
+- **Reports from a DaemonSet name the node, not the pod** (#220), from
+  `PQC_HOSTNAME` (set from `spec.nodeName`) or the host's `/etc/hostname`.
+
+### Outputs
+
+- **CBOMs and SBOMs name every package the same way** (#222, #257). CBOM
+  library components carry the exact purl `--sbom` emits (full
+  version-release, `arch`, `epoch`, the package database kind, Yocto
+  recipes, OpenWrt opkg/apk types), so a purl join between a host's CBOM
+  and SBOM matches on every family. `packages.bundled_crypto` and
+  `crypto_libraries.libraries.<lib>.packages` gain `release`, `epoch` and
+  `arch`.
+- **`--sbom` covers OpenWrt and Yocto** (#227): 129 of 129, 136 of 136 and
+  444 of 444 packages on the official OpenWrt 24.10.8, 25.12.5 and Yocto
+  6.0.3 images, matching each image's own package list.
+- **`--host-name NAME`** names the host in every output and every scan mode
+  (#222); offline trees without `/etc/hostname` no longer come out as
+  `host/unknown`.
+- **`--cbom-namespaced-properties`** (opt-in) prefixes every CBOM property
+  name with `pqc-readiness:` (#222).
+
+### Deployment
+
+- **Kubernetes, RKE2, K3s and Rancher** (#219). `kubectl apply -k
+  deploy/kubernetes` runs the OpenShift DaemonSet with Pod Security
+  Admission labels in place of the SCC; `deploy/kubernetes/services` is the
+  opt-in service-scan variant. Live run on a Rancher-managed RKE2 cluster
+  (Rocky Linux 10.2 and openSUSE Leap 16.0 nodes) in
+  [docs/examples/rancher-rke2-live.md](docs/examples/rancher-rke2-live.md).
+- **OpenShift manifests work on a fresh cluster** (#220): `oc apply -k
+  deploy/openshift` creates the namespace, the SCC allows the
+  `RuntimeDefault` seccomp profile the pod requests, and reports go to an
+  `emptyDir`. Live run on OpenShift 4.22 with the Compliance Operator in
+  [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md).
+- **The launcher spots a stripped Python** (#226). An interpreter that
+  reports 3.9+ but lacks standard-library modules the scanner needs
+  (OpenWrt's `python3-light`) is skipped, with an OpenWrt install hint
+  (`opkg install python3` up to 24.10, `apk add python3` from 25.12).
+
+### Supply chain
+
+- **Every image carries an SBOM attestation** (#230). The services image
+  now gets its CycloneDX SBOM attestation like the others, and the
+  published 2.2.0 services image was backfilled without a rebuild through a
+  new attest-only dispatch mode (#251).
+- **CI runs independent static analysis** (#235): CodeQL (security-extended)
+  and Semgrep community rules on every PR, and every workflow action is
+  pinned to a commit SHA, kept current by Dependabot.
+- **A second model reviews every PR** (#238), and its comments are answered
+  before merging.
+
+### Known limitations
+
+- The federal CBOM profile waits on CISA/NIST's minimum CBOM elements,
+  expected around March 2027 (#150).
+- wolfSSL in package-less images embeds no matchable version string, so
+  its version stays undetermined.
+- Under `--host-mount`, IPsec tool versions still come from the scanner
+  image (#265).
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 
