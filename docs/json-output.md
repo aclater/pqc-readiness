@@ -36,7 +36,7 @@ nothing was found.
 | --- | --- |
 | `schema_version` | Schema version string, currently `"1.6"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
-| `hostname` | Host's reported hostname. |
+| `hostname` | Host's reported hostname. `PQC_HOSTNAME` in the environment overrides it (the OpenShift DaemonSets set it to `spec.nodeName`); under `--host-mount` the host's `/etc/hostname` is used, because the container's own hostname is the pod name. |
 | `os` | Human-readable OS name: `os_release.pretty_name`, or `<system> <kernel release>` (e.g. `Linux 6.12.0`) when `/etc/os-release` gave none. |
 | `arch` | CPU architecture (`x86_64`, `aarch64`, `s390x`, …). |
 | `cpu_model` | CPU model string from `/proc/cpuinfo` or `sysctl`. |

@@ -277,3 +277,8 @@ def test_report_output_is_writable_by_the_non_root_pod(path: Path) -> None:
     assert "emptyDir" in vols["readiness-output"]
     assert "hostPath" not in vols["readiness-output"]
 
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_daemonset_reports_the_node_name(path: Path) -> None:
+    env = {e["name"]: e for e in _container(_docs(path)["DaemonSet"])["env"]}
+    assert env["PQC_HOSTNAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "spec.nodeName"

@@ -165,6 +165,21 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def _report_hostname() -> str:
+    """The scanned host's name.  PQC_HOSTNAME wins (DaemonSets set it to
+    spec.nodeName via the downward API).  Under --host-mount the container
+    has its own UTS namespace, so gethostname() is the pod name; use the
+    host's /etc/hostname when it has one (#220)."""
+    name = os.environ.get("PQC_HOSTNAME", "").strip()
+    if name:
+        return name
+    if _platform.HOST_PREFIX:
+        name = _runtime_offline.tree_hostname()
+        if name:
+            return name
+    return socket.gethostname()
+
+
 def collect_report(args: argparse.Namespace) -> _report.Report:
     """Run every host probe the CLI flags ask for and assemble the Report.
 
@@ -302,7 +317,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
 
     r = _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        hostname=socket.gethostname(),
+        hostname=_report_hostname(),
         os=os_release.get("pretty_name") or f"{platform.system()} {platform.release()}",
         arch=arch,
         cpu_model=_hardware.cpu_model(),

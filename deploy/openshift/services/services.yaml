@@ -154,6 +154,11 @@ spec:
                 sleep "$interval"
               done
           env:
+            # Report the node name, not the pod name (#220).
+            - name: PQC_HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: PQC_PROBE_INTERVAL
               value: "3600"
             - name: HOME
