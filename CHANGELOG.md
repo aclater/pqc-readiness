@@ -83,6 +83,16 @@ changes it.
   kubeconform and runs the posture tests. Live run on a Rancher-managed RKE2
   cluster recorded in
   [docs/examples/rancher-rke2-live.md](docs/examples/rancher-rke2-live.md).
+- **Unreadable config files are no longer reported as missing** (#232).
+  An unprivileged scan of a host whose `sshd_config` is `0600 root` (RHCOS)
+  said "no sshd_config found". sshd, crypto-policies, `openssl.cnf` and the
+  service TLS readers now tell *absent* from *unreadable*: the `reason` names
+  the file and says to run as root or with `CAP_DAC_READ_SEARCH`, a new
+  `unreadable` list carries `{path, reason}`, and the SSH gap row is
+  `unknown` with a note instead of `not_present`. If an unreadable sshd
+  Include comes before any `KexAlgorithms`, `kex_source` is
+  `unreadable-config` and the offered list is null. Service configs move
+  includes of absent files from `unreadable` to a new `missing` list.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |

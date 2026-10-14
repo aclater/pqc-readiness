@@ -35,6 +35,7 @@ from typing import Any, Callable
 
 from .. import _platform as _platform
 from . import config_policy as _config_policy
+from . import config_read as _config_read
 from . import packages as _packages
 from . import runtime as _runtime
 
@@ -113,6 +114,7 @@ def parse_openssl_cnf(
     sections: dict[str, dict[str, str]] = {}
     files: list[str] = []
     errors: list[str] = []
+    unreadable: list[dict[str, str]] = []
     seen: set[str] = set()
 
     def load(p: str, current: str, depth: int) -> str:
@@ -120,13 +122,23 @@ def parse_openssl_cnf(
             errors.append(p)
             return current
         seen.add(p)
-        entries = list_dir(p)
+        try:
+            entries = list_dir(p)
+        except _config_read.ConfigUnreadable as e:
+            errors.append(p)
+            unreadable.append(e.as_entry())
+            return current
         if entries is not None:
             for name in sorted(entries):
                 if name.endswith((".cnf", ".conf")):
                     current = load(f"{p.rstrip('/')}/{name}", current, depth + 1)
             return current
-        text = read(p)
+        try:
+            text = read(p)
+        except _config_read.ConfigUnreadable as e:
+            errors.append(p)
+            unreadable.append(e.as_entry())
+            return current
         if text is None:
             errors.append(p)
             return current
@@ -156,7 +168,12 @@ def parse_openssl_cnf(
         return current
 
     load(path, "default", 0)
-    return {"sections": sections, "files": files, "include_errors": errors}
+    return {
+        "sections": sections,
+        "files": files,
+        "include_errors": errors,
+        "unreadable": unreadable,
+    }
 
 
 def _section_value(
@@ -217,22 +234,31 @@ def _host_file(path: str) -> Path:
 
 
 def _read(path: str) -> str | None:
-    try:
-        return _host_file(path).read_text(errors="replace")
-    except (OSError, _packages.RpmdbError) as e:
-        log.debug("openssl config: cannot read %s: %s", path, e)
-        return None
+    """Config text; None when absent.  Raises ConfigUnreadable when the
+    file exists but can't be read (#232)."""
+    return _config_read.read_host_text(path)
 
 
 def _list_dir(path: str) -> list[str] | None:
+    """Entries of an include directory; None when `path` isn't one.
+    Raises ConfigUnreadable when it is one this user can't list."""
     try:
-        p = _host_file(path)
-        if not p.is_dir():
+        if not _host_file(path).is_dir():
             return None
-        return [e.name for e in p.iterdir() if e.is_file()]
     except (OSError, _packages.RpmdbError) as e:
-        log.debug("openssl config: cannot list %s: %s", path, e)
-        return None
+        reason = _config_read.reason_for(e) if isinstance(e, OSError) else str(e)
+        if reason is None:
+            return None
+        raise _config_read.ConfigUnreadable(path, reason) from e
+    return _config_read.list_host_dir(path)
+
+
+def _readable(path: str) -> bool:
+    """Whether config `path` exists and can be read (candidate search)."""
+    try:
+        return _read(path) is not None
+    except _config_read.ConfigUnreadable:
+        return False
 
 
 def _openssldir_from_binary() -> str | None:
@@ -251,10 +277,10 @@ def locate_openssl_config(family: str) -> tuple[str | None, str]:
         if env:
             return env, "OPENSSL_CONF"
         d = _openssldir_from_binary()
-        if d and _read(f"{d}/openssl.cnf") is not None:
+        if d and _readable(f"{d}/openssl.cnf"):
             return f"{d}/openssl.cnf", "OPENSSLDIR"
     for p in _CONFIG_CANDIDATES.get(family, _FALLBACK_CANDIDATES):
-        if _read(p) is not None:
+        if _readable(p):
             return p, "distribution default"
     return None, "not found"
 
@@ -265,10 +291,27 @@ def detect_openssl_config(
     family = (os_release or {}).get("family", "unknown")
     path, how = locate_openssl_config(family)
     if path is None:
-        out: dict[str, Any] = {
-            "available": False,
-            "reason": "no openssl.cnf found in the distribution's default locations",
-        }
+        unreadable = [
+            {"path": c, "reason": r}
+            for c in _CONFIG_CANDIDATES.get(family, _FALLBACK_CANDIDATES)
+            for r in [_config_read.probe(c)]
+            if r is not None
+        ]
+        out: dict[str, Any]
+        if unreadable:
+            out = {
+                "available": False,
+                "reason": (
+                    f"{unreadable[0]['path']} is not readable "
+                    f"({unreadable[0]['reason']})"
+                ),
+                "unreadable": unreadable,
+            }
+        else:
+            out = {
+                "available": False,
+                "reason": "no openssl.cnf found in the distribution's default locations",
+            }
     else:
         parsed = parse_openssl_cnf(path, _read, _list_dir)
         eff = effective_settings(parsed)
@@ -292,6 +335,7 @@ def detect_openssl_config(
             "path_source": how,
             "files": parsed["files"],
             "include_errors": parsed["include_errors"],
+            **({"unreadable": parsed["unreadable"]} if parsed["unreadable"] else {}),
             **eff,
             "default_groups": effective,
             "default_groups_source": source,

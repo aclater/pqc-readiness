@@ -204,7 +204,7 @@ def test_container_without_host_mount_is_annotated(monkeypatch) -> None:
         "detect_runtime_environment",
         lambda: {"environment": "container"},
     )
-    monkeypatch.setattr(detect, "_read_host_file", lambda path: None)
+    monkeypatch.setattr(detect, "_read_policy_file", lambda path, unreadable: None)
     out = detect.detect_crypto_policy()
     assert out["available"] is False
     assert out["unavailable_in_container"] is True

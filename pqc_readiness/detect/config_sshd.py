@@ -43,6 +43,7 @@ from typing import Any, Callable
 
 from .. import _platform as _platform
 from .. import algorithms as _algorithms
+from ..detect import config_read as _config_read
 from ..detect import packages as _packages
 from ..detect import protocols as _protocols
 from ..detect import runtime as _runtime
@@ -61,6 +62,8 @@ DEFAULT_HOST_KEYS = (
     "/etc/ssh/ssh_host_ed25519_key",
 )
 _MAX_INCLUDE_DEPTH = 16
+# sshd configs are a few KiB; a huge file is not a config to parse.
+_MAX_CONFIG_BYTES = 1024 * 1024
 _KEYWORDS = ("kexalgorithms", "hostkeyalgorithms")
 
 
@@ -77,18 +80,21 @@ def _read_host_file(path: str) -> str | None:
         return None
 
 
+def _read_config(path: str) -> str | None:
+    """Config file text; None when absent.  Raises ConfigUnreadable when
+    the file exists but this user can't read it (#232)."""
+    return _config_read.read_host_text(path, max_bytes=_MAX_CONFIG_BYTES)
+
+
 def _glob_host(pattern: str) -> list[str]:
     """Expand a host glob (only the final component may contain wildcards,
-    as in every measured Include line), sorted lexically like sshd."""
+    as in every measured Include line), sorted lexically like sshd.
+    Raises ConfigUnreadable when the directory exists but can't be listed."""
     directory, _, name = pattern.rpartition("/")
     if not any(c in name for c in "*?["):
         return [pattern]
-    try:
-        entries = os.listdir(_platform.host_path(directory or "/"))
-    except OSError as e:
-        log.debug("sshd: cannot list %s: %s", directory, e)
-        return []
-    return [f"{directory}/{e}" for e in sorted(entries) if fnmatch.fnmatch(e, name)]
+    entries = _config_read.list_host_dir(directory or "/") or []
+    return [f"{directory}/{e}" for e in entries if fnmatch.fnmatch(e, name)]
 
 
 def _split_directive(line: str) -> tuple[str, str] | None:
@@ -104,17 +110,31 @@ def _split_directive(line: str) -> tuple[str, str] | None:
 
 def parse_sshd_config(
     main_path: str,
-    read: Callable[[str], str | None] = _read_host_file,
+    read: Callable[[str], str | None] = _read_config,
     glob: Callable[[str], list[str]] = _glob_host,
 ) -> dict[str, Any]:
     """Global (pre-`Match`) KexAlgorithms / HostKeyAlgorithms / HostKey
     from `main_path` and everything it includes.  Returns the values plus
     the files read, in order.  Relative Include paths resolve against
-    /etc/ssh, as sshd does."""
+    /etc/ssh, as sshd does.
+
+    Files or Include directories that exist but can't be read are listed
+    under ``unreadable``.  If one is met before KexAlgorithms is set, the
+    value found later (or the compiled-in default) may not be the one
+    sshd uses, since the first obtained value wins: ``kex_uncertain``."""
     values: dict[str, str] = {}
     host_keys: list[str] = []
     files: list[str] = []
+    unreadable: list[dict[str, str]] = []
+    kex_uncertain = False
     stopped_at_match = False
+
+    def skipped(e: _config_read.ConfigUnreadable) -> None:
+        nonlocal kex_uncertain
+        log.debug("sshd: %s", e)
+        unreadable.append(e.as_entry())
+        if "kexalgorithms" not in values:
+            kex_uncertain = True
 
     def walk(path: str, depth: int) -> bool:
         """Returns False once a Match block ends global parsing."""
@@ -122,7 +142,11 @@ def parse_sshd_config(
         if depth > _MAX_INCLUDE_DEPTH:
             log.debug("sshd: Include depth limit reached at %s", path)
             return True
-        text = read(path)
+        try:
+            text = read(path)
+        except _config_read.ConfigUnreadable as e:
+            skipped(e)
+            return True
         if text is None:
             return True
         files.append(path)
@@ -138,7 +162,12 @@ def parse_sshd_config(
                 for pat in value.split():
                     if not pat.startswith("/"):
                         pat = f"/etc/ssh/{pat}"
-                    for inc in glob(pat):
+                    try:
+                        included = glob(pat)
+                    except _config_read.ConfigUnreadable as e:
+                        skipped(e)
+                        continue
+                    for inc in included:
                         if not walk(inc, depth + 1):
                             return False
                 continue
@@ -153,6 +182,8 @@ def parse_sshd_config(
         "values": values,
         "host_keys": host_keys,
         "files": files,
+        "unreadable": unreadable,
+        "kex_uncertain": kex_uncertain,
         "stopped_at_match": stopped_at_match,
     }
 
@@ -268,6 +299,8 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
     parsed: dict[str, Any] | None = None
     source = None
     files: list[str] = []
+    unreadable: list[dict[str, str]] = []
+    kex_uncertain = False
     if _can_run_sshd_t():
         rc, out = _platform._run([_sshd_binary() or "sshd", "-T"], timeout=10)
         if rc == 0 and "kexalgorithms" in out.lower():
@@ -276,14 +309,31 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
         else:
             log.debug("sshd: sshd -T failed (rc=%s); parsing config files", rc)
     if parsed is None:
-        main = next(
-            (p for p in SSHD_CONFIG_CANDIDATES if _read_host_file(p) is not None), None
-        )
+        main = None
+        for candidate in SSHD_CONFIG_CANDIDATES:
+            try:
+                if _read_config(candidate) is not None:
+                    main = candidate
+                    break
+            except _config_read.ConfigUnreadable as e:
+                # sshd uses /etc/ssh/sshd_config whenever it exists, so an
+                # unreadable one ends the search; the vendor file isn't it.
+                unreadable.append(e.as_entry())
+                break
         if main is None:
-            result: dict[str, Any] = {
-                "available": False,
-                "reason": "no sshd_config found (/etc/ssh or /usr/etc/ssh)",
-            }
+            result: dict[str, Any]
+            if unreadable:
+                u = unreadable[0]
+                result = {
+                    "available": False,
+                    "reason": f"{u['path']} is not readable ({u['reason']})",
+                    "unreadable": unreadable,
+                }
+            else:
+                result = {
+                    "available": False,
+                    "reason": "no sshd_config found (/etc/ssh or /usr/etc/ssh)",
+                }
             note = _runtime._host_fs_note_for("sshd")
             if note:
                 result.update(note)
@@ -291,6 +341,8 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
         cfg = parse_sshd_config(main)
         parsed = {"values": cfg["values"], "host_keys": cfg["host_keys"]}
         files = cfg["files"]
+        unreadable = cfg["unreadable"]
+        kex_uncertain = cfg["kex_uncertain"]
         source = "config files"
 
     values = parsed["values"]
@@ -298,7 +350,18 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
     result = {"available": True, "source": source}
     if files:
         result["config_files"] = files
-    if raw_kex is None:
+    if unreadable:
+        result["unreadable"] = unreadable
+    if kex_uncertain:
+        # An unreadable file came before any KexAlgorithms line; it may
+        # set the value sshd actually uses (first obtained value wins).
+        result.update(
+            kex_offered=None,
+            kex_source="unreadable-config",
+            pqc_offered=None,
+            pqc_first=None,
+        )
+    elif raw_kex is None:
         # Nothing sets KexAlgorithms: sshd uses its compiled-in default,
         # which depends on the OpenSSH version.  Report unknown rather
         # than guessing.

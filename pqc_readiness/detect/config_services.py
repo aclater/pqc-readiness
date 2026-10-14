@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 from .. import _platform as _platform
 from .. import registry as _registry
+from . import config_read as _config_read
 from . import packages as _packages
 from . import protocols_libraries as _libraries
 from . import config_services_parsers as _p
@@ -68,21 +69,40 @@ def read_text(path: str) -> str | None:
 
 
 def read_error(path: str) -> str | None:
-    """Why an existing path can't be read (permission), or None."""
-    try:
-        p = _host(path)
-        if not p.exists():
-            return None
-        if p.is_file():
-            with p.open("rb"):
-                pass
-        else:
-            list(p.iterdir())
+    """Why an existing path can't be read, or None (readable or absent)."""
+    if not _config_read.present(path):
         return None
-    except PermissionError as e:
-        return f"{e.strerror} (needs root)"
-    except (OSError, _packages.RpmdbError) as e:
-        return str(e)
+    reason = _config_read.probe(path)
+    if reason is None:
+        try:
+            if _host(path).is_file() and _host(path).stat().st_size > MAX_CONFIG_BYTES:
+                return f"larger than {MAX_CONFIG_BYTES} bytes; skipped"
+        except (OSError, _packages.RpmdbError):
+            pass
+    return reason
+
+
+def _sort_unreadable(svc: dict[str, Any]) -> dict[str, Any]:
+    """Parsers list every file their reader got no text for as unreadable.
+    Split those into files that don't exist (``missing``, e.g. an Include
+    naming an absent file) and files that exist but can't be read, each
+    with the precise reason (#232)."""
+    entries = svc.get("unreadable") or []
+    if not entries:
+        return svc
+    unreadable: list[dict[str, str]] = []
+    missing: list[str] = []
+    for u in entries:
+        path = u.get("path", "")
+        if path and not _config_read.present(path):
+            missing.append(path)
+            continue
+        reason = read_error(path) if path else None
+        unreadable.append({"path": path, "reason": reason or u.get("reason", "")})
+    svc["unreadable"] = unreadable
+    if missing:
+        svc["missing"] = missing
+    return svc
 
 
 def list_glob(pattern: str) -> list[str]:
@@ -100,10 +120,9 @@ def list_glob(pattern: str) -> list[str]:
 
 
 def _exists(path: str) -> bool:
-    try:
-        return _host(path).exists()
-    except (OSError, _packages.RpmdbError):
-        return False
+    """Exists on the host, counting a path behind a directory this user
+    can't search as existing (#232)."""
+    return _config_read.present(path)
 
 
 def _first(paths: tuple[str, ...]) -> str | None:
@@ -573,7 +592,7 @@ def scan_service_configs(
         if running.get(name):
             fn = functools.partial(fn, extra=tuple(running[name]))  # type: ignore[call-arg]
         try:
-            services.extend(fn(family, openssl_pqc))
+            services.extend(_sort_unreadable(svc) for svc in fn(family, openssl_pqc))
         except Exception as e:  # noqa: BLE001 - one parser must not sink the scan
             log.debug("service-configs: %s scan failed: %s", name, e)
             services.append(

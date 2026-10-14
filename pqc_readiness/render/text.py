@@ -200,8 +200,14 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
         if pure:
             L.append(f"     pure PQC:  {', '.join(pure)}")
     sshd = r.sshd
+    if not sshd.get("available") and sshd.get("unreadable"):
+        u = sshd["unreadable"][0]
+        L.append(f"   sshd kex:      unknown: {u['path']} not readable ({u['reason']})")
     if sshd.get("available"):
-        if sshd.get("kex_offered") is None:
+        if sshd.get("kex_source") == "unreadable-config":
+            n = len(sshd.get("unreadable") or [])
+            offered = f"unknown: {n} config file(s) not readable"
+        elif sshd.get("kex_offered") is None:
             offered = "compiled-in default (not determinable from config)"
         elif sshd.get("pqc_offered"):
             offered = "PQC offered" + (
@@ -273,6 +279,11 @@ def _render_text_crypto_policy(r: _report.Report) -> list[str]:
     """Section 3d: system-wide crypto policy and what it lets PQC do (#104)."""
     cp = r.crypto_policy
     if not cp.get("available"):
+        if cp.get("unreadable"):
+            u = cp["unreadable"][0]
+            return [
+                f"   Crypto policy: unknown: {u['path']} not readable ({u['reason']})"
+            ]
         return []
     if cp.get("framework") == "crypto-config":
         return _render_text_crypto_config(cp)
