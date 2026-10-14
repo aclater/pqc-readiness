@@ -208,6 +208,8 @@ def parse_public_key_packet(tag: int, body: bytes) -> dict[str, Any]:
         if version in (5, 6):
             material += 4  # four-octet key material length
         if version == 4:
+            # RFC 9580 defines v4 fingerprints as SHA-1; not a security use.
+            # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
             digest = hashlib.sha1(  # noqa: S324 - RFC 9580 v4 fingerprint
                 b"\x99" + struct.pack(">H", len(body)) + body
             ).hexdigest()

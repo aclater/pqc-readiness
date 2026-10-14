@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: Apache-2.0
+# Code scanning: semantic security analysis of the Python package and the
+# workflows themselves.  Independent of the authoring model, so it catches
+# a different class of bug than review does (#235).  Results land in the
+# Security tab and as PR annotations.
+
+name: codeql
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"  # weekly, picks up new queries without a code change
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds lower-precision security queries on top
+          # of the default suite; the scanner parses untrusted host files,
+          # so path and injection findings matter more than usual.
+          queries: security-extended
+
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}

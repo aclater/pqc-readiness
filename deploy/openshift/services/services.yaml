@@ -115,7 +115,7 @@ spec:
     spec:
       serviceAccountName: pqc-readiness-services
       # Required so /proc shows the node's processes, not the pod's.
-      hostPID: true
+      hostPID: true  # nosemgrep: yaml.kubernetes.security.hostpid-pod.hostpid-pod
       automountServiceAccountToken: false
       tolerations:
         - operator: Exists
