@@ -80,6 +80,11 @@ Version **2.3.0**. All JSON changes are additive, so the schema goes to
   `/var/log/containers` entries, a directory listing only), and SARIF/NDJSON
   messages name the pod. Both DaemonSets mount `/var/log/containers`
   read-only.
+- **Process groups name their containers and pods** (#262).
+  `--scan-processes` groups carry `containers` (the same identity listeners
+  got in #233, at most ten per group, plus `containers_omitted`) and
+  `container_processes`. The text report and `pqc-020` client entries name
+  a group in one container as e.g. `proxy (pod shop/web-0)`.
 - **Postfix and other master/worker daemons get a verdict** (#240). A
   listener whose owner maps no TLS library takes its libraries from a worker
   holding the socket, a descendant process, or the libraries a worker
@@ -175,8 +180,7 @@ Version **2.3.0**. All JSON changes are additive, so the schema goes to
 - wolfSSL in package-less images embeds no matchable version string, so
   its version stays undetermined.
 - Under `--host-mount`, `ssh_pqc.version` still comes from the scanner
-  image's OpenSSH (#256), and `--scan-processes` groups don't carry the
-  container identity yet (#262).
+  image's OpenSSH (#256).
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 
