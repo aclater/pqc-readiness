@@ -75,6 +75,14 @@ changes it.
   component comes from `/etc/buildinfo` when it has no os-release. Packages
   that get no purl are counted (`pqc-readiness:sbom:packages-without-purl`)
   instead of dropped silently.
+- **Kubernetes, RKE2, K3s and Rancher** (#219). `kubectl apply -k
+  deploy/kubernetes` runs the OpenShift DaemonSet unchanged except that Pod
+  Security Admission labels replace the SCC and `/var/lib` replaces the
+  rpm-only package-database mount; `deploy/kubernetes/services` is the
+  opt-in service-scan variant. CI builds both, validates them with
+  kubeconform and runs the posture tests. Live run on a Rancher-managed RKE2
+  cluster recorded in
+  [docs/examples/rancher-rke2-live.md](docs/examples/rancher-rke2-live.md).
 
 | Version | Date | JSON schema |
 | --- | --- | --- |

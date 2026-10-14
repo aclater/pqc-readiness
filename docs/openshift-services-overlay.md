@@ -73,7 +73,7 @@ added explicitly.
 
 Each release publishes `ghcr.io/aclater/pqc-readiness-services:<version>`,
 built on the release's UBI 10 image and signed with cosign
-([deployment.md](deployment.md#containers-and-openshift) shows how to verify
+([deployment.md](deployment.md#containers-openshift-and-kubernetes) shows how to verify
 it). `services.yaml` references the current release; pin it by digest from the
 release's `container-images.txt` in production.
 
