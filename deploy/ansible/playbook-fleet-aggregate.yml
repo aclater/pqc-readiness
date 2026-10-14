@@ -34,6 +34,8 @@
         cmd: "../../dist/pqc-readiness.pyz --json"
       register: pqc_raw
       changed_when: false
+      # Exit codes 0-3 are the readiness verdict, not failures.
+      failed_when: pqc_raw.rc not in [0, 1, 2, 3]
 
     - name: Write JSON to a known path on the target
       ansible.builtin.copy:
