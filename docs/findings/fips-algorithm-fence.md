@@ -34,7 +34,7 @@ An application running on a build without the gating patches can call PQC algori
 
 ## Reproduction
 
-Tooling and infrastructure: the [`distro-matrix`](https://github.com/aclater/distro-matrix) `spawn-fleet.sh` script with `--fips` boots the fleet and emits an Ansible inventory. The fleet manifest used here:
+Tooling and infrastructure: the [`distro-matrix`](https://github.com/aclater/distro-matrix) fleet spawner, `scripts/spawn-fleet/spawn-fleet.sh`, boots the fleet with `--fips` and writes an Ansible inventory (`inventory.ini`) to its `--results-dir`. The fleet manifest used here:
 
 ```
 # alias    count
@@ -42,25 +42,31 @@ rhel-10    1
 rebuild-distro-10  1
 ```
 
-Run, where `<rebuild-alias>` is the alias for a distro that rebuilds from upstream sources without the downstream FIPS-provider gating patches:
+`rebuild-distro-10` stands for a distro that rebuilds from upstream sources without the downstream FIPS-provider gating patches. Boot the fleet, then run the scanner on every host:
 
 ```bash
-./scripts/spawn-fleet.sh \
+./scripts/spawn-fleet/spawn-fleet.sh \
   --manifest fleet.tsv \
   --memory 18432 \
   --vcpus 2 \
   --fips \
-  --workdir ./fleet-fips/
+  --results-dir ./fleet-fips/
 
 ansible -i ./fleet-fips/inventory.ini all -m script \
-  -a "./pqc-readiness.pyz --json" > raw.json
-
-# Then inspect each host's report:
-jq '.fips, [.openssl.kems_pqc | length], [.openssl.signatures_pqc | length]' \
-  ./fleet-fips/<host>/result.json
+  -a "./pqc-readiness.pyz --json" > raw.txt
 ```
 
-Expected output on the RHEL host: `kems_pqc` length 0, `signatures_pqc` length 0, `fips.openssl_provider: true`. Expected output on the rebuild host: `kems_pqc` length 3, `signatures_pqc` length 15, `fips.openssl_provider: true`.
+Save each host's JSON report as `<host>.json` and inspect the PQC algorithm counts and the fence fields:
+
+```bash
+jq '{kems: (.openssl.kem_algorithms | length),
+     sigs: (.openssl.sig_algorithms | length),
+     fips_provider: .fips.openssl_provider,
+     fence_engaged: .fips.algorithm_fence_engaged,
+     outside_fence: .fips.algorithms_reachable_outside_fence}' <host>.json
+```
+
+Expected output on the RHEL host: `kems` 0, `sigs` 0, `fips_provider` true, `fence_engaged` true. Expected output on the rebuild host: `kems` 3, `sigs` 15, `fips_provider` true, `fence_engaged` false, with ML-KEM, ML-DSA and SLH-DSA listed under `outside_fence`. distro-matrix's `scripts/check-fips-divergence.py` asserts the same two expectations over a results directory.
 
 Bypassing the fleet entirely, the divergence reproduces in one shell on either host once FIPS is active:
 
@@ -76,7 +82,7 @@ On a host with the gating patches the diff is empty (or only contains FIPS-valid
 
 Three options, in increasing order of operational invasiveness:
 
-1. **Run `pqc-readiness --fips-strict`.** This enumerates the FIPS provider's algorithm list and the default provider's algorithm list with FIPS active and exits non-zero (rc=4) if the latter is a strict superset of the former. Use it as a CI gate or fleet check rather than relying on `fips_enabled=1` alone.
+1. **Run `pqc-readiness --fips-strict`.** This enumerates the FIPS provider's algorithm list and the default provider's algorithm list with FIPS active and exits 4 when the default provider reaches algorithms outside the FIPS provider's set (`fips.algorithm_fence_engaged` is false). Use it as a CI gate or fleet check rather than relying on `fips_enabled=1` alone.
 2. **Run on a distribution that ships the downstream FIPS-provider gating patches.** RHEL is the reference; verify per-release before assuming a given build carries them.
 3. **Audit the application's algorithm calls explicitly.** If the application is the only consumer of OpenSSL on the host, gating at the application layer (allowlist of algorithm OIDs / TLS groups) is independent of what the provider exposes. This is the most invasive option and the most reliable; it does not rely on the distribution or OpenSSL build for enforcement.
 
@@ -87,4 +93,4 @@ Whether any of these are required depends on the operator's compliance regime an
 - NIST FIPS 140-3 (validation framework): https://csrc.nist.gov/pubs/fips/140-3/final
 - OpenSSL provider model: https://docs.openssl.org/3.5/man7/provider/
 - IANA TLS Supported Groups (X25519MLKEM768 et al.): https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml#tls-parameters-8
-- `pqc-readiness --fips-strict` design and rationale: tracked in repository issues; see the README's CLI flags section.
+- `pqc-readiness --fips-strict` and the SARIF rule it pairs with: [pqc-007](../rules/pqc-007-fips-without-algorithm-fence.md).

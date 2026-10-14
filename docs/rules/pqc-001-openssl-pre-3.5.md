@@ -12,6 +12,13 @@ built-in ML-KEM, ML-DSA and SLH-DSA, so this means OpenSSL is older than
 The finding carries `openssl:version` and `openssl:upgrade_path`, a
 family-aware hint for the specific host.
 
+In an offline `--root` scan the OpenSSL binary can't run, so the rule
+judges the tree's OpenSSL library package instead: it fires when the
+package version is older than 3.5.0, and the finding carries
+`openssl:package` and `openssl:package_version`. A tree with no OpenSSL
+library package is reported as
+[pqc-018](pqc-018-pqc-capability-undetermined.md).
+
 ## Why it matters
 
 Applications that use the system OpenSSL can't offer PQC key exchange or

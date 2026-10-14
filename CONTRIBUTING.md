@@ -108,13 +108,19 @@ touches different files:
 |---|---|
 | `detect/hardware.py` | CPU, memory, ISA tiers, accelerators, TPM, kernel crypto, kTLS |
 | `detect/config.py` | FIPS mode and algorithm fence, OpenSSL capability and TLS groups |
+| `detect/config_openssl.py`, `config_policy.py`, `config_sshd.py` | effective OpenSSL configuration, system crypto policy, sshd effective configuration |
 | `detect/osinfo.py` | OS identity, install hints, kernel info |
 | `detect/protocols.py` | OpenSSH, IPsec, NSS |
-| `detect/certs.py` | trust-store certificates |
+| `detect/protocols_ike.py`, `protocols_kerberos.py`, `protocols_tunnels.py`, `protocols_dnssec.py`, `protocols_boot.py` | IKEv2 proposals, Kerberos, WireGuard / OpenVPN, DNSSEC, boot chain |
+| `detect/protocols_libraries.py`, `protocols_signing.py` | crypto libraries other than OpenSSL / NSS, package-signing keys |
+| `detect/certs.py`, `certs_discovery.py` | trust-store certificates; on-disk certificates, private-key metadata, keystores |
 | `detect/runtime.py` | container vs host, host-filesystem availability |
+| `detect/runtime_services.py`, `runtime_processes.py`, `runtime_offline.py` | listener and process crypto-library attribution, offline `--root` scans |
 | `detect/packages.py` | package inventory, rpm database readers |
-| `verdict.py`, `bench.py`, `aggregate.py`, `recommendation.py` | scoring, benchmarks, fleet rollup, recommendations |
-| `render/` | one module per output format (`text`, `cbom`, `sarif`, `spdx`, `json_report`) |
+| `gap.py` | capability vs configuration verdict (`pqc_deployment_gap`) |
+| `verdict.py`, `bench.py`, `aggregate.py`, `observations.py`, `recommendation.py` | scoring, benchmarks, fleet rollup, endpoint observations, recommendations |
+| `inventory_metadata.py` | operator-supplied `--inventory-metadata` |
+| `render/` | one module per output format (`text`, `json_report`, `cbom` + `cbom_profiles`, `sbom`, `spdx`, `sarif`, `ndjson`, `prom`) |
 | `report.py`, `algorithms.py` | the `Report` dataclass, schema version, algorithm tables |
 | `_platform.py` | `_run`, `host_path`, `HOST_PREFIX`: shared runtime primitives |
 | `registry.py`, `cli.py` | flag / output-format registries, CLI entry point |

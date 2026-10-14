@@ -23,31 +23,37 @@ or cryptographic-asset inventory view, so the CBOM adds nothing there.
 - **`vuln_id_from_tool`:** the rule ID, e.g. `pqc-004-classical-only-trust-store`.
 - **Severity:** SARIF `note` becomes **Info** and `warning` becomes **Medium**.
 - **Type:** findings are marked static.
-- **Empty fields:** `file_path`, `component_name` and `unique_id_from_tool`
-  are empty, because the scanner's SARIF has no `locations` or
-  fingerprints yet.
+- **Empty fields:** with plain `--sarif`, `file_path`, `component_name`
+  and `unique_id_from_tool` are empty, because that output has no
+  `locations` or fingerprints.
 
 ### Known issue: findings churn on re-import
 
-With no fingerprints, DefectDojo identifies a finding by a hash of its
-title. Some titles contain counts, such as the number of trust-store
-certificates scanned.
+DefectDojo deduplicates SARIF findings on a hash of title, CWE, line,
+file path and description. Some messages contain counts, such as the
+number of trust-store certificates scanned, so a changed count looks
+like a new finding:
 
-| Re-import into the same test | Result |
+| Re-import of plain `--sarif` into the same test (2026-10-13) | Result |
 |---|---|
 | Identical file | 2 findings untouched (correct) |
 | Same findings, but a count in a message changed (396 → 401) | **1 finding closed and 1 created** |
 
-#145 tracks the fix: `partialFingerprints` keyed on host and rule, plus
-stable messages. Until it lands, expect findings that carry counts to be
-closed and re-opened on each re-scan.
+`--sarif-anchor PATH` (#145, [recipe](../sarif-code-scanning.md)) adds a
+location and a per-host, per-rule `partialFingerprints` value to every
+result. DefectDojo's SARIF parser (source checked 2026-10-14) stores the
+anchor as `file_path` and the fingerprint as `unique_id_from_tool`.
+Its default SARIF deduplication still hashes the description, which
+contains the message, so expect findings that carry counts to churn
+unless the instance deduplicates SARIF on `unique_id_from_tool`. The
+anchored output has **not** been re-imported into a live instance.
 
 ## Importing
 
 Create an API v2 key for a non-admin user with import rights.
 
 ```bash
-pqc-readiness --sarif --scan-trust-store --output host.sarif
+pqc-readiness --sarif --sarif-anchor 'hosts/{hostname}' --scan-trust-store --output host.sarif
 
 curl -sf "$DD_URL/api/v2/import-scan/" \
   -H "Authorization: Token $DD_API_KEY" \
@@ -66,9 +72,10 @@ instead of creating duplicates.
 
 ## Recommendations
 
-- Use **one product per host**. The findings carry no host identity of
-  their own (no location or component), so the product is what tells
-  hosts apart.
+- Use **one product per host**. Plain `--sarif` findings carry no host
+  identity of their own (no location or component), so the product is
+  what tells hosts apart. With `--sarif-anchor 'hosts/{hostname}'` the
+  hostname is also in each finding's file path.
 - Use **re-import, not import**, for recurring scans. Its open/closed
   history is the useful signal.
 - For inventory and verdicts, use the scanner's JSON, the fleet

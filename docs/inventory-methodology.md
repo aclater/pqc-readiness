@@ -35,9 +35,9 @@ manifests. Those are separate tool categories, described in
 tool's host view with network scanners, software composition analysis
 and source-code scanning.
 
-The tool is a single stdlib-only Python file. It needs no agent,
-service account or outbound network access, and makes no changes to the
-host.
+The tool is a stdlib-only Python package, shipped as one executable
+zipapp (`pqc-readiness.pyz`). It needs no agent, service account or
+outbound network access, and makes no changes to the host.
 
 ## What is collected and how
 
@@ -46,14 +46,22 @@ table groups them by what is being inventoried.
 
 | Category | JSON fields | How it is collected |
 |---|---|---|
-| Host identity | `hostname`, `os`, `os_release`, `arch`, `kernel_info`, `runtime_environment` | `/etc/os-release` (family-aware), `uname`, `/proc` markers that distinguish bare metal, VM and container |
+| Host identity | `hostname`, `os`, `os_release`, `arch`, `kernel_info`, `runtime_environment` | `/etc/os-release` (family-aware), `uname`, and container markers (`/.dockerenv`, `/run/.containerenv`, cgroup) that distinguish a container from a host |
 | CPU and memory | `cpu_model`, `cpu_freq_mhz`, `cores_*`, `isa_features`, `isa_score`, `isa_tier`, `mem_*`, `memory` | `/proc/cpuinfo` flags (x86 AVX-512 family, ARMv8 crypto extensions, s390x CPACF), `/proc/meminfo` |
 | Crypto hardware | `accelerators`, `pkcs11_modules`, `tpm_pqc`, `hsm_present_but_not_pqc`, `kernel_crypto_hw` | PCI device catalogue, PKCS#11 module paths, TPM tooling, network HSM client configuration files, s390x Crypto Express listing, `/proc/crypto` drivers |
-| Crypto libraries and protocols | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `ktls_supported` | The OpenSSL CLI's algorithm, TLS group and provider lists; the SSH client's key-exchange list; IPsec stack versions; the NSS version; the kernel TLS module |
+| Crypto libraries and protocols | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `ktls_supported` | The OpenSSL CLI's algorithm, TLS group and provider lists; the SSH client's key-exchange list; IPsec stack versions and configured IKEv2 proposals; the NSS version; the kernel TLS module |
+| Configuration | `crypto_policy`, `openssl.config`, `sshd` | The system crypto policy and its back-ends (or Ubuntu's crypto-config), the effective `openssl.cnf` default groups, and sshd's effective key exchange and host keys |
+| Other crypto libraries (`--scan-crypto-libraries`) | `crypto_libraries` | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDK and Go: algorithm names embedded in each installed library file, else version thresholds |
 | FIPS posture | `fips`, `fips_pqc_conflict` | Kernel FIPS flag, OpenSSL FIPS provider state, and the [algorithm-fence check](findings/fips-algorithm-fence.md) |
 | Policy evaluation | `cnsa_2_0` | The collected algorithm lists evaluated against NSA CNSA 2.0 |
 | Trust store (`--scan-trust-store`) | `trust_store` | Every certificate in the system trust-store directories, bundle files included, de-duplicated by SHA-256 of the DER encoding and classified as classical, PQC or composite from the signature and public-key algorithm OIDs |
-| Packages (`--scan-packages`) | `packages` | The package database read in-process (rpm SQLite, Berkeley DB and ndb formats; dpkg), with crypto-bearing packages flagged from a per-family catalogue; `rpm`/`dpkg-query` as a fallback |
+| Packages (`--scan-packages`) | `packages` | The package database read in-process (rpm SQLite, Berkeley DB and ndb formats; dpkg, apk and pacman databases under `--host-mount` / `--root`), with crypto-bearing packages flagged from a per-family catalogue; `rpm`/`dpkg-query` as a fallback |
+| Certificates and keys (`--scan-crypto-material`) | `crypto_material` | Service certificates, private-key metadata and Java keystores under common service paths |
+| Package-signing keys (`--scan-signing-keys`) | `signing_keys` | The OpenPGP / apk keys the package manager trusts, classified classical, hybrid or PQC |
+| Services and processes (`--scan-services`, `--scan-processes`) | `service_crypto_linkage`, `process_crypto_linkage` | `/proc` only: each listening socket and each running process mapped to the crypto library or Go runtime it has loaded |
+| Boot chain, Kerberos, tunnels, DNSSEC (`--scan-boot-chain`, `--scan-kerberos`, `--scan-tunnels`, `--scan-dnssec`) | `boot_chain`, `kerberos`, `tunnels`, `dnssec` | Secure Boot databases, module signing, IMA/EVM and TPM PQC support; Kerberos enctypes, keytabs and PKINIT; WireGuard pre-shared keys and OpenVPN key exchange; DNSSEC signing algorithms |
+| Deployment gap | `pqc_deployment_gap` | Derived: per protocol, service and outbound client, whether PQC is capable, configured, both or neither |
+| Operator facts (`--inventory-metadata FILE`) | `inventory_metadata` | M-23-02 items the host can't know, validated and echoed (see below) |
 | Performance (`--bench`, `--bench-tls`) | `benchmark`, `benchmark_tls_handshake`, `memory_bandwidth_*`, `per_algo`, `production_estimate` | OpenSSL primitive microbenchmarks and a loopback TLS 1.3 handshake benchmark (classical, hybrid and PQC groups) |
 | Verdict | `verdict`, `verdict_reason`, `verdict_caveat`, `replace_required`, `exit_code` | Derived from the fields above |
 
@@ -62,25 +70,36 @@ Container deployments read the host through `--host-mount`.
 see the host, so a container's own state is never reported as the
 host's.
 
-No private key material is read or emitted. The trust-store scan reads
-certificates only.
+No private key material is emitted. `--scan-crypto-material` reports
+private keys as metadata only (PEM header type, file SHA-256, permission
+bits); Kerberos keytab keys are skipped by length and never stored; host
+keys and signing keys are read from public halves only.
 
 ## Capability versus in-use
 
-The inventory answers **what this host can do**: which PQC algorithms and
-TLS groups its libraries provide, whether its hardware can run them at
-production speed, and whether FIPS mode would block them. It does **not**
-yet report what each service on the host is configured to negotiate, or
-what it actually negotiates on the wire.
+The inventory answers three questions per host:
+
+- **What it can do:** which PQC algorithms and TLS groups its libraries
+  provide, whether its hardware can run them at production speed, and
+  whether FIPS mode would block them.
+- **What it is configured to do:** the system crypto policy, OpenSSL's
+  default groups and sshd's effective key exchange, joined with
+  capability in `pqc_deployment_gap` (`deployed`,
+  `capable_not_configured`, `configured_not_capable`, `not_capable`). With
+  `--scan-services` and `--scan-processes` the verdict extends to each
+  listening service and outbound client, using the crypto library each
+  process actually has loaded.
+- **What was observed:** not from the host itself. `--aggregate
+  --observations FILE` joins records from a network-side tool (what an
+  endpoint actually negotiated) to the hosts and services in the reports
+  ([endpoint-observations.md](endpoint-observations.md)).
 
 This matters for M-23-02 item 4, which asks for cryptographic systems
-"actively used", including legacy fallback. A host whose OpenSSL offers
-X25519MLKEM768 may still run a service that is configured for classical
-key exchange only. Until the configuration detections land (system crypto
-policy #104, sshd #105, OpenSSL configuration #106) together with the
-capability-versus-configuration verdict (#107), treat this tool's output
-as the **capability** half of the inventory. The in-use half comes from
-network scanning and configuration review.
+"actively used", including legacy fallback. The host scan reports the
+library each service maps and the defaults it inherits; per-application
+settings (for example a web server's own `ssl_ecdh_curve`) are not parsed,
+so treat the service verdict as the host-default view and confirm it with
+observed negotiation.
 
 ## Cadence and deployment
 
@@ -121,10 +140,10 @@ The other six are organisational facts that no host scanner can see.
 | 1 | FISMA system ID | **Operator-supplied** | `inventory_metadata.fisma_system_id` (`--inventory-metadata FILE`) | Organisational; not visible on the host. |
 | 2 | FIPS 199 categorisation | **Operator-supplied** | `inventory_metadata.fips199_categorization` | Organisational. |
 | 3 | High Value Asset ID | **Operator-supplied** | `inventory_metadata.hva_id` | Organisational. |
-| 4 | Each CRQC-vulnerable cryptographic system actively used: algorithm, service provided, key or module length | **Partly** | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `trust_store`, `cnsa_2_0`; CBOM algorithm assets | Algorithms and key sizes the host's libraries **provide**, and the algorithms of trusted certificates. Not yet which service **uses** which algorithm, or any legacy fallback in use; see [Capability versus in-use](#capability-versus-in-use). With `--cbom-profile federal-draft` each CBOM algorithm asset is classified as key establishment or signature, flagged quantum-vulnerable or not, given its EO 14412 deadline, and the host's classical key-exchange groups are added. |
-| 5 | COTS / GOTS / other, with vendor | **Partly** | `packages.bundled_crypto` (with `--scan-packages`) | Crypto-bearing distribution packages, with name and version. No COTS/GOTS/custom classification, and no software installed outside the package manager. |
+| 4 | Each CRQC-vulnerable cryptographic system actively used: algorithm, service provided, key or module length | **Partly** | `openssl`, `ssh_pqc`, `ipsec_pqc`, `nss`, `trust_store`, `crypto_material`, `sshd`, `service_crypto_linkage`, `pqc_deployment_gap`, `cnsa_2_0`; CBOM algorithm, certificate, library and service assets | Algorithms and key sizes the host's libraries provide, certificate and host-key algorithms, and for each listening service the library it loads and whether the host configuration lets it use PQC. Legacy fallback actually negotiated needs observed data; see [Capability versus in-use](#capability-versus-in-use). With `--cbom-profile federal-draft` each CBOM algorithm asset is classified as key establishment or signature, flagged quantum-vulnerable or not, given its EO 14412 deadline, and the host's classical key-exchange groups are added. |
+| 5 | COTS / GOTS / other, with vendor | **Partly** | `packages.bundled_crypto` (with `--scan-packages`), `crypto_libraries`, `process_crypto_linkage` | Crypto-bearing distribution packages with name and version, crypto libraries and toolchains, and the executables actually running with each library. No COTS/GOTS/custom classification. |
 | 6 | Operating system with major/minor version | **Yes** | `os_release` (`id`, `version_id`, `pretty_name`), `kernel_info` | |
-| 7 | Hosting: on-premises, commercial CSP, government CSP, hybrid | **Operator-supplied** | `inventory_metadata.hosting` | `runtime_environment` says bare metal, VM or container, but not who hosts it. |
+| 7 | Hosting: on-premises, commercial CSP, government CSP, hybrid | **Operator-supplied** | `inventory_metadata.hosting` | `runtime_environment` says container or host, but not who hosts it. |
 | 8 | Data lifecycle: records category and time to live | **Operator-supplied** | `inventory_metadata.data_lifecycle` | Organisational. |
 | 9 | Notes | — | `inventory_metadata.notes`, `verdict_reason`, `verdict_caveat` | Operator notes plus free-text context for the verdict. |
 
@@ -150,8 +169,8 @@ Cryptography* (24 Jun 2026), **in force**
 |---|---|
 | §6: a continuously updated, automated inventory feeding a central CBOM | Scheduled runs (quadlet, DaemonSet, Ansible), schema-versioned JSON, `--cbom` output, fleet aggregation |
 | PQC key establishment for high-value and high-impact systems by 31 Dec 2030 | Reports whether each host **can** do PQC key establishment (OpenSSL KEMs and hybrid TLS groups, SSH key exchange) and at what speed |
-| PQC signatures by 31 Dec 2031 | Reports PQC signature availability and benchmark rates, and PQC or composite certificates in the trust store |
-| TLS 1.3 by 2 Jan 2030 | `--cbom-profile federal-draft` reports `federal:tls13_status` (library capability: OpenSSL ≥ 1.1.1); service configuration is #106 and observed negotiation #149 |
+| PQC signatures by 31 Dec 2031 | Reports PQC signature availability and benchmark rates, PQC or composite certificates in the trust store and on the filesystem, and the algorithms of package-signing keys and the boot chain |
+| TLS 1.3 by 2 Jan 2030 | `--cbom-profile federal-draft` reports `federal:tls13_status` (library capability: OpenSSL ≥ 1.1.1); `openssl.config.min_protocol` shows a configured floor, and `--aggregate --observations` adds observed negotiation |
 | Appendix A: treat unknown asymmetric algorithms as vulnerable | The trust-store scan classifies any certificate without a recognised PQC or composite OID as classical |
 | Appendix B: describe the inventory methodology and tools | This document |
 | Align with NIST IR 8547 "or successor document" | IR 8547 is still a **draft**; see below |
@@ -180,21 +199,26 @@ them, since drafts in this list are expected to change.
 
 ## Known limitations
 
-- **Capability, not use.** See [above](#capability-versus-in-use). Service
-  configuration and observed negotiation are planned (#104–#107).
+- **Host defaults, not per-application settings.** See
+  [above](#capability-versus-in-use). Observed negotiation comes from
+  network-side records joined at aggregation time.
 - **Organisational items.** M-23-02 items 1, 2, 3, 7 and 8 come from an
   operator-supplied file (`--inventory-metadata`); the scanner validates
   their shape, not their truth.
 - **Python prerequisite.** The scanner needs Python 3.9 or newer. Stock
   RHEL/Rocky/AlmaLinux 8 cloud images and stock SLES/openSUSE Leap 15
   images ship only Python 3.6, so the scanner exits 127 until a newer
-  interpreter is installed. See the README's distribution notes and #127.
-- **Validated platforms.** The README's
-  [What's new](../README.md#whats-new) section lists the cloud images on
-  which the scanner and its package-database reader were validated by
-  booting them under KVM.
+  interpreter is installed. See the README's
+  [Distribution support](../README.md#distribution-support) and #127.
+- **Validated platforms.** [testing.md](testing.md) describes how the
+  scanner is validated on booted cloud images, and
+  [examples/os-matrix-2026-10.md](examples/os-matrix-2026-10.md) shows a
+  full scan of 20 of them. Per-release validation notes are in the
+  [CHANGELOG](../CHANGELOG.md).
 - **Host scope only.** Network endpoints, source code, build
   dependencies and cloud key-management services are out of scope for
   this tool; see [scope.md](scope.md) for the adjacent tool categories.
-- **Keys and certificates outside the trust store** (service certificates,
-  key files, Java keystores) are not yet inventoried (#108).
+- **Opt-in scans.** Certificates outside the trust store, signing keys,
+  services, processes, boot chain, Kerberos, tunnels and DNSSEC are only
+  inventoried when their `--scan-*` flag is given. Add the flags you need
+  to the quadlet, DaemonSet or Ansible invocation.
