@@ -308,6 +308,24 @@ def test_service_verdicts_and_collapsing() -> None:
     assert g["gaps"] == ["tls:capable_not_configured", "ssh:capable_not_configured"]
 
 
+def test_master_worker_listener_gets_a_verdict_with_its_source() -> None:
+    # #240: Postfix's master owns :25; the libraries came from its workers.
+    ln = _listener("master", 25, [_OPENSSL_35])
+    ln["crypto_libraries_from"] = {
+        "source": "worker-binary",
+        "binary": "/usr/libexec/postfix/smtpd",
+    }
+    svc = gap.compute_gap(_with_services(_rocky98_default(), [ln]))["services"]
+    (item,) = svc["items"]
+    assert (item["process"], item["port"]) == ("master", 25)
+    assert item["state"] == "capable_not_configured"
+    assert item["evidence"]["capable"] == [
+        "service_crypto_linkage.listeners[0].crypto_libraries",
+        "service_crypto_linkage.listeners[0].crypto_libraries_from",
+    ]
+    assert svc["listeners_without_crypto_library"] == 0
+
+
 def test_go_service_ignores_system_policy() -> None:
     go_on = {"version": "go1.26.0", "default_hybrid_kex": True, "godebug_reverts": []}
     go_off = {**go_on, "godebug_reverts": ["tlsmlkem"]}

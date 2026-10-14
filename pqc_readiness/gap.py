@@ -352,6 +352,11 @@ def _services(
             cap_from = [f"service_crypto_linkage.listeners[{i}].crypto_libraries"] + (
                 [f"service_crypto_linkage.listeners[{i}].go"] if ln.get("go") else []
             )
+            if ln.get("crypto_libraries_from"):
+                # Taken from the daemon's worker processes or binaries (#240).
+                cap_from.append(
+                    f"service_crypto_linkage.listeners[{i}].crypto_libraries_from"
+                )
             if cap["go_default_hybrid"]:
                 # Go's crypto/tls ignores the system policy: its default is
                 # the configuration.
