@@ -54,6 +54,9 @@ OS_FAMILY_BY_ID: dict[str, str] = {
     "garuda": "arch",
     # alpine
     "alpine": "alpine",
+    # OpenWrt: opkg up to 24.10, apk from 25.12 (#217); its package
+    # database is found by probing rather than by a family tool.
+    "openwrt": "openwrt",
 }
 
 
@@ -70,6 +73,7 @@ PKG_MANAGER_ORDER: dict[str, list[str]] = {
     "suse": ["zypper"],
     "arch": ["pacman"],
     "alpine": ["apk"],
+    "openwrt": ["apk", "opkg"],
 }
 
 
@@ -123,7 +127,7 @@ def _resolve_package_manager(family: str) -> str | None:
 def detect_os() -> dict[str, Any]:
     """Single source of truth for distro identity.  Returns:
 
-    family            rhel / debian / suse / arch / alpine / macos / unknown
+    family            rhel / debian / suse / arch / alpine / openwrt / macos / unknown
     id                rhel / fedora / ubuntu / debian / sles / ... / macos
     version_id        e.g. "9.6", "24.04", "44"
     version_codename  e.g. "jammy", "bookworm", or None

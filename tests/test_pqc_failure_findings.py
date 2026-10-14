@@ -564,5 +564,8 @@ def test_offline_root_honours_scan_crypto_libraries(monkeypatch, tmp_path) -> No
         _platform.set_offline_root("")
     assert seen == [str(tmp_path)]
     assert r.crypto_libraries["libraries"]["libssh"]["pqc_capable"] is False
-    # The empty tree has no OpenSSL package either: undetermined, not fine.
-    assert _ids(r) == ["pqc-013-crypto-library-without-pqc", U]
+    # The empty tree has no OpenSSL package and no libcrypto: OpenSSL is not
+    # in the tree (as on OpenWrt, which ships Mbed TLS), so nothing to judge
+    # (#217).  An OpenSSL whose version can't be read is still pqc-018.
+    assert r.openssl["installed"] is False
+    assert _ids(r) == ["pqc-013-crypto-library-without-pqc"]

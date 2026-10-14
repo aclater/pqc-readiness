@@ -98,7 +98,7 @@ always runs; the `--scan-*` flags add deeper inventories.
 | OpenSSL, OpenSSH, NSS, IPsec | PQC algorithms and TLS groups, SSH key exchanges, IKEv2 proposals | always |
 | Configuration | System crypto policy, `openssl.cnf` defaults, effective `sshd` configuration, FIPS mode and its algorithm fence, CNSA 2.0 compliance | always |
 | Deployment gap | Per-protocol and per-service verdict: deployed, capable but not configured, not capable | always |
-| Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDKs and Go toolchains | `--scan-crypto-libraries` |
+| Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains | `--scan-crypto-libraries` |
 | Services and processes | Which crypto library each listening service and running process actually uses | `--scan-services`, `--scan-processes` |
 | Certificates and keys | Trust store and service certificates by algorithm OID, private keys (metadata only), Java keystores | `--scan-trust-store`, `--scan-crypto-material` |
 | Packages and signing keys | Installed packages with bundled crypto; package-manager signing keys | `--scan-packages`, `--scan-signing-keys` |

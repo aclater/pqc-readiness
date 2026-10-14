@@ -810,9 +810,17 @@ def _render_text_offline_openssl(r: _report.Report) -> list[str]:
     o = r.openssl
     pkg = o.get("package") or {}
     native = o.get("pqc_native_expected")
+    lib = o.get("library") or {}
     L = [C.wrap(C.BOLD, "OpenSSL in the tree")]
     if pkg:
         L.append(f"   Package:       {pkg.get('name')} {pkg.get('version')}")
+    elif lib:
+        L.append(
+            f"   Library:       {lib.get('path')} "
+            f"{lib.get('version') or '(no version string)'} (no package database)"
+        )
+    elif o.get("installed") is False:
+        L.append("   Not installed: no OpenSSL package or libcrypto in the tree")
     else:
         L.append("   Package:       no OpenSSL library package found in the tree")
     L.append(
@@ -995,11 +1003,18 @@ def render_markdown_offline(r: _report.Report) -> str:
     L.append(f"- **Not applicable offline:** {_offline_na_sections(r)}")
     L.append("")
     L.append("## OpenSSL in the tree")
-    L.append(
-        f"- Package: `{pkg.get('name')} {pkg.get('version')}`"
-        if pkg
-        else "- Package: _no OpenSSL library package found_"
-    )
+    lib = o.get("library") or {}
+    if pkg:
+        L.append(f"- Package: `{pkg.get('name')} {pkg.get('version')}`")
+    elif lib:
+        L.append(
+            f"- Library: `{lib.get('path')}` "
+            f"{lib.get('version') or '(no version string)'} (no package database)"
+        )
+    elif o.get("installed") is False:
+        L.append("- Not installed: _no OpenSSL package or libcrypto in the tree_")
+    else:
+        L.append("- Package: _no OpenSSL library package found_")
     L.append(
         "- PQC-capable version (>=3.5): "
         + ("unknown" if native is None else ("yes" if native else "**no**"))

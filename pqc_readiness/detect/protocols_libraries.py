@@ -1,4 +1,4 @@
-"""PQC capability of crypto libraries other than OpenSSL and NSS (#110).
+"""PQC capability of crypto libraries other than OpenSSL and NSS (#110, #217).
 
 A host can have a PQC-ready OpenSSL while the service that terminates TLS
 or SSH links GnuTLS, wolfSSL, AWS-LC or libssh, or runs on a JVM or a Go
@@ -65,6 +65,10 @@ JDK_REFERENCES = (
     "https://openjdk.org/jeps/527",
 )
 GO_REFERENCE = "https://go.dev/doc/go1.24"
+MBEDTLS_REFERENCE = (
+    "https://github.com/Mbed-TLS/mbedtls/releases "
+    "https://github.com/Mbed-TLS/TF-PSA-Crypto/releases"
+)
 
 # library -> spec.  `markers` map a reported name to the byte string the
 # library embeds when it implements it, grouped by capability kind.
@@ -79,7 +83,8 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
             "alpine": ("gnutls",),
         },
         "debian_package_re": r"^libgnutls30(t64)?$",
-        "version_re": None,
+        "probe_package_re": r"^(lib)?gnutls(30)?$",
+        "version_re": rb"GnuTLS (\d+\.\d+\.\d+)",
         "markers": {
             "tls_hybrid_groups": {
                 "X25519MLKEM768": b"X25519-MLKEM768",
@@ -119,7 +124,8 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
             "alpine": ("libgcrypt",),
         },
         "debian_package_re": r"^libgcrypt20$",
-        "version_re": None,
+        "probe_package_re": r"^libgcrypt(20)?$",
+        "version_re": rb"Libgcrypt (\d+\.\d+\.\d+)",
         "markers": {
             "kem": {
                 "ML-KEM-512": b"kyber512",
@@ -164,7 +170,9 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
             "alpine": ("libssh",),
         },
         "debian_package_re": r"^libssh-(gcrypt-)?4(t64)?$",
-        "version_re": None,
+        "probe_package_re": r"^libssh(4)?$",
+        # The default client/server banner (Buildroot 2026.08: libssh 0.12.1).
+        "version_re": rb"SSH-2\.0-libssh_(\d+\.\d+\.\d+)",
         "markers": {
             "ssh_kex": {
                 "mlkem768x25519-sha256": b"mlkem768x25519-sha256",
@@ -192,6 +200,7 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
             "alpine": ("wolfssl",),
         },
         "debian_package_re": r"^libwolfssl\d+(t64)?$",
+        "probe_package_re": r"^(lib)?wolfssl",
         "version_re": None,
         "markers": {
             "tls_hybrid_groups": {
@@ -231,6 +240,7 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
         "identify_files": ("libcrypto.so*", "libcrypto-awslc*.so*"),
         "packages": {"alpine": ("aws-lc",)},
         "debian_package_re": r"^libaws-lc",
+        "probe_package_re": r"^(lib)?aws-lc",
         "version_re": rb"AWS-LC (\d+\.\d+\.\d+)",
         "markers": {
             "tls_hybrid_groups": {
@@ -262,6 +272,49 @@ LIBRARY_SPECS: dict[str, dict[str, Any]] = {
         "build_dependent": False,
         "reference": AWSLC_REFERENCE,
     },
+}
+
+# Mbed TLS: the TLS stack of most embedded images (OpenWrt's default,
+# #217).  2.x/3.x ship libmbedtls, libmbedx509 and libmbedcrypto; 4.x moves
+# the crypto library to TF-PSA-Crypto (libtfpsacrypto).  No released Mbed
+# TLS (through 4.2.0, 2026-07-07) or TF-PSA-Crypto (through 1.2.0,
+# 2026-07-07) offers ML-KEM or ML-DSA to applications, or ML-KEM groups in
+# TLS: their release notes list LMS verification only.  TF-PSA-Crypto's
+# development branch (ChangeLog.d/mldsa.txt) adds an experimental,
+# driver-level ML-DSA-87 that "is not yet exposed to applications".  So
+# there is no version threshold, and the binary markers look only for TLS
+# group names a PQC-capable build would carry.
+LIBRARY_SPECS["mbedtls"] = {
+    "files": ("libmbedtls.so*", "libmbedcrypto.so*", "libtfpsacrypto.so*"),
+    "packages": {
+        "rhel": ("mbedtls",),
+        "arch": ("mbedtls",),
+        "alpine": ("mbedtls",),
+    },
+    "debian_package_re": r"^libmbedtls\d+(t64)?$",
+    "probe_package_re": r"^(libmbedtls\d*|mbedtls)$",
+    "version_re": rb"[Mm]bed TLS (\d+\.\d+\.\d+)",
+    # Mbed TLS names its shared libraries after the release
+    # (libmbedtls.so.3.6.6), unlike libtool-versioned libraries; builds that
+    # drop the version string (OpenWrt) are still versioned this way.
+    # libtfpsacrypto carries the TF-PSA-Crypto version, so it is excluded.
+    "filename_version_re": r"^libmbed(?:tls|crypto|x509)\.so\.(\d+\.\d+\.\d+)$",
+    "markers": {
+        "tls_hybrid_groups": {
+            "X25519MLKEM768": b"X25519MLKEM768",
+            "SecP256r1MLKEM768": b"SecP256r1MLKEM768",
+            "SecP384r1MLKEM1024": b"SecP384r1MLKEM1024",
+        },
+    },
+    "thresholds": {},
+    "notes": (
+        "No released Mbed TLS (through 4.2.0) or TF-PSA-Crypto (through 1.2.0) "
+        "offers ML-KEM or ML-DSA to applications or ML-KEM groups in TLS; only LMS "
+        "signature verification. An experimental driver-level ML-DSA-87 in "
+        "TF-PSA-Crypto development is not exposed to applications.",
+    ),
+    "build_dependent": False,
+    "reference": MBEDTLS_REFERENCE,
 }
 
 # JDK: JEP 496 (ML-KEM) and JEP 497 (ML-DSA) delivered in JDK 24 (JCA
@@ -419,7 +472,19 @@ def _package_versions(spec: dict[str, Any], family: str) -> list[dict[str, str]]
         return _apk_versions(spec["packages"].get("alpine") or ())
     if family == "arch":
         return _pacman_versions(spec["packages"].get("arch") or ())
-    return []
+    return _probed_versions(spec.get("probe_package_re"))
+
+
+def _probed_versions(pattern: str | None) -> list[dict[str, str]]:
+    """Library packages from whichever database the tree has, for families
+    without a registered package tool (OpenWrt, Yocto, unknown; #217)."""
+    if not pattern:
+        return []
+    found = _packages.probe_package_db_cached()
+    if not found:
+        return []
+    rx = re.compile(pattern)
+    return [p for p in found["packages"] if rx.search(p["name"])]
 
 
 # ---------------------------------------------------------------------------
@@ -474,9 +539,32 @@ def _probe_library(name: str, spec: dict[str, Any], family: str) -> dict[str, An
         files = _find_files(spec["files"])
         embedded = None
     blobs = [b for b in (_read_library(f) for f in files) if b]
+    if embedded is None and spec.get("version_re"):
+        # Package-less trees (Buildroot, #217): the version the library
+        # embeds, without running anything.
+        rx = re.compile(spec["version_re"])
+        for blob in blobs:
+            m = rx.search(blob)
+            if m:
+                embedded = m.group(1).decode()
+                break
+    from_filename = None
+    if embedded is None and spec.get("filename_version_re"):
+        frx = re.compile(spec["filename_version_re"])
+        for f in files:
+            fm = frx.match(f.name)
+            if fm:
+                from_filename = fm.group(1)
+                break
     pkgs = _package_versions(spec, family)
-    version = pkgs[0]["version"] if pkgs else embedded
-    version_source = "package" if pkgs else ("library" if embedded else None)
+    if pkgs:
+        version, version_source = pkgs[0]["version"], "package"
+    elif embedded:
+        version, version_source = embedded, "library"
+    elif from_filename:
+        version, version_source = from_filename, "library-filename"
+    else:
+        version, version_source = None, None
     if not files and not pkgs:
         return {"installed": False}
     found = _markers_found(blobs, spec["markers"]) if blobs else {}
@@ -498,7 +586,7 @@ def _probe_library(name: str, spec: dict[str, Any], family: str) -> dict[str, An
         text
         for key, text in spec.get("caveats", ())
         if thresholds[key]["met"] is False and (pqc_names or evidence != "binary")
-    ]
+    ] + list(spec.get("notes", ()))
     return {
         "installed": True,
         "version": version,
@@ -617,7 +705,7 @@ def _probe_go() -> dict[str, Any]:
 
 
 def scan_crypto_libraries(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Probe GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDKs and Go
+    """Probe GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go
     toolchains.  Returns ``{available, libraries: {name: {...}},
     summary}``; libraries that are not installed report
     ``{installed: false}``."""
@@ -663,7 +751,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         "--scan-crypto-libraries",
         action="store_true",
         help=(
-            "probe GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDKs and Go "
+            "probe GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go "
             "toolchains for PQC support (algorithm names in the installed "
             "library files, then upstream version thresholds)"
         ),

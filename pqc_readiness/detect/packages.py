@@ -85,6 +85,13 @@ BUNDLED_CRYPTO_BY_FAMILY: dict[str, list[tuple[str, str]]] = {
         (r"^chromium$", "Chromium"),
         (r"^python$", "Python"),
     ],
+    # opkg images (OpenWrt, Yocto package_ipk; #217).
+    "opkg": [
+        # OpenWrt splits Python: the ssl module is its own package.
+        (r"^python3-openssl$", "Python ssl module (links system OpenSSL)"),
+        (r"^node$", "Node.js (bundled or system OpenSSL)"),
+        (r"^openjdk-\d+", "Java JCE provider"),
+    ],
     "alpine": [
         (r"^openjdk\d+(-jdk|-jre)?$", "Java JCE provider"),
         (r"^go$", "Go runtime"),
@@ -929,10 +936,61 @@ def parse_pacman_desc(text: str) -> dict[str, str] | None:
     return None
 
 
+# opkg (OpenWrt up to 24.10, Yocto images built with package_ipk, #217).
+# OpenWrt keeps its database under /usr/lib/opkg, Yocto under /var/lib/opkg.
+OPKG_STATUS_PATHS: tuple[str, ...] = ("/usr/lib/opkg/status", "/var/lib/opkg/status")
+
+# opkg lists a package as installed when its status word is one of these
+# (libopkg pkg_hash_fetch_all_installed: SS_INSTALLED or SS_UNPACKED).
+_OPKG_INSTALLED_STATES = ("installed", "unpacked")
+
+
+def parse_opkg_status(text: str) -> list[dict[str, str]]:
+    """Packages from an opkg `status` file, as `opkg list-installed`
+    reports them: every stanza whose Status state is installed or
+    unpacked and that carries a Version."""
+    out: list[dict[str, str]] = []
+    for stanza in re.split(r"\n\s*\n", text):
+        fields: dict[str, str] = {}
+        for line in stanza.splitlines():
+            if not line or line[0] in " \t":
+                continue
+            key, sep, value = line.partition(":")
+            if sep:
+                fields.setdefault(key, value.strip())
+        state = fields.get("Status", "").split()
+        if (
+            fields.get("Package")
+            and fields.get("Version")
+            and len(state) == 3
+            and state[2] in _OPKG_INSTALLED_STATES
+        ):
+            out.append({"name": fields["Package"], "version": fields["Version"]})
+    return out
+
+
+def read_opkg_db() -> tuple[list[dict[str, str]], str]:
+    """The opkg database under HOST_PREFIX (live root when empty).
+    Returns (packages, host-relative status path); raises OSError when no
+    status file exists."""
+    for path in OPKG_STATUS_PATHS:
+        try:
+            host_rel = resolve_under_prefix(path, _platform.HOST_PREFIX)
+        except RpmdbError as e:
+            log.debug("packages: %s", e)
+            continue
+        local = Path(_platform.HOST_PREFIX + host_rel)
+        if local.is_file():
+            return parse_opkg_status(local.read_text(errors="replace")), host_rel
+    raise FileNotFoundError(" or ".join(OPKG_STATUS_PATHS))
+
+
 def read_prefixed_package_db(family: str) -> tuple[list[dict[str, str]], str]:
     """Read the family's package database under HOST_PREFIX in-process.
     Returns (packages, host-relative database path); raises OSError when
     the database is missing or unreadable."""
+    if family == "opkg":
+        return read_opkg_db()
     _, _, db = _PREFIXED_PACKAGE_DBS[family]
     try:
         host_rel = resolve_under_prefix(db, _platform.HOST_PREFIX)
@@ -973,13 +1031,101 @@ def _scan_prefixed_packages(family: str) -> dict[str, Any]:
     }
 
 
+# Database kinds probed, in order, when the distribution family has no
+# registered package tool (OpenWrt, Yocto/poky, Buildroot, unknown IDs;
+# #217): (kind, package manager, source label).  "rpm" covers every rpm
+# database format via locate_rpmdb().
+_PROBE_ORDER: tuple[tuple[str, str, str], ...] = (
+    ("rpm", "rpm", ""),
+    ("debian", "dpkg", "dpkg-status"),
+    ("alpine", "apk", "apk-installed-db"),
+    ("opkg", "opkg", "opkg-status"),
+    ("arch", "pacman", "pacman-local-db"),
+)
+
+
+def probe_package_db() -> dict[str, Any] | None:
+    """Find whichever package database the host or tree actually has and
+    read it in-process.  Returns {kind, package_manager, source, db_root,
+    packages} for the first database found, or None when there is none
+    (e.g. a Buildroot image, which keeps no package database)."""
+    for kind, manager, source in _PROBE_ORDER:
+        if kind == "rpm":
+            if locate_rpmdb() is None:
+                continue
+            inv = query_rpm_packages()
+            if not inv.get("available"):
+                continue
+            return {
+                "kind": kind,
+                "package_manager": manager,
+                "source": inv["source"],
+                "db_root": inv["db_root"],
+                "packages": [
+                    {"name": p["name"], "version": p["version"]}
+                    for p in inv["packages"]
+                ],
+            }
+        try:
+            pkgs, host_rel = read_prefixed_package_db(kind)
+        except OSError:
+            continue
+        return {
+            "kind": kind,
+            "package_manager": manager,
+            "source": source,
+            "db_root": host_rel,
+            "packages": pkgs,
+        }
+    return None
+
+
+_PROBE_CACHE: dict[str, dict[str, Any] | None] = {}
+
+
+def probe_package_db_cached() -> dict[str, Any] | None:
+    """probe_package_db(), once per host prefix: the library and OpenSSL
+    lookups each need the same inventory."""
+    key = _platform.HOST_PREFIX
+    if key not in _PROBE_CACHE:
+        _PROBE_CACHE[key] = probe_package_db()
+    return _PROBE_CACHE[key]
+
+
+def _scan_probed_packages(family: str) -> dict[str, Any]:
+    found = probe_package_db()
+    if found is None:
+        where = f" under {_platform.HOST_PREFIX}" if _platform.HOST_PREFIX else ""
+        return {
+            "available": False,
+            "reason": (
+                f"no package database found{where} for family={family} "
+                "(looked for rpm, dpkg, apk, opkg and pacman databases)"
+            ),
+        }
+    return {
+        "available": True,
+        "package_manager": found["package_manager"],
+        "source": found["source"],
+        "db_root": found["db_root"],
+        "total_packages": len(found["packages"]),
+        # A probed rpm database (Yocto) uses upstream package names, which the
+        # RHEL catalogue matches best.
+        "bundled_crypto": classify_bundled_crypto(
+            found["packages"], "rhel" if found["kind"] == "rpm" else found["kind"]
+        ),
+    }
+
+
 def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
     """Family-aware package inventory.  Returns the same shape regardless
     of which tool produced it: {available, total_packages, bundled_crypto},
     so consumers don't have to special-case rpm/dpkg/pacman/apk output.
     RPM families read the rpm database through query_rpm_packages() and
     additionally report `source` and `db_root` (#125); so do dpkg, apk
-    and pacman when a prefix (--host-mount / --root) is in effect (#152)."""
+    and pacman when a prefix (--host-mount / --root) is in effect (#152).
+    Families without a registered tool (OpenWrt, Yocto, Buildroot, unknown)
+    are inventoried from whichever database exists (#217)."""
     family = (os_release or {}).get("family", "unknown")
     if family in ("rhel", "suse"):
         return _scan_rpm_packages(family)
@@ -987,10 +1133,7 @@ def scan_packages(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
         return _scan_prefixed_packages(family)
     plan = PACKAGE_QUERY_BY_FAMILY.get(family)
     if plan is None:
-        return {
-            "available": False,
-            "reason": f"no package-query tool registered for family={family}",
-        }
+        return _scan_probed_packages(family)
     argv, parser = plan
     if not shutil.which(argv[0]):
         return {
@@ -1039,6 +1182,6 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         action="store_true",
         help=(
             "enumerate installed packages with bundled crypto "
-            "(rpm, dpkg, pacman and apk families)"
+            "(rpm, dpkg, pacman, apk and opkg databases)"
         ),
     )

@@ -124,7 +124,7 @@ pqc-readiness --root rootfs --scan-packages --scan-trust-store \
 |---|---|---|
 | Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
 | CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
-| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
+| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database (or, with none, from the version string in its `libcrypto`) and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
 | Packages, certificates, keys, crypto policy, signing keys | Read from the host | Read from the tree |
 | Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
 
@@ -135,6 +135,37 @@ against the in-image `rpm -qa` / `dpkg-query -W` on UBI 8, UBI 9, UBI 10,
 Fedora 44, Debian 13 and openSUSE Leap 16 container images: identical package
 lists, and no subprocess runs during the scan. Scanning a disk image needs it
 mounted read-only first (e.g. `guestmount --ro`), which usually requires root.
+
+### Embedded images
+
+OpenWrt, Yocto and Buildroot images are scanned the same way; extract the
+rootfs tarball and pass `--root` (#217):
+
+```bash
+mkdir rootfs && tar -xzf openwrt-24.10.8-x86-64-rootfs.tar.gz -C rootfs
+pqc-readiness --root rootfs --scan-packages --scan-crypto-libraries --sarif
+```
+
+- **Package database.** When the distribution has no registered package tool
+  (OpenWrt, Yocto, unknown IDs), the scanner reads whichever database the tree
+  has: rpm, dpkg, apk, opkg (`/usr/lib/opkg/status` on OpenWrt up to 24.10,
+  `/var/lib/opkg/status` on Yocto `package_ipk` images) or pacman. OpenWrt 25.12
+  and later use apk.
+- **No package database** (Buildroot, Yocto images without
+  `package-management`): crypto library and OpenSSL versions come from the
+  library files themselves, from the version string each embeds (`OpenSSL
+  3.5.7`, `GnuTLS 3.8.12`, `Libgcrypt 1.12.1`) or, for Mbed TLS, from the file
+  name (`libmbedtls.so.3.6.6`). Nothing in the tree is run.
+- **Mbed TLS** is OpenWrt's default TLS stack and common across embedded
+  images. No released Mbed TLS or TF-PSA-Crypto offers ML-KEM or ML-DSA yet,
+  so an installed Mbed TLS raises [pqc-013](rules/pqc-013-crypto-library-without-pqc.md).
+- A tree with no OpenSSL at all reports `openssl.installed: false` and raises
+  no OpenSSL finding.
+
+Validated against the images' own tools on OpenWrt 24.10.8 (opkg) and 25.12.5
+(apk), the Yocto 6.0.3 prebuilt `core-image-full-cmdline` (rpm) and
+`core-image-minimal` (no package database), a Yocto 6.0.3 `package_ipk` build
+and a Buildroot 2026.08 build; see the [fixture README](../tests/fixtures/embedded/README.md).
 
 ## Fleet aggregation
 

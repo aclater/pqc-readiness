@@ -1362,29 +1362,45 @@ def _offline_openssl_findings(r: _report.Report) -> list[Finding]:
         return []
     o = r.openssl
     pkg = o.get("package") or {}
+    lib = o.get("library") or {}
     expected = o.get("pqc_native_expected")
     if expected is False:
+        if pkg:
+            what = f"OpenSSL package {pkg.get('name')} {pkg.get('version')}"
+            props = {
+                "openssl:package": pkg.get("name"),
+                "openssl:package_version": pkg.get("version"),
+            }
+        else:
+            # No package database (#217): the version libcrypto embeds.
+            what = f"OpenSSL library {lib.get('path')} {lib.get('version')}"
+            props = {
+                "openssl:library": lib.get("path"),
+                "openssl:library_version": lib.get("version"),
+            }
         return [
             Finding(
                 rule_id="pqc-001-openssl-pre-3.5",
                 level="warning",
                 message=(
-                    f"The tree's OpenSSL package {pkg.get('name')} "
-                    f"{pkg.get('version')} is older than 3.5.0 — native "
+                    f"The tree's {what} is older than 3.5.0 — native "
                     "ML-KEM / ML-DSA are not available."
                 ),
-                properties={
-                    "openssl:package": pkg.get("name"),
-                    "openssl:package_version": pkg.get("version"),
-                },
+                properties=props,
             )
         ]
-    if expected is None and "pqc_native_expected" in o:
+    # A tree with no OpenSSL at all (OpenWrt ships Mbed TLS) has nothing to
+    # judge; only an OpenSSL whose version can't be read is undetermined.
+    if expected is None and "pqc_native_expected" in o and o.get("installed", True):
         return [
             _undetermined(
                 "openssl:tree",
-                "the tree's OpenSSL (no OpenSSL library package found)",
-                {"openssl:package": pkg.get("name")},
+                "the tree's OpenSSL (no package version, and the library "
+                "carries no version string)",
+                {
+                    "openssl:package": pkg.get("name"),
+                    "openssl:library": lib.get("path"),
+                },
             )
         ]
     return []
