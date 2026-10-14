@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# Pattern-based static analysis with the community rule packs for the
+# languages this repo ships: Python, Containerfiles, Kubernetes/OpenShift
+# manifests and the workflows themselves (#235).  Any finding fails the
+# check; intentional exceptions are suppressed inline with `nosemgrep`
+# and a reason.  Runs locally with the same image:
+#
+#   podman run --rm -v "$PWD:/src:Z" -w /src docker.io/semgrep/semgrep:1.178.0 \
+#     semgrep scan --metrics=off --error \
+#       --config p/python --config p/dockerfile \
+#       --config p/kubernetes --config p/github-actions
+
+name: semgrep
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      # Pinned by digest; Dependabot can't update container: images, so
+      # bump tag and digest together by hand.
+      image: docker.io/semgrep/semgrep:1.178.0@sha256:32e459968daabe7ab86968184a29109b9564aa00392401156f9788452b42786b
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: semgrep scan
+        run: |
+          semgrep scan --metrics=off --error \
+            --config p/python --config p/dockerfile \
+            --config p/kubernetes --config p/github-actions \
+            --sarif-output=semgrep.sarif
+
+      - name: upload results to code scanning
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # v4.38.2
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

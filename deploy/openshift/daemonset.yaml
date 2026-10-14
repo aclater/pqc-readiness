@@ -109,7 +109,8 @@ spec:
         app.kubernetes.io/component: probe
     spec:
       serviceAccountName: pqc-readiness
-      hostPID: true
+      # Required so /proc shows the node's processes, not the pod's.
+      hostPID: true  # nosemgrep: yaml.kubernetes.security.hostpid-pod.hostpid-pod
       automountServiceAccountToken: false
       tolerations:
         # Probe every node, including control plane and tainted workers.

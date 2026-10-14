@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Keeps the commit-SHA pins in .github/workflows current (#235).  Actions
+# are pinned by SHA rather than tag so a moved tag can't change what runs
+# in CI or in the signed release pipeline.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # New releases wait two weeks before a PR is opened.
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

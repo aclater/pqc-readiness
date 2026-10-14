@@ -9,7 +9,8 @@ metadata:
   namespace: pqc-readiness
 spec:
   template:
-    spec:
+    # Strategic-merge patch: runAsNonRoot comes from the base DaemonSet.
+    spec:  # nosemgrep: yaml.kubernetes.security.run-as-non-root.run-as-non-root
       # Needed to write the ConfigMap; scoped by rbac.yaml to ConfigMaps in
       # this namespace.
       automountServiceAccountToken: true
