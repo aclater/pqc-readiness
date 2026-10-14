@@ -233,6 +233,13 @@ spec:
             - name: host-rpmdb
               mountPath: /host/var/lib/rpm
               readOnly: true
+            # Kubelet container log names (#233): the probe lists them to
+            # name each listener's pod and container; it opens no file.
+            # The entries are symlinks into /var/log/pods, which is not
+            # mounted, so no log content is reachable.
+            - name: host-container-logs
+              mountPath: /host/var/log/containers
+              readOnly: true
             - name: readiness-output
               mountPath: /var/lib/pqc-readiness
               readOnly: false
@@ -266,6 +273,11 @@ spec:
         - name: host-rpmdb
           hostPath:
             path: /var/lib/rpm
+            type: Directory
+        # The kubelet creates /var/log/containers on every node.
+        - name: host-container-logs
+          hostPath:
+            path: /var/log/containers
             type: Directory
         # Output: an emptyDir (see the header).  For central collection,
         # replace it with a PVC on RWX storage (e.g. NFS, CephFS); report

@@ -1070,8 +1070,31 @@ def _listener_subject(lst: dict[str, Any]) -> str:
     return f"service:{lst.get('protocol')}/{lst.get('family')}/{lst.get('port')}:{exe}"
 
 
+def _process_name(lst: dict[str, Any]) -> str | None:
+    """The process name, preferring the executable's basename when comm
+    was cut at the kernel's 15 characters (kube-controller-manager shows
+    as kube-controller)."""
+    comm = lst.get("process")
+    exe = str(lst.get("exe") or "").rsplit("/", 1)[-1]
+    if comm and len(comm) == 15 and exe.startswith(comm):
+        return exe
+    return comm or (exe or None)
+
+
+def _listener_who(lst: dict[str, Any]) -> str:
+    """Who serves a listener: the Kubernetes container and pod when known
+    (#233), else the systemd unit, else the process."""
+    c = lst.get("container") or {}
+    if c:
+        name = c.get("container_name") or _process_name(lst) or "process"
+        if c.get("pod_name"):
+            return f"{name} (pod {c.get('pod_namespace')}/{c['pod_name']})"
+        return f"{name} (container {str(c.get('id'))[:12]})"
+    return lst.get("systemd_unit") or _process_name(lst) or "unattributed process"
+
+
 def _listener_label(lst: dict[str, Any]) -> str:
-    who = lst.get("systemd_unit") or lst.get("process") or "unattributed process"
+    who = _listener_who(lst)
     addr = str(lst.get("address") or "?")
     if ":" in addr:
         addr = f"[{addr}]"
@@ -1079,7 +1102,7 @@ def _listener_label(lst: dict[str, Any]) -> str:
 
 
 def _listener_props(lst: dict[str, Any]) -> dict[str, Any]:
-    return {
+    props = {
         "service:protocol": lst.get("protocol"),
         "service:address": lst.get("address"),
         "service:port": lst.get("port"),
@@ -1088,6 +1111,19 @@ def _listener_props(lst: dict[str, Any]) -> dict[str, Any]:
         "service:systemd_unit": lst.get("systemd_unit"),
         "service:network_namespace": lst.get("network_namespace"),
     }
+    c = lst.get("container")
+    if c:
+        props.update(
+            {
+                "service:container_runtime": c.get("runtime"),
+                "service:container_id": c.get("id"),
+                "service:pod_uid": c.get("pod_uid"),
+                "service:pod_namespace": c.get("pod_namespace"),
+                "service:pod_name": c.get("pod_name"),
+                "service:container_name": c.get("container_name"),
+            }
+        )
+    return props
 
 
 def _service_findings(r: _report.Report) -> list[Finding]:

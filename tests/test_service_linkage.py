@@ -1028,3 +1028,116 @@ def test_elf_dynamic_rejects_oversized_program_header_entries(tmp_path: Path) ->
     p.write_bytes(bytes(blob))
     with p.open("rb") as fh, pytest.raises(ValueError):
         rs.elf_dynamic(fh)
+
+
+# Container identity (#233)
+# ---------------------------------------------------------------------------
+
+CID = "466fa36113125f83e8bdd28ce9e110580e1df56d009a5bb778f50bcf0afb8b59"  # pragma: allowlist secret
+POD_UID = "96729e5171d4355063effb4f71b182d6"  # pragma: allowlist secret
+# Measured on OpenShift Local 4.22.14 (RHCOS): the kube-apiserver static pod.
+CRIO_CGROUP = (
+    "/kubepods.slice/kubepods-burstable.slice/"
+    "kubepods-burstable-pod96729e5171d4355063effb4f71b182d6.slice/"
+    f"crio-{CID}.scope"
+)
+
+
+@pytest.mark.parametrize(
+    ("cgroup", "runtime", "pod_uid"),
+    [
+        (
+            CRIO_CGROUP,
+            "cri-o",
+            POD_UID,
+        ),
+        (
+            # systemd escapes the UID's dashes as underscores.
+            "/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-"
+            "pod1b2c3d4e_5f60_4a1b_8c2d_3e4f5a6b7c8d.slice/"
+            f"cri-containerd-{CID}.scope",
+            "containerd",
+            "1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d",
+        ),
+        (
+            f"/kubepods/burstable/pod1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d/{CID}",
+            None,
+            "1b2c3d4e-5f60-4a1b-8c2d-3e4f5a6b7c8d",
+        ),
+        (f"/machine.slice/libpod-{CID}.scope", "podman", None),
+        (f"/system.slice/docker-{CID}.scope", "docker", None),
+    ],
+)
+def test_container_identity_from_cgroup(
+    host: FakeHost, cgroup: str, runtime: str | None, pod_uid: str | None
+) -> None:
+    c = rs.container_identity(cgroup, rs._Cache())
+    assert c is not None
+    assert (c["runtime"], c["id"], c["pod_uid"]) == (runtime, CID, pod_uid)
+    # No kubelet log directory on this host: names stay unknown.
+    assert (c["pod_name"], c["pod_namespace"], c["container_name"]) == (None,) * 3
+
+
+@pytest.mark.parametrize(
+    "cgroup", ["/system.slice/sshd.service", "/init.scope", "", None]
+)
+def test_processes_outside_containers_have_no_container(
+    cgroup: str | None,
+) -> None:
+    assert rs.container_identity(cgroup, rs._Cache()) is None
+
+
+def _kubelet_logs(host: FakeHost, *names: str) -> None:
+    d = host.root / "var" / "log" / "containers"
+    d.mkdir(parents=True, exist_ok=True)
+    for n in names:
+        (d / n).write_text("")
+
+
+def test_listener_in_a_pod_is_named_from_the_kubelet_log_directory(
+    host: FakeHost,
+) -> None:
+    _kubelet_logs(
+        host,
+        f"kube-apiserver-crc_openshift-kube-apiserver_kube-apiserver-{CID}.log",
+        # Another container of the same pod, and one with a dash-rich name.
+        "kube-apiserver-crc_openshift-kube-apiserver_kube-apiserver-check-"
+        "endpoints-" + "a" * 64 + ".log",
+        "not-a-container-log.txt",
+    )
+    host.net(1, "tcp6", [(_hex_v6("::", 6443), _hex_v6("::", 0), "0A", 8001)])
+    host.process(
+        1200,
+        comm="kube-apiserver",
+        sockets=(8001,),
+        exe_path="/usr/bin/kube-apiserver",
+        cgroup=f"0::{CRIO_CGROUP}\n",
+    )
+    entry = _by_port(rs.scan_services(), "tcp", 6443)
+    assert entry["systemd_unit"] == f"crio-{CID}.scope"
+    assert entry["container"] == {
+        "runtime": "cri-o",
+        "id": CID,
+        "pod_uid": "96729e5171d4355063effb4f71b182d6",  # pragma: allowlist secret
+        "pod_name": "kube-apiserver-crc",
+        "pod_namespace": "openshift-kube-apiserver",
+        "container_name": "kube-apiserver",
+    }
+
+
+def test_host_process_listener_has_null_container(host: FakeHost) -> None:
+    _populate(host)
+    assert _by_port(rs.scan_services(), "tcp", 22)["container"] is None
+
+
+def test_container_names_do_not_depend_on_the_pod_uid(host: FakeHost) -> None:
+    # AI review on #261: a cgroup layout whose pod UID isn't recognised still
+    # gets its names when the kubelet lists the container ID.
+    _kubelet_logs(host, f"web-0_shop_nginx-{CID}.log")
+    c = rs.container_identity(f"/system.slice/docker-{CID}.scope", rs._Cache())
+    assert c is not None and c["pod_uid"] is None
+    assert (c["pod_name"], c["pod_namespace"], c["container_name"]) == (
+        "web-0",
+        "shop",
+        "nginx",
+    )

@@ -623,23 +623,103 @@ def _listening_sockets(pid: int) -> list[dict[str, Any]]:
     return out
 
 
-def _systemd_unit(pid: int) -> tuple[str | None, str | None]:
+def _cgroup_path(pid: int) -> str | None:
+    """The process's cgroup v2 path (or the v1 name=systemd one)."""
     try:
         text = _proc(pid, "cgroup").read_text()
     except OSError:
-        return None, None
+        return None
     path = None
     for line in text.splitlines():
         parts = line.split(":", 2)
         if len(parts) == 3 and parts[0] == "0":
-            path = parts[2]
-            break
+            return parts[2]
         if len(parts) == 3 and "name=systemd" in parts[1]:
             path = parts[2]
-    if path is None:
-        return None, None
-    m = _UNIT_RE.search(path)
-    return (m.group(1) if m else None), path[-200:]
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Container identity (#233)
+# ---------------------------------------------------------------------------
+#
+# A process in a container is otherwise known only by its 15-character comm
+# and a scope named after a 64-hex container ID (crio-<id>.scope).  The
+# cgroup path gives the runtime, container ID and Kubernetes pod UID; the
+# kubelet's /var/log/containers/<pod>_<namespace>_<container>-<id>.log
+# entries give the names, from a directory listing alone.  The runtime's own
+# container config (CRI-O's userdata/config.json) also carries the names,
+# but it holds the container's environment, which may contain secrets, so
+# it is never read.  Nor is the container's /etc/hostname: host-network
+# pods (kube-apiserver) show the node's name there.
+
+# systemd scope per runtime: crio-<id>.scope, cri-containerd-<id>.scope,
+# docker-<id>.scope, libpod-<id>.scope (Podman).
+_CONTAINER_SCOPE_RE = re.compile(
+    r"/(crio|cri-containerd|docker|libpod)-([0-9a-f]{64})\.scope$"
+)
+# cgroupfs driver: /kubepods/<qos>/pod<uid>/<id>.
+_CONTAINER_CGROUPFS_RE = re.compile(r"/pod[0-9a-f-]{32,36}/([0-9a-f]{64})$")
+# Pod UID: kubepods-<qos>-pod<uid>.slice (systemd escapes - as _) or
+# /pod<uid>/ (cgroupfs).
+_POD_UID_RE = re.compile(r"[-/]pod([0-9a-f_-]{32,36})(?:\.slice|/)")
+_RUNTIME_NAMES = {
+    "crio": "cri-o",
+    "cri-containerd": "containerd",
+    "docker": "docker",
+    "libpod": "podman",
+}
+# kubelet symlink name; Kubernetes object names can't contain "_".
+_CONTAINER_LOG_RE = re.compile(r"^([^_]+)_([^_]+)_(.+)-([0-9a-f]{64})\.log$")
+_CONTAINER_LOG_MAX_ENTRIES = 20000
+
+
+def _container_names(cache: _Cache) -> dict[str, tuple[str, str, str]]:
+    """Container ID -> (pod, namespace, container) from the kubelet's
+    /var/log/containers entries (names only, no file is opened)."""
+    if cache.container_names is None:
+        cache.container_names = {}
+        try:
+            entries = os.listdir(_platform.host_path("/var/log/containers"))
+        except OSError as e:
+            log.debug("services: cannot list /var/log/containers: %s", e)
+            entries = []
+        for name in entries[:_CONTAINER_LOG_MAX_ENTRIES]:
+            m = _CONTAINER_LOG_RE.match(name)
+            if m:
+                cache.container_names[m.group(4)] = (m.group(1), m.group(2), m.group(3))
+    return cache.container_names
+
+
+def container_identity(cgroup: str | None, cache: _Cache) -> dict[str, Any] | None:
+    """``{runtime, id, pod_uid, pod_name, pod_namespace, container_name}``
+    for a process in a container, from its cgroup path; None otherwise.
+    Names are null when the kubelet's container log directory isn't
+    readable (not a Kubernetes node, or not mounted into the scanner)."""
+    if not cgroup:
+        return None
+    m = _CONTAINER_SCOPE_RE.search(cgroup)
+    if m:
+        runtime: str | None = _RUNTIME_NAMES[m.group(1)]
+        cid = m.group(2)
+    else:
+        m2 = _CONTAINER_CGROUPFS_RE.search(cgroup)
+        if not m2:
+            return None
+        runtime, cid = None, m2.group(1)
+    uid = _POD_UID_RE.search(cgroup)
+    pod_uid = uid.group(1).replace("_", "-") if uid else None
+    # Keyed by container ID: a kubelet entry names it even when the pod UID
+    # isn't recognisable in the cgroup path.
+    names = _container_names(cache).get(cid)
+    return {
+        "runtime": runtime,
+        "id": cid,
+        "pod_uid": pod_uid,
+        "pod_name": names[0] if names else None,
+        "pod_namespace": names[1] if names else None,
+        "container_name": names[2] if names else None,
+    }
 
 
 def _comm(pid: int) -> str | None:
@@ -676,6 +756,8 @@ class _Cache:
         # first use) and dynamic sections of files read through a root.
         self.ppids: dict[int, int] | None = None
         self.dynamic: dict[str, dict[str, list[str]] | None] = {}
+        # Container ID -> (pod, namespace, container), listed once (#233).
+        self.container_names: dict[str, tuple[str, str, str]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1027,12 +1109,14 @@ def _process_details(
     ``maps`` is the already-read /proc/<pid>/maps text when the caller has
     it (--scan-processes reads it first to classify unreadable processes
     and kernel threads, #155)."""
-    unit, cgroup = _systemd_unit(pid)
+    path = _cgroup_path(pid)
+    unit_m = _UNIT_RE.search(path) if path else None
     info: dict[str, Any] = {
         "process": _comm(pid),
         "exe": _exe(pid),
-        "systemd_unit": unit,
-        "cgroup": cgroup,
+        "systemd_unit": unit_m.group(1) if unit_m else None,
+        "cgroup": path[-200:] if path else None,
+        "container": container_identity(path, cache),
         "crypto_libraries": [],
         "static_binary": None,
         "go": None,
@@ -1154,6 +1238,7 @@ def scan_services(
                     "exe": None,
                     "systemd_unit": None,
                     "cgroup": None,
+                    "container": None,
                     "crypto_libraries": [],
                     "static_binary": None,
                     "go": None,

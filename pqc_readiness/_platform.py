@@ -52,6 +52,9 @@ _HOST_NAMESPACES = (
     # Kernel config and module files for boot-chain module-signing
     # detection (#112); reachable through the deployments' /usr mount.
     "/usr/lib/modules",
+    # Kubelet container log names, which identify each container's pod
+    # (#233); only listed, never opened.
+    "/var/log/containers",
 )
 
 
