@@ -67,15 +67,21 @@ PQC_WRITE_GOLDEN=1 python -m pytest tests/test_main_decompose.py -q -k golden
 
 Probe changes must also be run on booted cloud images before merging (the VM
 matrix in [docs/testing.md](docs/testing.md#booted-vm-matrix)). Unit tests
-against fixtures are not enough for detection logic.
+against fixtures are not enough for detection logic. Use the distro-matrix
+runner (`~/git/distro-matrix/scripts/run-matrix.sh`, with `--compare-scanner`
+for before/after diffs); don't hand-roll a VM harness. Every VM goes through
+`~/.local/bin/vm-run` (the runner's default backend does this), never bare
+`qemu` or unthrottled `virt-install`.
 
 ## Change rules
 
 - **Schema version.** Feature PRs never bump `SCHEMA_VERSION`; only release
   PRs do, and JSON changes must be additive within a release.
-- **Docs ship with the feature.** A new or changed flag, top-level JSON key,
-  output format or exit code updates README.md in the same PR (README names it
-  in one line; detail goes in `docs/`). A new SARIF rule needs its page under
+- **Docs always ship with the change**: features, fixes and process changes
+  alike, in the same PR. Any change to behaviour, output, deployment or how
+  things are tested updates the docs that describe it. A new or changed flag,
+  JSON key, output format or exit code updates README.md (README names it in
+  one line; detail goes in `docs/`). A new SARIF rule needs its page under
   `docs/rules/` and an index row; tests enforce both.
 - **Release notes** go in `CHANGELOG.md`. The README's *Latest release* section
   holds only a short summary of the newest release.

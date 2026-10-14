@@ -101,20 +101,35 @@ every change to a probe is also run on booted cloud images before it merges.
   Oracle Linux, CentOS Stream), Fedora, Amazon Linux 2023, Ubuntu and openSUSE
   Leap and Tumbleweed. RHEL itself is tested from RHEL images where a
   subscription is available, and from UBI containers otherwise.
-- **Boot.** Each image boots under QEMU/KVM with UEFI firmware (BIOS where an
-  image needs it) and a cloud-init seed that runs the zipapp as root and
-  writes the results to the serial console. Overlay disks keep the base images
-  untouched.
-- **What is checked.** The scanner's JSON and SARIF against what the
-  distribution's own tools report on the same host (`rpm -qa`, `sshd -T`,
-  `update-crypto-policies --show`, `openssl list`), plus the specific behaviour
-  the change targets. A change that alters results is re-run on the whole
-  matrix and the before and after outputs are compared.
+- **Runner.** The [`aclater/distro-matrix`](https://github.com/aclater/distro-matrix)
+  runner (`scripts/run-matrix.sh`) boots each image from the local image
+  cache (by alias) or the shared image store, on an overlay disk with a
+  cloud-init seed, copies the zipapp in over SSH, runs it as root and pulls
+  the results back. Its default backend launches every VM through the host's
+  CPU budget (`vm-run`), so runs queue instead of overloading the host. Don't
+  hand-roll a VM harness for a PR; extend the runner instead.
+- **What is checked.** The scanner's JSON against the report schema
+  (`--schema`), and against what the distribution's own tools report on the
+  same host (`--ground-truth` captures `rpm -qa`, `sshd -T`,
+  `update-crypto-policies --show`, `openssl list` and similar), plus the
+  specific behaviour the change targets. A change that alters results runs
+  the old and new builds on the same booted VM (`--compare-scanner`) and the
+  per-distro diff goes in the PR.
 - **Published results.** A full scan of the current release across the matrix
   is kept as [example output](examples/os-matrix-2026-10.md).
 
-The FIPS-mode matrix (booted hosts with `fips=1`) runs separately in the
-[`aclater/distro-matrix`](https://github.com/aclater/distro-matrix) runner.
+A typical before/after run on three distributions:
+
+```bash
+cd ~/git/distro-matrix
+scripts/run-matrix.sh --scanner new.pyz --scanner-args '--json --scan-services' \
+  --compare-scanner old.pyz --schema schemas/pqc-readiness-report.schema.json \
+  --ground-truth ground-truth/pqc-readiness.tsv --only rocky9,ubuntu2604,debian12 \
+  --parallel auto
+```
+
+The FIPS-mode check (booted hosts with `fips=1`, RHEL against a rebuild) is
+`scripts/fips-divergence.sh` in the same repository.
 
 ## Release verification
 
