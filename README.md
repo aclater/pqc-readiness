@@ -230,6 +230,7 @@ distribution before they merge. Details: [docs/testing.md](docs/testing.md).
 | JSON field reference | [docs/json-output.md](docs/json-output.md) |
 | SARIF rules | [docs/rules/](docs/rules/README.md) |
 | Example output across 20 distributions | [docs/examples/os-matrix-2026-10.md](docs/examples/os-matrix-2026-10.md) |
+| Example output from a live OpenShift 4.22 node | [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md) |
 | Deployment: containers, OpenShift, offline images, fleet rollup | [docs/deployment.md](docs/deployment.md) |
 | OpenShift service-scan overlay | [docs/openshift-services-overlay.md](docs/openshift-services-overlay.md) |
 | Ansible | [docs/ansible.md](docs/ansible.md) |

@@ -11,6 +11,21 @@ JSON reports carry `schema_version`. The fleet aggregator only merges
 reports with the same schema version, so re-scan after an upgrade that
 changes it.
 
+## Unreleased
+
+- **OpenShift manifests work on a fresh cluster** (#220). `oc apply -k
+  deploy/openshift` now creates the `pqc-readiness` namespace; the base SCC
+  allows the seccomp `RuntimeDefault` profile the pod requests (admission
+  rejected every pod before); both DaemonSets write reports to an
+  `emptyDir`, because the non-root pod couldn't write the `hostPath`
+  directory the kubelet creates.
+- **Reports from a DaemonSet name the node, not the pod** (#220). The
+  scanner takes `hostname` from `PQC_HOSTNAME` (set from `spec.nodeName` by
+  both DaemonSets), then from the host's `/etc/hostname` under
+  `--host-mount`.
+- Live run on OpenShift 4.22 with the Compliance Operator, recorded in
+  [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md).
+
 | Version | Date | JSON schema |
 | --- | --- | --- |
 | [2.2.0](#220---2026-10-13-deployment-gap-verdict-and-pqc-failure-findings-schema-16) | 2026-10-13 | 1.6 |
