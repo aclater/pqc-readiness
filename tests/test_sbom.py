@@ -109,7 +109,7 @@ def _report(os_release: dict[str, Any]) -> Any:
                 "db": "rpm",
             },
             {"family": "unknown", "id": "poky", "version_id": "6.0.3"},
-            "pkg:yocto/glibc@2.43+git0+e9517114ac",
+            "pkg:yocto/glibc@2.43%2Bgit0%2Be9517114ac",
         ),
     ],
 )

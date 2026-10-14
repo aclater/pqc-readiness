@@ -1,0 +1,7 @@
+base-files 13.8+deb13u7 amd64
+bash 5.2.37-2+b10 amd64
+bsdutils 1:2.41.5-0+deb13u1 amd64
+libhogweed6t64 3.10.1-1 amd64
+libnettle8t64 3.10.1-1 amd64
+libssl3t64 3.5.7-1~deb13u3 amd64
+openssl-provider-legacy 3.5.7-1~deb13u3 amd64

@@ -31,6 +31,13 @@ For those tools, `--sbom` emits a separate, plain SBOM:
   class) or os-release `ID=poky`. Packages that get no purl (an rpm tree
   with neither os-release nor a Yocto marker has no vendor namespace) are
   counted in the `pqc-readiness:sbom:packages-without-purl` property.
+- Purls are written in the canonical form of ECMA-427 (the purl
+  standard), clause 5.4: letters, digits, `. - _ ~` and `:` stay as they
+  are and everything else is percent-encoded, so `+` becomes `%2B`
+  (`pkg:deb/debian/bash@5.2.37-2%2Bb10?distro=debian-13`) and a Debian
+  epoch keeps its colon (`bsdutils@1:2.41.5-0%2Bdeb13u1`). `--cbom` uses
+  the same purls for the same packages, so the two documents join by
+  string comparison (#243, #257).
 - rpm's `gpg-pubkey` pseudo-packages are left out; they're trust anchors,
   not software (`--scan-signing-keys` reports them).
 - **No cryptographic assets.** Use `--cbom` for those.

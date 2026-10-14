@@ -39,6 +39,7 @@ import json
 import sys
 from collections.abc import Iterator
 from typing import Any
+from urllib.parse import unquote
 
 Bom = dict[str, Any]
 
@@ -116,9 +117,11 @@ def join_certificates(host: Bom, other: Bom) -> list[tuple[str, dict[str, Any]]]
 
 
 def package_key(purl: str) -> tuple[str, str]:
-    """(type/namespace/name, upstream version) of a purl."""
+    """(type/namespace/name, upstream version) of a purl, percent-decoded
+    so a canonical purl (`1.0%2Bgit`) joins with one written the lenient
+    way (`1.0+git`) by another tool."""
     head, _, version = purl.split("?", 1)[0].partition("@")
-    return head, version.split("-", 1)[0]
+    return unquote(head), unquote(version).split("-", 1)[0]
 
 
 def join_packages(cbom: Bom, sbom: Bom) -> list[tuple[str, list[str]]]:

@@ -10,7 +10,6 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from .. import report as _report
 from .. import registry as _registry
@@ -1085,7 +1084,7 @@ _OPENSSL_CLI_VERSION = re.compile(r"OpenSSL\s+(\S+)")
 
 
 def _purl_part(value: str) -> str:
-    return quote(value, safe=".+-_~")
+    return _sbom.purl_encode(value)
 
 
 def _library_from_source(source: str) -> tuple[str, str] | None:
@@ -1136,7 +1135,7 @@ def _library_components(
         name, version = str(entry.get("package", "")), str(entry.get("version", ""))
         if not name or not version:
             continue
-        pkg_purl = _sbom.package_purl(_package_fields(entry), osr)
+        pkg_purl = _sbom.sbom_purl(_package_fields(entry), osr)
         if pkg_purl is None or pkg_purl in libs:
             continue
         props = _cbom_provenance() + [
@@ -1247,10 +1246,12 @@ def _tri(value: Any) -> str:
 
 
 def _package_purl(r: _report.Report, pkg: dict[str, Any]) -> str | None:
-    """Distro purl for a package, or None when the family has no purl type.
-    Built by --sbom's own function, so when the package database gave
-    release / arch / epoch it is the exact purl --sbom emits (#222)."""
-    return _sbom.package_purl(pkg, r.os_release or {})
+    """The purl --sbom emits for the same installed package, so the two
+    documents join on it (#222).  Looked up in --sbom's own index rather
+    than rebuilt, so the package database kind, /etc/buildinfo and the
+    Yocto recipe all match on every family (#257).  None when --sbom has
+    no purl for the package."""
+    return _sbom.sbom_purl(pkg, r.os_release or {})
 
 
 def _generic_purl(name: str, version: str) -> str:

@@ -69,8 +69,15 @@ _YOCTO_IDS = ("poky",)
 _SRPM_RE = re.compile(r"^(?P<name>.+)-(?P<version>[^-]+)-(?P<release>[^-]+)\.src\.rpm$")
 
 
-def _q(value: str) -> str:
-    return quote(value, safe=".+-_~")
+def purl_encode(value: str) -> str:
+    """Percent-encode one purl component in canonical form (ECMA-427,
+    clause 5.4): letters, digits, the punctuation ". - _ ~" and the colon
+    stay as they are; everything else, '+' included, is encoded.  --cbom
+    uses this too, so the two documents spell every purl the same way."""
+    return quote(value, safe=".-_~:")
+
+
+_q = purl_encode
 
 
 def installed_packages(
@@ -204,6 +211,59 @@ def package_purl(
     quals.append(("distro", distro))
     qs = "&".join(f"{k}={_q(v)}" for k, v in sorted(quals))
     return f"pkg:{ptype}/{_q(str(vendor).lower())}/{_q(str(name))}@{_q(full)}?{qs}"
+
+
+# (HOST_PREFIX, family) -> {(name, version[-release]): purl}.  Also keyed
+# by (name, upstream version) when that names exactly one package, for
+# records that carry no release (library ownership on probed databases).
+_PURL_INDEX: dict[tuple[str, str], dict[tuple[str, str], str]] = {}
+
+
+def _purl_index(os_release: dict[str, Any]) -> dict[tuple[str, str], str]:
+    """The purl --sbom emits for each installed package, keyed by name and
+    version[-release].  Built from the same inventory and context (package
+    database kind, /etc/buildinfo, SOURCERPM) as build_sbom, once per host
+    or tree."""
+    key = (_platform.HOST_PREFIX, str(os_release.get("family", "unknown")))
+    if key not in _PURL_INDEX:
+        pkgs, _ = installed_packages(os_release)
+        buildinfo = read_buildinfo()
+        index: dict[tuple[str, str], str] = {}
+        upstream: dict[tuple[str, str], set[str]] = {}
+        for pkg in pkgs:
+            purl = package_purl(pkg, os_release, buildinfo)
+            if purl is None:
+                continue
+            name, version = str(pkg.get("name", "")), str(pkg.get("version", ""))
+            full = version + (f"-{pkg['release']}" if pkg.get("release") else "")
+            index.setdefault((name, full), purl)
+            upstream.setdefault((name, version), set()).add(purl)
+        for k, found in upstream.items():
+            if len(found) == 1 and k not in index:
+                index[k] = next(iter(found))
+        _PURL_INDEX[key] = index
+    return _PURL_INDEX[key]
+
+
+def sbom_purl(pkg: dict[str, Any], os_release: dict[str, Any]) -> str | None:
+    """The exact purl --sbom gives an installed package, for documents that
+    must join with it (--cbom).  `pkg` needs name and version, plus release
+    when the database has one.  A package the inventory doesn't list gets
+    the purl package_purl would build for it with the same context
+    (database kind, /etc/buildinfo); None when there is no purl type."""
+    name, version = pkg.get("name"), pkg.get("version")
+    if not name or not version:
+        return None
+    full = str(version) + (f"-{pkg['release']}" if pkg.get("release") else "")
+    found = _purl_index(os_release).get((str(name), full))
+    if found:
+        return found
+    ctx = dict(pkg)
+    if not ctx.get("db") and str(os_release.get("family")) not in _DB_BY_FAMILY:
+        probed = _packages.probe_package_db_cached()
+        if probed is not None:
+            ctx["db"] = str(probed["kind"])
+    return package_purl(ctx, os_release, read_buildinfo())
 
 
 def build_sbom(r: _report.Report) -> dict[str, Any]:
