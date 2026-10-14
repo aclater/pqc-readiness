@@ -155,9 +155,9 @@ def test_distro_packages_get_distro_purls_with_encoded_versions() -> None:
         == "pkg:deb/debian/libgnutls30t64@3.8.9-3?distro=debian-13"
     )
     assert libs["openjdk-21-jre-headless"] == (
-        "pkg:deb/debian/openjdk-21-jre-headless@21.0.8+9-1?distro=debian-13"
+        "pkg:deb/debian/openjdk-21-jre-headless@21.0.8%2B9-1?distro=debian-13"
     )
-    assert libs["epochpkg"] == "pkg:deb/debian/epochpkg@1%3A2.3-4?distro=debian-13"
+    assert libs["epochpkg"] == "pkg:deb/debian/epochpkg@1:2.3-4?distro=debian-13"
 
 
 @pytest.mark.parametrize(

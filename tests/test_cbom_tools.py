@@ -244,3 +244,34 @@ def test_cli_round_trip(tmp_path: Path, capsys: Any) -> None:
         json.loads(renamed.read_text())["metadata"]["component"]["bom-ref"]
         == "host/img"
     )
+
+
+def test_join_packages_decodes_purls_before_comparing() -> None:
+    # A canonical purl (`%2B`, #243) joins with one another tool wrote the
+    # lenient way (`+`).
+    cbom = _bom(
+        [
+            {
+                "type": "library",
+                "bom-ref": "l1",
+                "name": "base-files",
+                "purl": "pkg:deb/debian/base-files@13.8%2Bdeb13u7?distro=debian-13",
+            }
+        ]
+    )
+    sbom = _bom(
+        [
+            {
+                "type": "library",
+                "bom-ref": "s1",
+                "name": "base-files",
+                "purl": "pkg:deb/debian/base-files@13.8+deb13u7?arch=amd64",
+            }
+        ]
+    )
+    assert tools.join_packages(cbom, sbom) == [
+        (
+            "pkg:deb/debian/base-files@13.8%2Bdeb13u7?distro=debian-13",
+            ["pkg:deb/debian/base-files@13.8+deb13u7?arch=amd64"],
+        )
+    ]

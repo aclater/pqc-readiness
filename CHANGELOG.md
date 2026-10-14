@@ -116,6 +116,22 @@ changes it.
 | [2.2.0](#220---2026-10-13-deployment-gap-verdict-and-pqc-failure-findings-schema-16) | 2026-10-13 | 1.6 |
 | [2.1.0](#210---2026-10-13-one-package-configuration-aware-detection-schema-15) | 2026-10-13 | 1.5 |
 | [Before 2.1.0](#before-210---2026-10-13-accuracy-fixes-faster-scans-schema-14) | 2026-10-13 | 1.4 |
+- **--cbom and --sbom name packages with the same purl on every family**
+  (#257). The CBOM now looks up the purl `--sbom` emits for a package
+  instead of rebuilding it, so the package database kind, Yocto's
+  `/etc/buildinfo` and recipe, and OpenWrt's opkg/apk types match. On the
+  official OpenWrt 24.10.8 and 25.12.5 and Yocto 6.0.3 images, every
+  distro library purl in the CBOM now appears verbatim in the SBOM; before,
+  OpenWrt and Yocto libraries got `pkg:generic/…` (or no join at all).
+- **Purls use the canonical percent-encoding** (#243): `+` is written
+  `%2B` and `:` is left as is, per ECMA-427 clause 5.4, in both `--sbom`
+  and `--cbom`. **Behaviour change for importers:** a version such as
+  `5.2.37-2+b10` now appears as `pkg:deb/debian/bash@5.2.37-2%2Bb10?…`
+  and a Debian epoch as `1:2.41.5-0%2Bdeb13u1` (it was `1%3A…`). Tools that
+  compare purls as strings will see these as new identifiers once;
+  spec-conformant tools decode both forms to the same package.
+  `deploy/cbom/cbom_tools.py join-packages` decodes before comparing, so it
+  joins either form.
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 
