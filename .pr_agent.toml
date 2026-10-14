@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# Settings for the AI pull-request reviewer (.github/workflows/pr-agent.yml,
+# #238).  Keys follow the reviewer's configuration.toml.
+
+# The model is set in the workflow's env, so it applies even before this
+# file reaches the default branch.
+
+[ignore]
+# Fixtures are captured from real hosts and examples are generated; both
+# are reviewed at capture time.  Replaces the default list.
+glob = ["tests/fixtures/**", "docs/examples/**", ".secrets.baseline"]
+
+[github_action_config]
+# Re-review after each push, not only when the PR opens.
+handle_push_trigger = true
+push_commands = ["/review"]
+
+[pr_reviewer]
+require_tests_review = true
+require_security_review = true
+require_estimate_effort_to_review = false
+extra_instructions = """
+pqc-readiness is a read-only post-quantum cryptography readiness scanner for
+Linux hosts and offline filesystem trees. CLAUDE.md and CONTRIBUTING.md hold
+the full rules. Review against these first:
+
+- Read only: the scanner must never change the host. Flag any write, chmod,
+  service restart, or database open that can create or modify files (for
+  example SQLite opened without read-only/immutable flags, or anything that
+  writes WAL or -shm files in a scanned tree).
+- Untrusted input: every file read (configs, package databases, certificates,
+  /proc, an offline --root tree) may be malformed or hostile. Flag unbounded
+  reads, path traversal or symlinks out of --root, unchecked struct.unpack
+  lengths, and parse errors that can abort the whole scan.
+- Python 3.9 floor, standard library only: flag newer syntax or stdlib APIs
+  without a fallback, and any new runtime dependency (numpy is the only
+  optional import).
+- When code can tell that software or configuration can't do PQC, it should
+  emit a SARIF/NDJSON finding, not only a JSON field.
+- deploy/ manifests drop all capabilities and mount host paths read-only;
+  extra privilege belongs in an opt-in overlay with its reason documented.
+- Feature PRs don't change SCHEMA_VERSION and JSON changes are additive. New
+  or changed flags, JSON keys, output formats and exit codes update README.md
+  in the same PR. Bug fixes include a regression test. No third-party product
+  names in code or docs.
+
+Don't comment on formatting, import order or annotation style (ruff and
+mypy --strict enforce them), or on weak algorithms the code is detecting or
+reporting, or that a standard mandates (e.g. SHA-1 for RFC 9580 v4 key
+fingerprints).
+"""
+
+[pr_code_suggestions]
+extra_instructions = """
+Follow the same rules as the review: read-only, hostile input, Python 3.9 and
+standard library only. Skip pure style suggestions.
+"""

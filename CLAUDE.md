@@ -120,6 +120,11 @@ against fixtures are not enough for detection logic.
   model in use.
 - **PRs** say `Closes #N` or `Refs #N`. Wait for CI to finish; merge only when
   every check passes. Never force-push a shared branch.
+- **AI review.** The `ai-review` workflow posts a review from a second model
+  on each PR, and again after each push. Before merging, wait for the review
+  of the latest push and answer every comment: fix it, or reply with why not.
+  If the review hasn't arrived 15 minutes after the last push (quota or
+  outage), say so in the PR and merge on green CI.
 - **Work autonomously.** Don't ask for confirmation: decide, log the decision
   in the issue, continue. Fix failing tests and CI yourself. File new bugs as
   issues and keep going. Stop only when an action risks irreversible data loss,
