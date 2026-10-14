@@ -518,3 +518,114 @@ def test_prometheus_endpoint_counts(vm) -> None:
         'pqc_readiness_service_tls_endpoints{service="postgresql",pqc="classical"} 1'
         in text
     )
+
+
+# --- Config files named on the daemon's command line (validation run 3) -----
+# The booted images started haproxy as `haproxy -f /etc/haproxy/pqct.cfg` and
+# stunnel as `stunnel /tmp/pqct-stunnel.conf`.  Reading only the standard
+# paths missed both, and the classical endpoints 7444/6444 were reported as
+# deployed although they negotiated X25519.
+
+
+@pytest.mark.parametrize(
+    ("service", "argv", "expected"),
+    [
+        (
+            "haproxy",
+            ["haproxy", "-f", "/etc/haproxy/pqct.cfg", "-D"],
+            ["/etc/haproxy/pqct.cfg"],
+        ),
+        (
+            "haproxy",
+            [
+                "/usr/sbin/haproxy",
+                "-Ws",
+                "-f",
+                "/etc/haproxy/haproxy.cfg",
+                "-f",
+                "/etc/haproxy/conf.d",
+                "-p",
+                "/run/haproxy.pid",
+            ],
+            ["/etc/haproxy/haproxy.cfg", "/etc/haproxy/conf.d"],
+        ),
+        ("haproxy", ["haproxy", "-f/etc/h.cfg"], ["/etc/h.cfg"]),
+        ("haproxy", ["haproxy", "-f", "relative.cfg"], []),
+        ("stunnel", ["stunnel", "/tmp/pqct-stunnel.conf"], ["/tmp/pqct-stunnel.conf"]),
+        (
+            "stunnel",
+            ["/usr/bin/stunnel", "/etc/stunnel/web.conf"],
+            ["/etc/stunnel/web.conf"],
+        ),
+        ("stunnel", ["stunnel", "-fd", "3"], []),
+        ("stunnel", ["stunnel"], []),
+        ("nginx", ["nginx", "-c", "/etc/nginx/other.conf"], []),
+    ],
+)
+def test_config_paths_from_cmdline(service, argv, expected) -> None:
+    assert cs.config_paths_from_cmdline(service, argv) == expected
+
+
+def test_running_daemon_config_outside_standard_paths(monkeypatch, tmp_path) -> None:
+    v = FIX / "vm-variants" / "root" / "etc"
+    (tmp_path / "etc" / "haproxy" / "conf.extra").mkdir(parents=True)
+    (tmp_path / "tmp").mkdir()
+    (tmp_path / "etc" / "haproxy" / "pqct.cfg").write_text(
+        (v / "haproxy" / "haproxy.cfg").read_text()
+    )
+    (tmp_path / "etc" / "haproxy" / "conf.extra" / "9.cfg").write_text(
+        "frontend x\n  bind :9443 ssl crt /c.pem curves P-256\n"
+    )
+    (tmp_path / "tmp" / "pqct-stunnel.conf").write_text(
+        (v / "stunnel" / "pqct.conf").read_text()
+    )
+    argv = {
+        101: [
+            "haproxy",
+            "-f",
+            "/etc/haproxy/pqct.cfg",
+            "-f",
+            "/etc/haproxy/conf.extra",
+            "-D",
+        ],
+        102: ["stunnel", "/tmp/pqct-stunnel.conf"],
+    }
+    monkeypatch.setattr(cs, "_cmdline", lambda pid: argv.get(pid, []))
+    monkeypatch.setattr(cs, "stunnel_default_curves", lambda: (None, None))
+    services_info = {
+        "listeners": [
+            _listener(1, "haproxy", 7444, "/usr/sbin/haproxy"),
+            _listener(1, "haproxy", 9443, "/usr/sbin/haproxy"),
+            _listener(2, "stunnel", 6444, "/usr/bin/stunnel"),
+            _listener(3, "sshd", 22, "/usr/sbin/sshd"),
+        ]
+    }
+    monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
+    monkeypatch.setattr(pr._platform, "_run", _no_subprocess)
+    monkeypatch.setattr(cs, "_version", lambda spec, family: None)
+
+    # Without the running processes nothing is found: standard paths are empty.
+    assert (
+        cs.scan_service_configs({"family": "rhel"}, {"pqc_native": True})["available"]
+        is False
+    )
+
+    stc = cs.scan_service_configs(
+        {"family": "rhel"}, {"pqc_native": True}, services_info
+    )
+    ha, st = _endpoints(stc, "haproxy"), _endpoints(stc, "stunnel")
+    assert ha[7443]["pqc_key_exchange"] is None
+    assert ha[7444]["pqc_key_exchange"] is False
+    assert ha[9443]["pqc_key_exchange"] is False
+    assert st[6444]["pqc_key_exchange"] is False
+    by = {s["service"]: s for s in stc["services"]}
+    assert by["haproxy"]["config_from_command_line"] == [
+        "/etc/haproxy/pqct.cfg",
+        "/etc/haproxy/conf.extra/9.cfg",
+    ]
+    assert by["stunnel"]["config_from_command_line"] == ["/tmp/pqct-stunnel.conf"]
+    # The verdict now uses those endpoints for the matching listeners.
+    path, ep = cs.endpoint_for_listener(stc, services_info["listeners"][0])
+    assert ep["pqc_key_exchange"] is False and path.startswith(
+        "service_tls_config.services["
+    )

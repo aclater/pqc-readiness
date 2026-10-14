@@ -518,6 +518,7 @@ Each `services[]` entry:
 | `service` | string | `nginx`, `apache`, `haproxy`, `stunnel`, `squid`, `postfix`, `dovecot`, `postgresql`, `mysql` (MariaDB / MySQL), `redis` (Redis / Valkey), `openldap`, `389-ds` or `tomcat`. |
 | `version` | string \| null | Present for services whose built-in default depends on it: Postfix (package version), PostgreSQL (major version from `PG_VERSION`, the Debian cluster path or the package). |
 | `default_groups_from` | string \| null | stunnel only: the binary its compiled default group list was read from. |
+| `config_from_command_line` | list[string] | haproxy and stunnel, live scans with `--scan-services` only: config files read because a running daemon that owns a listening socket was started with them (`haproxy -f <file\|dir>`, `stunnel <file>`) outside the standard paths. Absent when none. |
 | `files` | list[string] | Configuration files read, includes expanded. |
 | `unreadable` | list[object] | `{path, reason}` for files or directories that exist but couldn't be read (PostgreSQL data directories and slapd.d are root / service-user only), or required includes that are missing. |
 | `endpoints` | list[object] | TLS endpoints; see below. |

@@ -276,7 +276,9 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     if getattr(args, "scan_service_configs", False) or getattr(
         args, "scan_services", False
     ):
-        service_tls_info = _config_services.scan_service_configs(os_release, osinfo)
+        service_tls_info = _config_services.scan_service_configs(
+            os_release, osinfo, services_info
+        )
     processes_info: dict[str, Any] = {}
     if getattr(args, "scan_processes", False):
         processes_info = _runtime_processes.scan_processes()

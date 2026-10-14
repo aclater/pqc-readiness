@@ -32,6 +32,7 @@ the same code serves live hosts, --host-mount and offline --root trees.
 from __future__ import annotations
 
 import argparse
+import functools
 import logging
 import re
 from pathlib import Path
@@ -253,23 +254,41 @@ def _scan_apache(family: str, openssl_pqc: bool | None) -> list[dict[str, Any]]:
     return []
 
 
-def _scan_haproxy(family: str, openssl_pqc: bool | None) -> list[dict[str, Any]]:
+def _with_running(
+    service: dict[str, Any], paths: list[str], extra: tuple[str, ...]
+) -> dict[str, Any]:
+    used = [p for p in extra if p in paths]
+    if used:
+        service["config_from_command_line"] = used
+    return service
+
+
+def _scan_haproxy(
+    family: str, openssl_pqc: bool | None, extra: tuple[str, ...] = ()
+) -> list[dict[str, Any]]:
     paths = [p for p in ("/etc/haproxy/haproxy.cfg",) if _exists(p)]
     paths += list_glob("/etc/haproxy/conf.d/*.cfg")
+    paths = _merge_paths(paths, extra)
     if not paths:
         return []
-    return [{"service": "haproxy", **_p.parse_haproxy(paths, read_text)}]
+    svc = {"service": "haproxy", **_p.parse_haproxy(paths, read_text)}
+    return [_with_running(svc, paths, extra)]
 
 
-def _scan_stunnel(family: str, openssl_pqc: bool | None) -> list[dict[str, Any]]:
-    paths = list_glob("/etc/stunnel/*.conf")
+def _scan_stunnel(
+    family: str, openssl_pqc: bool | None, extra: tuple[str, ...] = ()
+) -> list[dict[str, Any]]:
+    paths = _merge_paths(list_glob("/etc/stunnel/*.conf"), extra)
     if not paths:
         return []
     default, binary = stunnel_default_curves()
     r = _p.parse_stunnel(paths, read_text, list_glob, default)
-    return [
-        {"service": "stunnel", "default_groups_from": binary if default else None, **r}
-    ]
+    svc = {
+        "service": "stunnel",
+        "default_groups_from": binary if default else None,
+        **r,
+    }
+    return [_with_running(svc, paths, extra)]
 
 
 def _scan_squid(family: str, openssl_pqc: bool | None) -> list[dict[str, Any]]:
@@ -434,6 +453,86 @@ def _scan_tomcat(family: str, openssl_pqc: bool | None) -> list[dict[str, Any]]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# Config files named on a running daemon's command line
+# ---------------------------------------------------------------------------
+
+MAX_CMDLINE_BYTES = 64 * 1024
+
+
+def _merge_paths(paths: list[str], extra: tuple[str, ...]) -> list[str]:
+    out = list(paths)
+    for p in extra:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def config_paths_from_cmdline(service: str, argv: list[str]) -> list[str]:
+    """Config paths a daemon was started with, beyond the standard ones.
+
+    haproxy takes one or more ``-f <file|dir>`` (a directory means its
+    ``*.cfg`` files, in order); stunnel takes its config file as the first
+    argument that isn't an option.  Relative paths are skipped: they depend
+    on the daemon's working directory, which isn't recorded."""
+    out: list[str] = []
+    if service == "haproxy":
+        i = 1
+        while i < len(argv):
+            a = argv[i]
+            if a == "-f" and i + 1 < len(argv):
+                out.append(argv[i + 1])
+                i += 2
+                continue
+            if a.startswith("-f") and len(a) > 2:
+                out.append(a[2:])
+            i += 1
+    elif service == "stunnel":
+        for a in argv[1:]:
+            if a == "-fd":
+                break
+            if not a.startswith("-"):
+                out.append(a)
+                break
+    return [p for p in out if p.startswith("/")]
+
+
+def _cmdline(pid: int) -> list[str]:
+    try:
+        p = _platform.host_path(f"/proc/{pid}/cmdline")
+        with open(p, "rb") as f:
+            raw = f.read(MAX_CMDLINE_BYTES)
+    except OSError:
+        return []
+    return [a.decode("utf-8", "replace") for a in raw.split(b"\0") if a]
+
+
+def running_config_paths(services_info: dict[str, Any] | None) -> dict[str, list[str]]:
+    """Per service, config files named on the command line of a process
+    that owns a listening socket (from ``--scan-services``).  Directories
+    are expanded to their ``*.cfg`` files."""
+    out: dict[str, list[str]] = {}
+    seen: set[int] = set()
+    for lst in (services_info or {}).get("listeners") or []:
+        pid = lst.get("pid")
+        name = service_for_listener(lst)
+        if not isinstance(pid, int) or pid in seen or name not in CMDLINE_SERVICES:
+            continue
+        seen.add(pid)
+        for path in config_paths_from_cmdline(name, _cmdline(pid)):
+            try:
+                is_dir = _host(path).is_dir()
+            except (OSError, _packages.RpmdbError):
+                is_dir = False
+            for f in list_glob(path.rstrip("/") + "/*.cfg") if is_dir else [path]:
+                if f not in out.setdefault(name, []):
+                    out[name].append(f)
+    return out
+
+
+CMDLINE_SERVICES = ("haproxy", "stunnel")
+
+
 SCANNERS: tuple[
     tuple[str, Callable[[str, "bool | None"], list[dict[str, Any]]]], ...
 ] = (
@@ -454,9 +553,13 @@ SCANNERS: tuple[
 
 
 def scan_service_configs(
-    os_release: dict[str, Any] | None = None, openssl: dict[str, Any] | None = None
+    os_release: dict[str, Any] | None = None,
+    openssl: dict[str, Any] | None = None,
+    services_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The ``service_tls_config`` report object."""
+    """The ``service_tls_config`` report object.  With ``services_info``
+    (a live ``--scan-services`` result), config files named on a running
+    daemon's command line are read too."""
     family = (os_release or {}).get("family", "unknown")
     o = openssl or {}
     openssl_pqc: bool | None = None
@@ -464,8 +567,11 @@ def scan_service_configs(
         openssl_pqc = bool(o.get("pqc_native"))
     elif o.get("pqc_native_expected") is not None:
         openssl_pqc = bool(o.get("pqc_native_expected"))
+    running = running_config_paths(services_info)
     services: list[dict[str, Any]] = []
     for name, fn in SCANNERS:
+        if running.get(name):
+            fn = functools.partial(fn, extra=tuple(running[name]))  # type: ignore[call-arg]
         try:
             services.extend(fn(family, openssl_pqc))
         except Exception as e:  # noqa: BLE001 - one parser must not sink the scan
