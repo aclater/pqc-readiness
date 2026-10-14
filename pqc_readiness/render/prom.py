@@ -228,6 +228,30 @@ def render_prometheus(r: _report.Report) -> str:
                 [({}, float(len(bundled)))],
             )
 
+    stc = r.service_tls_config or {}
+    if stc.get("available"):
+        # Server endpoints per service by what their own configuration
+        # does with PQC key exchange (#216): offers it, keeps it out, or
+        # follows the host's TLS default.
+        endpoint_counts: dict[tuple[str, str], int] = {}
+        for svc in stc.get("services") or []:
+            for ep in svc.get("endpoints") or []:
+                if ep.get("role") != "server":
+                    continue
+                state = {True: "pqc", False: "classical", None: "library_default"}[
+                    ep.get("pqc_key_exchange")
+                ]
+                key = (str(svc.get("service")), state)
+                endpoint_counts[key] = endpoint_counts.get(key, 0) + 1
+        m.family(
+            "service_tls_endpoints",
+            "Server TLS endpoints by service and what their own configuration does with PQC key exchange (--scan-service-configs).",
+            [
+                ({"service": svc, "pqc": state}, float(n))
+                for (svc, state), n in sorted(endpoint_counts.items())
+            ],
+        )
+
     try:
         run_at = datetime.fromisoformat(r.generated_at).timestamp()
     except (TypeError, ValueError):

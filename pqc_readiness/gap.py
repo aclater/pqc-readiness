@@ -5,7 +5,10 @@ binary capability) and what it is *set up* to do (crypto policy, OpenSSL
 config, sshd's effective KexAlgorithms, IKE proposals).  This module joins
 the two into one state per protocol, and per listening service when
 `--scan-services` ran, and per outbound-client process group when
-`--scan-processes` ran (#202):
+`--scan-processes` ran (#202).  A service's own TLS configuration (#216,
+`service_tls_config`) decides its `configured` judgement when it sets a
+group list, caps TLS below 1.3 or can't use ML-KEM at all; otherwise the
+host default applies:
 
   deployed                 capable and configured to use PQC
   capable_not_configured   capable, but configuration keeps it classical
@@ -33,6 +36,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from .detect import config_services as _config_services
 from .detect import runtime_services as _svc
 
 STATES: tuple[str, ...] = (
@@ -313,6 +317,7 @@ def _services(
     scl = report.get("service_crypto_linkage") or {}
     if not scl.get("available"):
         return {"available": False}
+    stc = report.get("service_tls_config") or {}
     items: dict[tuple[Any, ...], dict[str, Any]] = {}
     no_crypto = 0
     unattributed = 0
@@ -326,29 +331,36 @@ def _services(
             continue
         kind = _service_kind(ln)
         own_default = False
+        own_config = (
+            _config_services.endpoint_for_listener(stc, ln) if kind == "tls" else None
+        )
         if kind == "ssh":
             v = dict(protocols["ssh"])
         else:
             capable = cap["library_pqc_capable"]
+            cap_from = [f"service_crypto_linkage.listeners[{i}].crypto_libraries"] + (
+                [f"service_crypto_linkage.listeners[{i}].go"] if ln.get("go") else []
+            )
             if cap["go_default_hybrid"]:
                 # Go's crypto/tls ignores the system policy: its default is
                 # the configuration.
                 configured: bool | None = True
                 conf_from = [f"service_crypto_linkage.listeners[{i}].go"]
                 own_default = True
+            elif own_config and own_config[1].get("pqc_key_exchange") is not None:
+                # The service's own settings (a group list, a TLS 1.3 cap or
+                # a single-curve option) win over the system policy (#216).
+                configured = bool(own_config[1]["pqc_key_exchange"])
+                conf_from = [own_config[0]]
+                own_default = True
+                if own_config[1].get("service_supports_pqc_groups") is False:
+                    capable = False
+                    cap_from = cap_from + [own_config[0]]
             else:
                 configured, conf_from = tls_configured(report)
-            v = _verdict(
-                capable,
-                configured,
-                [f"service_crypto_linkage.listeners[{i}].crypto_libraries"]
-                + (
-                    [f"service_crypto_linkage.listeners[{i}].go"]
-                    if ln.get("go")
-                    else []
-                ),
-                conf_from,
-            )
+                if own_config:
+                    conf_from = conf_from + [own_config[0]]
+            v = _verdict(capable, configured, cap_from, conf_from)
         # One entry per process / port / verdict: several instances (IPv4 +
         # IPv6 sockets, or one daemon per systemd scope) collapse unless
         # their crypto differs.
@@ -378,6 +390,8 @@ def _services(
             ),
             "listeners": [f"service_crypto_linkage.listeners[{i}]"],
         }
+        if own_config:
+            items[key]["service_config"] = own_config[0]
     services = sorted(
         items.values(),
         key=lambda s: (str(s["process"]), int(s["port"] or 0), str(s["protocol"])),
@@ -508,6 +522,14 @@ def compute_gap(report: Mapping[str, Any]) -> dict[str, Any]:
         "clients": clients,
         "gaps": gaps,
     }
+
+
+def service_config_blocks(report: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Server endpoints whose own TLS configuration keeps PQC out while
+    the host's TLS library could negotiate it (#216, SARIF pqc-021)."""
+    return _config_services.blocked_endpoints(
+        dict(report.get("service_tls_config") or {}), tls_capable(report)[0]
+    )
 
 
 def gap_for(report: Mapping[str, Any]) -> dict[str, Any]:

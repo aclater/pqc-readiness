@@ -306,6 +306,32 @@ def _full_trigger_report() -> pr.Report:
                 "deprecated_signing": ["RSASHA1"],
             },
         },
+        # nginx pins a classical group list (#216, pqc-021).
+        service_tls_config={
+            "available": True,
+            "services": [
+                {
+                    "service": "nginx",
+                    "files": ["/etc/nginx/nginx.conf"],
+                    "unreadable": [],
+                    "endpoints": [
+                        {
+                            "file": "/etc/nginx/conf.d/site.conf",
+                            "line": 3,
+                            "role": "server",
+                            "ports": [443],
+                            "groups": ["X25519", "prime256v1"],
+                            "groups_setting": "ssl_ecdh_curve",
+                            "groups_source": "config",
+                            "tls13_allowed": None,
+                            "service_supports_pqc_groups": None,
+                            "pqc_key_exchange": False,
+                            "reason": "ssl_ecdh_curve (config) has no ML-KEM group",
+                        }
+                    ],
+                }
+            ],
+        },
     )
     # The deployment-gap verdict (#107) is computed from the fields above,
     # as collect_report does; TLS and SSH are capable-not-configured here.
