@@ -159,7 +159,13 @@ def classify_bundled_crypto(
         for pat, hint in patterns:
             if pat.match(name):
                 seen.add(name)
-                out.append({"package": name, "version": entry["version"], "note": hint})
+                row = {"package": name, "version": entry["version"], "note": hint}
+                # Kept so the CBOM can emit the same exact purl as --sbom
+                # (#222); only the rpm readers and some databases have them.
+                for key in ("release", "epoch", "arch"):
+                    if entry.get(key) not in (None, ""):
+                        row[key] = str(entry[key])
+                out.append(row)
                 break
     return out
 
@@ -1159,7 +1165,9 @@ def _scan_rpm_packages(family: str) -> dict[str, Any]:
         if reason == "rpm not on PATH":
             reason = f"rpm not on PATH ({_osinfo._install_hint('rpm', family)})"
         return {"available": False, "reason": reason}
-    pkgs = [{"name": p["name"], "version": p["version"]} for p in inv["packages"]]
+    # Whole rows: classify_bundled_crypto keeps release / epoch / arch for
+    # the CBOM's exact purls (#222).
+    pkgs = list(inv["packages"])
     out: dict[str, Any] = {
         "available": True,
         "package_manager": "rpm",

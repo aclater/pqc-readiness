@@ -15,6 +15,7 @@ from urllib.parse import quote
 from .. import report as _report
 from .. import registry as _registry
 from . import cbom_profiles as _profiles
+from . import sbom as _sbom
 
 
 # Canonical cryptographic-asset model ----------------------------------------
@@ -1081,14 +1082,6 @@ def _mirror_provides(
 # loaded libcrypto differs; the library is what actually runs.
 _OPENSSL_LIBRARY_VERSION = re.compile(r"Library:\s*OpenSSL\s+(\S+)")
 _OPENSSL_CLI_VERSION = re.compile(r"OpenSSL\s+(\S+)")
-# os-release family -> purl type (https://github.com/package-url/purl-spec).
-_PURL_TYPE_BY_FAMILY = {
-    "rhel": "rpm",
-    "suse": "rpm",
-    "debian": "deb",
-    "arch": "alpm",
-    "alpine": "apk",
-}
 
 
 def _purl_part(value: str) -> str:
@@ -1115,10 +1108,10 @@ def _library_components(
 ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
     """Library components with purls, plus which crypto-asset bom-refs each
     provides.  Stacks the scanner probed (OpenSSL, OpenSSH, …) get a
-    `pkg:generic` purl with the detected version; crypto-bearing distro
-    packages from `--scan-packages` get a distro purl.  Versions are
-    upstream versions only (no distro release), so treat the purls as
-    identification, not as input for exact-build vulnerability matching."""
+    `pkg:generic` purl with the detected version.  Crypto-bearing distro
+    packages from `--scan-packages` get the same exact purl `--sbom` emits
+    for them (full version-release, arch, epoch; #222), so the two
+    documents join on purl."""
     libs: dict[str, dict[str, Any]] = {}
     provides: dict[str, list[str]] = {}
     for asset in assets:
@@ -1139,40 +1132,43 @@ def _library_components(
             }
         provides.setdefault(purl, []).append(asset.key)
     osr = r.os_release or {}
-    ptype = _PURL_TYPE_BY_FAMILY.get(str(osr.get("family")))
-    pkgs = (r.packages or {}).get("bundled_crypto") or []
-    if ptype and osr.get("id"):
-        namespace = _purl_part(str(osr["id"]))
-        distro = f"{osr['id']}-{osr.get('version_id') or ''}".rstrip("-")
-        for entry in pkgs:
-            name, version = str(entry.get("package", "")), str(entry.get("version", ""))
-            if not name or not version:
-                continue
-            purl = (
-                f"pkg:{ptype}/{namespace}/{_purl_part(name)}@{_purl_part(version)}"
-                f"?distro={_purl_part(distro)}"
-            )
-            if purl in libs:
-                continue
-            props = _cbom_provenance() + [
-                {
-                    "name": "pqc-readiness:library:basis",
-                    "value": "bundled-crypto-package",
-                }
-            ]
-            if entry.get("note"):
-                props.append(
-                    {"name": "pqc-readiness:library:note", "value": str(entry["note"])}
-                )
-            libs[purl] = {
-                "type": "library",
-                "bom-ref": purl,
-                "name": name,
-                "version": version,
-                "purl": purl,
-                "properties": props,
+    for entry in (r.packages or {}).get("bundled_crypto") or []:
+        name, version = str(entry.get("package", "")), str(entry.get("version", ""))
+        if not name or not version:
+            continue
+        pkg_purl = _sbom.package_purl(_package_fields(entry), osr)
+        if pkg_purl is None or pkg_purl in libs:
+            continue
+        props = _cbom_provenance() + [
+            {
+                "name": "pqc-readiness:library:basis",
+                "value": "bundled-crypto-package",
             }
+        ]
+        if entry.get("note"):
+            props.append(
+                {"name": "pqc-readiness:library:note", "value": str(entry["note"])}
+            )
+        libs[pkg_purl] = {
+            "type": "library",
+            "bom-ref": pkg_purl,
+            "name": name,
+            # Same version string as the --sbom component (version-release).
+            "version": version
+            + (f"-{entry['release']}" if entry.get("release") else ""),
+            "purl": pkg_purl,
+            "properties": props,
+        }
     return list(libs.values()), provides
+
+
+def _package_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    """A bundled_crypto row in the shape sbom.package_purl takes."""
+    pkg = {"name": entry.get("package"), "version": entry.get("version")}
+    for key in ("release", "epoch", "arch"):
+        if entry.get(key) not in (None, ""):
+            pkg[key] = entry[key]
+    return pkg
 
 
 # Crypto libraries and services (#194) ---------------------------------------
@@ -1250,17 +1246,11 @@ def _tri(value: Any) -> str:
     return "unknown" if value is None else str(bool(value)).lower()
 
 
-def _package_purl(r: _report.Report, name: str, version: str) -> str | None:
-    """Distro purl for a package, or None when the family has no purl type."""
-    osr = r.os_release or {}
-    ptype = _PURL_TYPE_BY_FAMILY.get(str(osr.get("family")))
-    if not ptype or not osr.get("id") or not name or not version:
-        return None
-    distro = f"{osr['id']}-{osr.get('version_id') or ''}".rstrip("-")
-    return (
-        f"pkg:{ptype}/{_purl_part(str(osr['id']))}/{_purl_part(name)}"
-        f"@{_purl_part(version)}?distro={_purl_part(distro)}"
-    )
+def _package_purl(r: _report.Report, pkg: dict[str, Any]) -> str | None:
+    """Distro purl for a package, or None when the family has no purl type.
+    Built by --sbom's own function, so when the package database gave
+    release / arch / epoch it is the exact purl --sbom emits (#222)."""
+    return _sbom.package_purl(pkg, r.os_release or {})
 
 
 def _generic_purl(name: str, version: str) -> str:
@@ -1356,7 +1346,7 @@ def _crypto_library_inventory(
             continue
         version = str(info.get("version") or "") or None
         pkg = next(iter(info.get("packages") or []), None) or {}
-        purl = _package_purl(r, str(pkg.get("name", "")), str(pkg.get("version", "")))
+        purl = _package_purl(r, pkg) if pkg else None
         if purl is None and version:
             purl = _generic_purl(lib, version)
         ref = purl or f"crypto-library/{lib}"
@@ -1527,6 +1517,7 @@ def render_cbom(
     spec_version: str = CBOM_DEFAULT_VERSION,
     profile: str = _profiles.PROFILE_NONE,
     interop: str = INTEROP_NONE,
+    namespaced: bool = False,
 ) -> str:
     """Render the report as a CycloneDX CBOM (JSON), specVersion 1.7 by
     default or 1.6.  Both are schema-conformant — see tests/test_cbom.py.
@@ -1534,7 +1525,8 @@ def render_cbom(
     the same assets and adds protocol / certificate components.
     `profile` (see cbom_profiles.PROFILES) adds regime annotations.
     `interop` (see INTEROP_MODES) shapes the BOM for SBOM-oriented
-    consumers (#175); the default leaves output unchanged."""
+    consumers (#175); the default leaves output unchanged.  `namespaced`
+    prefixes every property name with `pqc-readiness:` (#222)."""
     if interop not in INTEROP_MODES:
         raise ValueError(f"unsupported CBOM interop mode {interop!r}")
     if spec_version not in CBOM_VERSIONS:
@@ -1654,7 +1646,33 @@ def render_cbom(
         bom["dependencies"] = deps
     if prof is not None:
         bom["metadata"]["properties"] = _profile_metadata_props(prof, r, components)
+    if namespaced:
+        _namespace_property_names(bom)
     return json.dumps(bom, indent=2)
+
+
+PROPERTY_NAMESPACE = "pqc-readiness"
+# Property names already in a namespace: ours, and the CycloneDX taxonomy.
+_NAMESPACED_PREFIXES = (f"{PROPERTY_NAMESPACE}:", "cdx:")
+
+
+def _namespace_property_names(node: Any) -> None:
+    """Prefix every property name not already namespaced with
+    `pqc-readiness:`, in place, so documents merged from several tools
+    can't collide (CycloneDX property-name guidance; #222).  Opt-in:
+    importers may key on the current names."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, list):
+                for prop in value:
+                    if isinstance(prop, dict) and isinstance(prop.get("name"), str):
+                        if not prop["name"].startswith(_NAMESPACED_PREFIXES):
+                            prop["name"] = f"{PROPERTY_NAMESPACE}:{prop['name']}"
+            else:
+                _namespace_property_names(value)
+    elif isinstance(node, list):
+        for item in node:
+            _namespace_property_names(item)
 
 
 # The output registry hands renderers only the Report, so the chosen
@@ -1664,6 +1682,20 @@ def render_cbom(
 _selected_version = CBOM_DEFAULT_VERSION
 _selected_profile = _profiles.PROFILE_NONE
 _selected_interop = INTEROP_NONE
+_selected_namespaced = False
+
+
+class _CbomNamespacedAction(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        global _selected_namespaced
+        _selected_namespaced = True
+        setattr(namespace, self.dest, True)
 
 
 class _CbomProfileAction(argparse.Action):
@@ -1719,11 +1751,14 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
 # stay together at the top of --help.
 @_registry.register_arguments(19)
 def add_version_argument(ap: argparse.ArgumentParser) -> None:
-    """--cbom-version, --cbom-profile and --cbom-interop."""
+    """--cbom-version, --cbom-profile, --cbom-interop and
+    --cbom-namespaced-properties."""
     global _selected_version, _selected_profile, _selected_interop
+    global _selected_namespaced
     _selected_version = CBOM_DEFAULT_VERSION
     _selected_profile = _profiles.PROFILE_NONE
     _selected_interop = INTEROP_NONE
+    _selected_namespaced = False
     ap.add_argument(
         "--cbom-version",
         choices=list(CBOM_VERSIONS),
@@ -1754,10 +1789,23 @@ def add_version_argument(ap: argparse.ArgumentParser) -> None:
             "consumers that reject cryptographic assets)"
         ),
     )
+    ap.add_argument(
+        "--cbom-namespaced-properties",
+        nargs=0,
+        default=False,
+        action=_CbomNamespacedAction,
+        help=(
+            "prefix every --cbom property name with pqc-readiness: so "
+            "documents merged from several tools can't collide (opt-in: "
+            "importers may key on the current names)"
+        ),
+    )
 
 
 def _render_selected(r: _report.Report) -> str:
-    return render_cbom(r, _selected_version, _selected_profile, _selected_interop)
+    return render_cbom(
+        r, _selected_version, _selected_profile, _selected_interop, _selected_namespaced
+    )
 
 
 _registry.register_output(_registry.OutputFormat("cbom", 10, _render_selected))

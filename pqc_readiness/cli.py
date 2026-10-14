@@ -166,12 +166,19 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def _report_hostname() -> str:
-    """The scanned host's name.  PQC_HOSTNAME wins (DaemonSets set it to
-    spec.nodeName via the downward API).  Under --host-mount the container
-    has its own UTS namespace, so gethostname() is the pod name; use the
-    host's /etc/hostname when it has one (#220)."""
-    name = os.environ.get("PQC_HOSTNAME", "").strip()
+def _explicit_hostname(args: argparse.Namespace | None = None) -> str:
+    """--host-name, else PQC_HOSTNAME (DaemonSets set it to spec.nodeName
+    via the downward API), else ""."""
+    name = str(getattr(args, "host_name", "") or "").strip()
+    return name or os.environ.get("PQC_HOSTNAME", "").strip()
+
+
+def _report_hostname(args: argparse.Namespace | None = None) -> str:
+    """The scanned host's name.  --host-name / PQC_HOSTNAME win.  Under
+    --host-mount the container has its own UTS namespace, so
+    gethostname() is the pod name; use the host's /etc/hostname when it
+    has one (#220)."""
+    name = _explicit_hostname(args)
     if name:
         return name
     if _platform.HOST_PREFIX:
@@ -188,7 +195,11 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     already be applied (set_host_prefix) and output/colour handling is
     the caller's job."""
     if _platform.OFFLINE_ROOT:
-        return _with_gap(_runtime_offline.collect_offline_report(args))
+        r = _runtime_offline.collect_offline_report(args)
+        # Offline trees often have no /etc/hostname; an explicit name keeps
+        # several offline CBOMs apart when imported together (#222).
+        r.hostname = _explicit_hostname(args) or r.hostname
+        return _with_gap(r)
     arch = platform.machine().lower()
     flags = _hardware.cpu_flags(arch)
     total_gb, avail_gb = _hardware.memory_info()
@@ -343,7 +354,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
 
     r = _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        hostname=_report_hostname(),
+        hostname=_report_hostname(args),
         os=os_release.get("pretty_name") or f"{platform.system()} {platform.release()}",
         arch=arch,
         cpu_model=_hardware.cpu_model(),
@@ -578,6 +589,23 @@ def _add_destination_arguments(ap: argparse.ArgumentParser) -> None:
             "write the report (any format, incl. --aggregate/--recommend/"
             "--ansible) to FILE instead of stdout; the parent directory "
             "must already exist.  Mutually exclusive with --save"
+        ),
+    )
+
+
+# Slot 62: next to --host-mount / --root, which change whose name it is.
+@_registry.register_arguments(62)
+def _add_host_name_argument(ap: argparse.ArgumentParser) -> None:
+    """--host-name."""
+    ap.add_argument(
+        "--host-name",
+        metavar="NAME",
+        default="",
+        help=(
+            "name to report for the scanned host in every output (JSON "
+            "hostname, CBOM/SBOM host component).  Overrides PQC_HOSTNAME "
+            "and the detected name; use it with --root, where a tree often "
+            "has no /etc/hostname and would otherwise be reported as unknown"
         ),
     )
 
