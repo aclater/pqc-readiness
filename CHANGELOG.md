@@ -132,6 +132,19 @@ changes it.
   spec-conformant tools decode both forms to the same package.
   `deploy/cbom/cbom_tools.py join-packages` decodes before comparing, so it
   joins either form.
+- **Offline `--root` scans report sshd's key exchange** (#247). They used
+  to leave `sshd` empty, so the SSH gap row read `not_present` even for a
+  tree with a configured sshd.
+  The tree's `sshd_config` and its `Include` chain are now parsed inside the
+  root (never `sshd -T`), and OpenSSH's PQC capability comes from the kex
+  methods compiled into the tree's `ssh` / `sshd` / `sshd-session`
+  binaries (`sshd.openssh_kex_evidence`), which keeps distro backports
+  right where a version table would not. When nothing sets KexAlgorithms,
+  the compiled-in default is read from the server binary if it holds a
+  single kex list (`sshd.kex_default_source`). The gap row and `pqc-010`
+  now work offline. Checked against booted Rocky 9, Fedora 44, Ubuntu
+  26.04, Leap 16 and Tumbleweed images: the parsed list equals `sshd -T`
+  and the binary's PQC methods equal `ssh -Q kex` on all five.
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 

@@ -30,6 +30,8 @@ from ..detect import certs_discovery as _certs_discovery
 from ..detect import config_openssl as _config_openssl
 from ..detect import openssl_host as _openssl_host
 from ..detect import config_policy as _config_policy
+from ..detect import config_sshd as _config_sshd
+from ..detect import openssh_build as _openssh_build
 from ..detect import osinfo as _osinfo
 from ..detect import packages as _packages
 from ..detect import protocols as _protocols
@@ -214,6 +216,13 @@ def offline_ipsec() -> dict[str, Any]:
     return out
 
 
+def offline_sshd() -> dict[str, Any]:
+    """The tree's effective sshd key exchange: config files parsed under
+    the root (never `sshd -T`), with the OpenSSH build's kex methods read
+    from its binaries standing in for `ssh -Q kex` (#247)."""
+    return _config_sshd.detect_sshd(_openssh_build.openssh_build_kex())
+
+
 def scan_mode_record(root: str) -> dict[str, Any]:
     return {
         "mode": MODE,
@@ -295,6 +304,11 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
             openssl,
         )
 
+    # sshd_config and its Includes are files; `sshd -T` and `ssh -Q kex`
+    # can't run on a tree, so the effective config is parsed and the
+    # build's kex methods are read from its binaries (#247).
+    sshd = _platform.guarded_scan("sshd", offline_sshd)
+
     return _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         hostname=tree_hostname(),
@@ -312,6 +326,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         if family in ("rhel", "suse")
         else not_applicable(_BINARY_REASON.format(tool="`certutil --version`")),
         crypto_policy=_config_policy.detect_crypto_policy(),
+        sshd=sshd,
         kernel_info=dict(host_state),
         fips_pqc_conflict=dict(host_state),
         cnsa_2_0=not_applicable(

@@ -288,6 +288,20 @@ def _sshd_binary() -> str | None:
     return None
 
 
+def _offered_fields(offered: list[str]) -> dict[str, Any]:
+    """The kex fields derived from a concrete offered list."""
+    groups = _protocols.classify_ssh_kex(offered)
+    pqc_names = set(groups["pure_pqc"]) | set(groups["hybrid"])
+    return {
+        "kex_offered": offered,
+        "kex_groups": groups,
+        "kex_references": _algorithms.ssh_kex_references(sorted(pqc_names)),
+        "first_kex": offered[0] if offered else None,
+        "pqc_offered": bool(pqc_names),
+        "pqc_first": bool(offered) and offered[0] in pqc_names,
+    }
+
+
 def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
     """Effective sshd key exchange and host keys.
 
@@ -359,6 +373,15 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
             pqc_offered=None,
             pqc_first=None,
         )
+    elif raw_kex is None and (ssh_client or {}).get("default_kex"):
+        # Nothing sets KexAlgorithms, and the build's compiled-in default
+        # was read unambiguously from its server binary (offline, #247).
+        default = (ssh_client or {})["default_kex"]
+        result.update(_offered_fields(list(default["kex"])))
+        result.update(
+            kex_source="openssh-compiled-default",
+            kex_default_source={"source": "binary", "binary": default["binary"]},
+        )
     elif raw_kex is None:
         # Nothing sets KexAlgorithms: sshd uses its compiled-in default,
         # which depends on the OpenSSH version.  Report unknown rather
@@ -381,18 +404,8 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
             pqc_first=None,
         )
     else:
-        offered = [k for k in raw_kex.split(",") if k]
-        groups = _protocols.classify_ssh_kex(offered)
-        pqc_names = set(groups["pure_pqc"]) | set(groups["hybrid"])
-        result.update(
-            kex_offered=offered,
-            kex_source="configured",
-            kex_groups=groups,
-            kex_references=_algorithms.ssh_kex_references(sorted(pqc_names)),
-            first_kex=offered[0] if offered else None,
-            pqc_offered=bool(pqc_names),
-            pqc_first=bool(offered) and offered[0] in pqc_names,
-        )
+        result.update(_offered_fields([k for k in raw_kex.split(",") if k]))
+        result["kex_source"] = "configured"
     hka = values.get("hostkeyalgorithms")
     if hka and hka[:1] not in "+-^":
         result["host_key_algorithms"] = [a for a in hka.split(",") if a]
@@ -406,6 +419,15 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
         result["openssh_supports_pqc_kex"] = bool(
             cg.get("hybrid") or cg.get("pure_pqc")
         )
+        if client.get("source") == "binary":
+            # Offline: read from the build's binaries, not `ssh -Q kex` (#247).
+            result["openssh_kex_evidence"] = {
+                "source": "binary",
+                "binaries": client.get("binaries") or [],
+                "pqc_kex": sorted(
+                    (cg.get("hybrid") or []) + (cg.get("pure_pqc") or [])
+                ),
+            }
     else:
         result["openssh_supports_pqc_kex"] = None
 

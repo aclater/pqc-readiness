@@ -370,11 +370,12 @@ list exactly.
 | --- | --- | --- |
 | `available` | bool | `false` when no `sshd_config` exists in `/etc/ssh` or `/usr/etc/ssh` (SUSE vendor config). |
 | `reason` | string | Why `available` is false. |
-| `source` | string | `sshd -T` (root, no `--host-mount`) or `config files`. |
+| `source` | string | `sshd -T` (root, no `--host-mount`) or `config files`. Offline `--root` scans are always `config files`: the tree's `sshd_config` and its `Include` chain are parsed inside the root, and `sshd -T` never runs (#247). |
 | `config_files` | list of strings | Files read, in order, when `source` is `config files` (`Include` globs expanded lexically; parsing stops at the first `Match` block). |
 | `unreadable` | list[object] | `{path, reason}` for config files or Include directories that exist but this user can't read (#232). An unprivileged scan of a host whose files are `0600 root` gets this instead of a "not found" reason; run as root or with `CAP_DAC_READ_SEARCH` to read them. When `/etc/ssh/sshd_config` itself is unreadable, `available` is false, `reason` names it, and the SSH gap row is `unknown` (not `not_present`) with a `note`. |
-| `kex_offered` | list or null | Effective `KexAlgorithms`, in preference order. `null` when nothing sets it (OpenSSH's compiled-in default applies) or when it is set relative to that default. |
+| `kex_offered` | list or null | Effective `KexAlgorithms`, in preference order. `null` when nothing sets it (OpenSSH's compiled-in default applies) or when it is set relative to that default; offline, the compiled-in default is filled in when it can be read from the tree's server binary (see `kex_default_source`). |
 | `kex_source` | string | `configured`; `openssh-compiled-default` when nothing sets KexAlgorithms; or `unreadable-config` when a file or Include directory that exists couldn't be read before any KexAlgorithms line, so the value sshd uses is unknown (`kex_offered`, `pqc_offered` and `pqc_first` are null). |
+| `kex_default_source` | object | Offline only: `{source: "binary", binary}` when nothing sets KexAlgorithms and `kex_offered` is the compiled-in default read from that `sshd-session` / `sshd` binary. Read only when the binary holds exactly one kex list; EL-family builds carry several (FIPS, ML-KEM-only) and stay `null`. |
 | `kex_modifier` | object | Present when `KexAlgorithms` starts with `+`, `-` or `^`: `{operator, algorithms}`. |
 | `kex_groups` | object | `pure_pqc` / `hybrid` / `classical` split of `kex_offered`, same classifier as `ssh_pqc.kex_groups`. |
 | `kex_references` | object | Registry facts (RFC 10042 / RFC 9941, draft/final status, CNSA 2.0 eligibility) for each offered PQC method, as `ssh_pqc.kex_references`. |
@@ -384,7 +385,8 @@ list exactly.
 | `host_key_algorithms` | list of strings | Effective `HostKeyAlgorithms` when set explicitly. |
 | `host_keys` | list | One entry per `HostKey` (OpenSSH's default three when none is configured). Read from `<path>.pub`; the private key file is never opened. |
 | `host_keys_pqc` | bool | Any host key is post-quantum. |
-| `openssh_supports_pqc_kex` | bool or null | Whether `ssh -Q kex` lists a PQC method (client and server ship in the same OpenSSH build); null when the client probe did not run. |
+| `openssh_supports_pqc_kex` | bool or null | Whether `ssh -Q kex` lists a PQC method (client and server ship in the same OpenSSH build); null when the client probe did not run. Offline, from the kex methods compiled into the tree's OpenSSH binaries (`openssh_kex_evidence`); null when the tree has none. |
+| `openssh_kex_evidence` | object | Offline only (#247): `{source: "binary", binaries, pqc_kex}`: the binaries read and the PQC methods their kex name table holds. Reading the build, not its version, keeps distro backports right: Rocky 9's OpenSSH 8.7 build offered `mlkem768x25519-sha256`, which upstream added in 9.9. |
 | `unavailable_in_container` | bool | Set, with `reason`, inside a container without `--host-mount`: the values describe the image, not the host. |
 
 Each `host_keys` entry:

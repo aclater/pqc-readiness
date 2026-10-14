@@ -195,7 +195,7 @@ pqc-readiness --root rootfs --scan-packages --scan-trust-store \
 |---|---|---|
 | Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
 | CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
-| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database (or, with none, from the version string in its `libcrypto`) and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
+| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database (or, with none, from the version string in its `libcrypto`) and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files; sshd's effective key exchange from the tree's `sshd_config` and its `Include` chain, and OpenSSH's PQC capability from the kex methods compiled into its binaries (#247) |
 | Packages, certificates, keys, crypto policy, signing keys, service TLS configuration | Read from the host | Read from the tree |
 | Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
 
