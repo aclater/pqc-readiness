@@ -4,7 +4,8 @@
 # DaemonSet on clusters where service -> crypto-library attribution is
 # wanted; the base DaemonSet/SCC stay least-privilege and are unchanged.
 #
-#   oc create namespace pqc-readiness            # if not present
+#   oc apply -f deploy/openshift/namespace.yaml  # if the base is not deployed
+#   oc delete ds/pqc-readiness -n pqc-readiness   # optional: this variant only
 #   oc apply -f deploy/openshift/services/services.yaml
 #
 # What this grants beyond the base, and why (see
@@ -228,10 +229,11 @@ spec:
           hostPath:
             path: /var/lib/rpm
             type: Directory
+        # emptyDir, as in the base: a hostPath output is created root:root
+        # 0755 and UID 1001 can't write to it (#220).
         - name: readiness-output
-          hostPath:
-            path: /var/lib/pqc-readiness
-            type: DirectoryOrCreate
+          emptyDir:
+            sizeLimit: 256Mi
         - name: tmp
           emptyDir:
             sizeLimit: 64Mi

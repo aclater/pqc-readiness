@@ -7,16 +7,25 @@
 # in-pod sleep loop.  This keeps the SCC + ServiceAccount + RBAC
 # footprint static rather than churning per probe cycle.
 #
-# Apply:
-#   oc apply -f deploy/openshift/serviceaccount.yaml
-#   oc apply -f deploy/openshift/scc.yaml
-#   oc apply -f deploy/openshift/daemonset.yaml
+# Apply (creates the namespace, ServiceAccount, SCC and DaemonSet):
+#   oc apply -k deploy/openshift
 #
-# The pod runs as a non-root UID with the minimum SCC needed.  It mounts
-# /proc /sys /dev /etc read-only via hostPath; --host-mount /host tells
-# the probe to redirect those reads to the bind-mounted host paths.
-# Output goes to a hostPath volume — operators may swap to a PVC by
-# changing the readiness-output volume.
+# The pod runs as non-root UID 1001 with no capabilities, seccomp
+# RuntimeDefault, no_new_privs and a read-only root filesystem.  It mounts
+# the host's /proc /sys /dev /etc /usr and rpm database read-only;
+# --host-mount /host redirects the probe's reads there.
+#
+# hostPID: CRI-O runs containers that share the host PID namespace with
+# the SELinux type spc_t instead of container_t.  The probe needs that:
+# under container_t, SELinux denies reads of host files such as
+# /etc/ssl/certs (verified on OpenShift 4.22, #220).  The pod is therefore
+# not SELinux-confined; the controls above are what bound it.
+#
+# Reports go to an emptyDir (kept for the pod's lifetime, pruned after
+# PQC_RETENTION_DAYS).  A hostPath output volume can't work: kubelet
+# creates it root:root 0755 and UID 1001 can't write to it.  Collect
+# reports with `oc cp`, the summary overlay (deploy/openshift-summary), or
+# swap the volume for an RWX PVC.
 
 apiVersion: v1
 kind: ServiceAccount
@@ -51,6 +60,10 @@ allowedCapabilities: []
 defaultAddCapabilities: []
 requiredDropCapabilities:
   - ALL
+# The pod requests seccomp RuntimeDefault; an SCC without seccompProfiles
+# forbids every profile, so admission would reject the pod (#220).
+seccompProfiles:
+  - runtime/default
 fsGroup:
   type: MustRunAs
   ranges:
@@ -147,11 +160,17 @@ spec:
                 if [ -n "${PQC_SUMMARY_HOOK:-}" ]; then
                   "$PQC_SUMMARY_HOOK" || true
                 fi
+                # Keep the emptyDir bounded: drop reports older than
+                # PQC_RETENTION_DAYS.
+                find "$HOME/.cache/pqc-readiness" -name '*.json' \
+                  -mtime "+${PQC_RETENTION_DAYS:-7}" -delete 2>/dev/null || true
                 sleep "$interval"
               done
           env:
             - name: PQC_PROBE_INTERVAL
               value: "3600"
+            - name: PQC_RETENTION_DAYS
+              value: "7"
             # Uncomment (and mount node-exporter-textfile below) to export
             # metrics; the path must end in .prom (#140).
             # - name: PQC_PROM_FILE
@@ -242,13 +261,12 @@ spec:
           hostPath:
             path: /var/lib/rpm
             type: Directory
-        # Output: hostPath today.  Swap to a PVC bound to RWX storage
-        # (e.g. NFS, CephFS) for centralized aggregation across the
-        # fleet without per-node collection.
+        # Output: an emptyDir (see the header).  For central collection,
+        # replace it with a PVC on RWX storage (e.g. NFS, CephFS); report
+        # file names include the node's hostname, so nodes don't collide.
         - name: readiness-output
-          hostPath:
-            path: /var/lib/pqc-readiness
-            type: DirectoryOrCreate
+          emptyDir:
+            sizeLimit: 256Mi
         # Directory node_exporter reads with --collector.textfile.directory
         # (match your node_exporter deployment; #140).
         # - name: node-exporter-textfile

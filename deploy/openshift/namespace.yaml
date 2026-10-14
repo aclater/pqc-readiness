@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Namespace for the scanner.  The pods use hostPID and read-only hostPath
+# mounts, which only the "privileged" Pod Security Admission level admits.
+# On OpenShift the SCC is the real control and the label syncer would set
+# these labels itself; they are explicit so the namespace is correct on
+# first apply (#220).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
