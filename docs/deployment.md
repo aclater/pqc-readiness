@@ -103,6 +103,14 @@ back-ends in `/usr/share/crypto-policies`, SUSE's vendor sshd config in
 either stops the pod (`type: Directory`), gets created on the node by
 CRI-O (untyped hostPath), or makes podman refuse to start. The quadlet
 mounts the same paths, so it no longer needs editing on Debian/Ubuntu.
+Both DaemonSets (and the Kubernetes, RKE2 and K3s variants built from
+them in `deploy/kubernetes`) also mount the kubelet's `/var/log/containers`
+read-only (#233): the probe lists its entries
+(`<pod>_<namespace>_<container>-<id>.log`) to name the pod and container
+behind each listener, and opens no file. The entries are symlinks into
+`/var/log/pods`, which is not mounted, so no log content is reachable.
+The quadlet doesn't need this mount: a host without a kubelet has no such
+directory, and listeners in containers there are named by runtime and ID.
 Inside the pod
 the host root is mounted at `/host` and the probe is invoked with
 `--host-mount /host` so its reads target the node, not the container

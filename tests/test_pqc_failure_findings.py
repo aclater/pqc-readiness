@@ -569,3 +569,62 @@ def test_offline_root_honours_scan_crypto_libraries(monkeypatch, tmp_path) -> No
     # (#217).  An OpenSSL whose version can't be read is still pqc-018.
     assert r.openssl["installed"] is False
     assert _ids(r) == ["pqc-013-crypto-library-without-pqc"]
+
+
+def test_container_listener_is_named_by_container_and_pod() -> None:
+    # #233: a Go service in a pod was reported as "crio-<64 hex>.scope".
+    cid = "466fa36113125f83e8bdd28ce9e110580e1df56d009a5bb778f50bcf0afb8b59"  # pragma: allowlist secret
+    lst = _listener(
+        port=6443,
+        family="ipv6",
+        address="::",
+        crypto_libraries=[],
+        go={
+            "go_version": "go1.25.3",
+            # As the detection reports it: the revert clears the default.
+            "default_hybrid_kex": None,
+            "godebug_reverts": ["tlsmlkem"],
+        },
+    )
+    lst.update(
+        process="kube-apiserver",
+        exe="/usr/bin/kube-apiserver",
+        systemd_unit=f"crio-{cid}.scope",
+        container={
+            "runtime": "cri-o",
+            "id": cid,
+            "pod_uid": "96729e5171d4355063effb4f71b182d6",  # pragma: allowlist secret
+            "pod_name": "kube-apiserver-crc",
+            "pod_namespace": "openshift-kube-apiserver",
+            "container_name": "kube-apiserver",
+        },
+    )
+    r = _report(service_crypto_linkage={"available": True, "listeners": [lst]})
+    (f,) = [x for x in sarif.pqc_failure_findings(r) if "6443" in x.message]
+    assert (
+        "kube-apiserver (pod openshift-kube-apiserver/kube-apiserver-crc)" in f.message
+    )
+    assert "crio-" not in f.message
+    assert f.properties["service:pod_name"] == "kube-apiserver-crc"
+    assert f.properties["service:container_id"] == cid
+
+
+def test_container_without_names_falls_back_to_short_id_and_full_exe_name() -> None:
+    cid = "a" * 64
+    lst = _listener(port=10257, crypto_libraries=[_lib(False)])
+    lst.update(
+        # comm is cut at 15 characters; the executable has the full name.
+        process="kube-controller",
+        exe="/usr/bin/kube-controller-manager",
+        container={
+            "runtime": "cri-o",
+            "id": cid,
+            "pod_uid": None,
+            "pod_name": None,
+            "pod_namespace": None,
+            "container_name": None,
+        },
+    )
+    r = _report(service_crypto_linkage={"available": True, "listeners": [lst]})
+    msg = sarif.pqc_failure_findings(r)[0].message
+    assert "kube-controller-manager (container aaaaaaaaaaaa)" in msg

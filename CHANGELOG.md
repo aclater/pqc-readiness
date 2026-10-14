@@ -101,6 +101,15 @@ changes it.
   descendant process, or (when no worker is running) the libraries a worker
   executable links, and says which in the new
   `service_crypto_linkage.listeners[].crypto_libraries_from`.
+  2.2.0 services image carries only the provenance attestation.
+- **Findings name the container and pod** (#233). A listener in a
+  Kubernetes container used to be named by its `crio-<64 hex>.scope` unit.
+  `--scan-services` now reports each listener's `container` (runtime, ID,
+  pod UID, and pod, namespace and container names read from the kubelet's
+  `/var/log/containers` entries), and SARIF/NDJSON messages say e.g.
+  `multus-admission-controller (pod openshift-multus/...)`. Process names
+  cut at 15 characters fall back to the executable's name. In a DaemonSet
+  the names need `/var/log/containers` mounted.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
