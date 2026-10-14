@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Containerfile.ubi10 — host-level Post-Quantum Cryptography readiness
 # assessment, Red Hat UBI 10 minimal base.  This is the Red Hat-supported
-# build path; see Containerfile.debian for the Debian/Ubuntu equivalent
-# and Containerfile.ubuntu-fips for the (stub) Ubuntu Pro FIPS build.
+# build path; see Containerfile.debian for the Debian/Ubuntu equivalent.
 #
 # Build:
 #   podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
@@ -22,12 +21,12 @@
 #     -v /usr/lib/os-release:/host/usr/lib/os-release:ro \
 #     pqc-readiness:ubi10 --host-mount /host --json
 #
-# UBI 10.1 was the current released minor at the time of writing.  Verify
+# UBI 10.2 was the current released minor on 2026-10-14.  Verify
 # before bumping:
 #   curl -s https://registry.access.redhat.com/v2/ubi10/ubi-minimal/tags/list \
 #     | jq '.tags | map(select(test("^10\\.")))'
 
-FROM registry.access.redhat.com/ubi10/ubi-minimal:10.1
+FROM registry.access.redhat.com/ubi10/ubi-minimal:10.2
 
 LABEL org.opencontainers.image.title="pqc-readiness"
 LABEL org.opencontainers.image.description="Host-level PQC readiness assessment"

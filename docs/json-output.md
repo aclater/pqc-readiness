@@ -73,7 +73,7 @@ nothing was found.
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
 | `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
 | `process_crypto_linkage` | Every running process (servers and outbound-only TLS clients) mapped to the crypto library or Go runtime it has loaded, grouped by executable and library version. Populated only when `--scan-processes` is set (`{}` otherwise). Pure `/proc` reads; see [`process_crypto_linkage`](#process_crypto_linkage). |
-| `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object (`fips`, `tpm_pqc`, `kernel_info`, `os_release`) also carry the same two keys inline; list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
+| `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `openssl_config`, `crypto_policy`, `sshd`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object also carry the same two keys inline (see [Nested fields](#nested-fields)); list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
 | `signing_keys` | Package-manager signing trust anchors. Populated only when `--scan-signing-keys` is set (`{}` otherwise). Keys: `available`, `family`, `sources`, `keys`, `summary` (see [Nested fields](#signing_keys)). Public keys only: algorithm, size or curve, fingerprint, key ID, creation time and user ID; never key material. |
 | `crypto_libraries` | PQC capability of crypto libraries other than OpenSSL / NSS: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, installed JDKs and Go toolchains. Populated only when `--scan-crypto-libraries` is set (`{}` otherwise). Keys: `available`, `libraries`, `summary` (see [Nested fields](#crypto_libraries)). No subprocess is run. |
@@ -101,7 +101,7 @@ nothing was found.
 One subsection per object-valued field. Conventions used throughout:
 
 - A detection that could not run returns `{"available": false, "reason": "<why>"}` in place of its normal keys (e.g. `openssl` when the binary is missing, `ssh_pqc` when `ssh` is absent).
-- Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
+- Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`, `openssl.config`, `crypto_policy`, `sshd`, and the opt-in scans `signing_keys`, `crypto_libraries`, `service_crypto_linkage`, `process_crypto_linkage`, `boot_chain`, `kerberos`, `tunnels`, `dnssec`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
 - In an offline `--root` scan, object-valued sections that need a live host carry `{"available": false, "not_applicable": true, "reason": "<why>"}`; see [`scan_mode`](#scan_mode). `not_applicable` never appears in live scans.
 - Rates are operations per second; sizes are bytes; memory is GiB unless stated.
 
@@ -530,7 +530,7 @@ Each `groups[]` entry:
 
 ### `host_fs_detections_unavailable`
 
-Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `nss`. Each value:
+Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `openssl_config`, `crypto_policy`, `sshd`, `nss`. Each value:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -991,7 +991,7 @@ processes or binaries on `PATH`) is reported. `verdict` is
 `NOT APPLICABLE - offline filesystem scan`, `isa_tier` is `not_applicable`,
 `exit_code` is 0, and `hostname` comes from the tree's `/etc/hostname` (empty
 when it has none). `arch` is read from the ELF header of the tree's
-`/usr/bin/env` or `/bin/sh`.
+`/usr/bin/env`, `/bin/sh` or `/usr/bin/sh`.
 
 | Key | Type | Meaning |
 | --- | --- | --- |
@@ -1002,8 +1002,9 @@ when it has none). `arch` is read from the ELF header of the tree's
 | `reason` | string | One-sentence summary; also used as `verdict_reason`. |
 
 `--root` cannot be combined with `--host-mount`, `--bench`, `--bench-tls`,
-`--scan-services`, `--check`, `--fips-strict` or `--recommend` (usage error,
-exit 2): each needs a live host or a readiness tier.
+`--scan-services`, `--scan-processes`, `--scan-boot-chain`, `--check`,
+`--fips-strict` or `--recommend` (usage error, exit 2): each needs a live host
+or a readiness tier.
 
 ## `--ansible` variant
 
@@ -1060,7 +1061,7 @@ Each value in `policy_sources`:
 | `policy` | string | Policy key. |
 | `policy_authority` | string | Issuing authority for the policy. |
 | `policy_basis` | string | Citation for the policy's algorithm preferences. |
-| `policy_source` | string | Source document URL. |
+| `policy_source` | string | Source documents the policy rests on, by name (e.g. `NSA CSA Announcing CNSA 2.0 (Sept 2022) and CNSA 2.0 FAQ ver. 2.1 (Dec 2024)`); URLs are in `policy_sources`. |
 | `implemented` | bool | False only for `generic`, which has no workload profile; that record carries `note` and no algorithm fields. |
 | `note` | string | `generic` only: which roles are implemented. |
 | `kem` | object | `{algorithm, mode, reason, tls_groups}` (`tls_groups` for the TLS roles only). `mode` is `hybrid` or `pure` for the TLS roles; for `signing-service` and `firmware-signing` the KEM is not applicable: `algorithm` is `null` and `mode` is `n/a`. |

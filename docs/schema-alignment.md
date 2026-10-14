@@ -1,10 +1,13 @@
 # JSON schema alignment with CycloneDX 1.6
 
-This document compares every field emitted by `pqc-readiness --json`
+This document compares the fields emitted by `pqc-readiness --json`
 against the established field-name conventions in
 [CycloneDX 1.6's `cryptoProperties` schema][cdx-crypto] and
 [NIST IR 8547][nist-8547], and recommends — for each field — whether
-to rename, keep, or treat as having no equivalent.
+to rename, keep, or treat as having no equivalent. Fields of the
+original schema are mapped one by one; the objects and nested fields
+added in schemas `1.1`–`1.6` are mapped at object level in
+[Fields added in schemas 1.1 to 1.6](#fields-added-in-schemas-11-to-16).
 
 The deliverable here is the mapping only. Applying any rename, bumping
 `SCHEMA_VERSION`, dual-schema reading in the aggregator, and a
@@ -14,10 +17,10 @@ The deliverable here is the mapping only. Applying any rename, bumping
 
 | Counter                                  | Value |
 | ---------------------------------------- | ----- |
-| Distinct field paths covered             | 110   |
+| Field paths and objects mapped           | 158   |
 | Recommended `rename to <new>`            | 0     |
-| Recommended `keep`                       | 26    |
-| Recommended `no equivalent`              | 84    |
+| Recommended `keep`                       | 39    |
+| Recommended `no equivalent`              | 119   |
 | Rename-driven `SCHEMA_VERSION` bump      | none required (stayed `1.x`; current `1.6` from additive changes) |
 
 **No field renames are recommended.** The reason is structural:
@@ -34,7 +37,7 @@ The deliverable here is the mapping only. Applying any rename, bumping
   CycloneDX term (e.g. `algorithmProperties.primitive=kem`) would
   change the shape, not just the name.
 - The asset-level CycloneDX projection is already shipped: `--cbom`
-  emits a CycloneDX 1.6 CBOM whose components carry the canonical
+  emits a CycloneDX 1.7 CBOM (1.6 with `--cbom-version 1.6`) whose components carry the canonical
   field names (`assetType`, `algorithmProperties.primitive`,
   `parameterSetIdentifier`, `nistQuantumSecurityLevel`,
   `executionEnvironment`, `implementationPlatform`,
@@ -62,7 +65,8 @@ follow-up issue can be filed at that point with concrete justification.
    every declared field, including those that are empty by default in
    the captured shape (`benchmark`, `benchmark_tls_handshake`,
    `trust_store`, `packages`, `per_algo`, `production_estimate`,
-   `accelerators[].pqc_capable`, `accelerators[].version`).
+   `accelerators[].pqc_capable`, `accelerators[].cex_level`,
+   `accelerators[].cex_mode`).
 3. Inspected the bundled CycloneDX 1.6 schema
    (`tests/fixtures/cyclonedx/bom-1.6.schema.json`) for the full set of
    `cryptoProperties.*` keys and their enum vocabularies.
@@ -103,7 +107,7 @@ change.
 | `cores_physical` | int | Physical core count | — | no equivalent | Host context. |
 | `mem_total_gb` | float | Total system RAM | — | no equivalent | Host context. |
 | `mem_avail_gb` | float | Available RAM at probe time | — | no equivalent | Host context. |
-| `isa_features` | dict[flag, {name, purpose, weight}] | Detected SIMD ISA features by flag | `algorithmProperties` (asset, primitive=other, executionEnvironment=hardware) | keep | Already projected to per-asset CBOM components. |
+| `isa_features` | dict[flag, {name, purpose}] | Detected SIMD ISA features by flag | `algorithmProperties` (asset, primitive=other, executionEnvironment=hardware) | keep | Already projected to per-asset CBOM components. |
 | `isa_score` | int | Weighted SIMD score | — | no equivalent | Internal heuristic; CycloneDX has `classicalSecurityLevel` / `nistQuantumSecurityLevel` for asset strength, not host capability. |
 | `isa_tier` | str | `excellent / good / marginal / poor` | — | no equivalent | Internal verdict tier. |
 | `isa_reason` | str | One-line tier explanation | — | no equivalent | Internal verdict context. |
@@ -123,7 +127,7 @@ change.
 | `kernel_info` | dict | Linux kernel + distro release facts | — | no equivalent | Host context. |
 | `fips_pqc_conflict` | dict | Boolean + explanation when FIPS hides PQC | — | no equivalent | Compliance interpretation. |
 | `cnsa_2_0` | dict | CNSA 2.0 compliance evaluation | — | no equivalent | Compliance verdict. |
-| `trust_store` | dict | Trust-store summary (cert counts by category) | `relatedCryptoMaterialProperties` summary OR per-cert `certificateProperties` | keep | Summary form already in CBOM as one related-crypto-material asset; per-cert breakout deferred. |
+| `trust_store` | dict | Trust-store summary (cert counts by category) | `relatedCryptoMaterialProperties` summary OR per-cert `certificateProperties` | keep | Summary form is one related-crypto-material asset in the CBOM; CycloneDX 1.7 output also emits one `certificate` asset per unique certificate (see below). |
 | `runtime_environment` | dict | Container vs host detection | — | no equivalent | Host context. |
 | `packages` | dict | RPM/DEB/pacman/apk package inventory | — | no equivalent | OS package inventory; SPDX 3.0 has `software_Package` but that's a different schema (covered in `--spdx`). |
 | `replace_required` | bool | Fleet-planning verdict — host needs replacement | — | no equivalent | Aggregate verdict, not an asset. |
@@ -146,17 +150,17 @@ change.
 | --- | --- | --- | --- | --- | --- |
 | `isa_features.<flag>.name` | str | Human-readable feature name | `name` (component-level in CBOM) | keep | Mapped to `name` per asset in `--cbom`. |
 | `isa_features.<flag>.purpose` | str | Why this flag matters for PQC | — | no equivalent | Editorial context; emitted as a CBOM `properties[isa:purpose]` entry. |
-| `isa_features.<flag>.weight` | str | Numeric weight contributing to `isa_score` | — | no equivalent | Internal scoring. |
 
 ### `accelerators[]`
 
 | Path | Type | Description | CycloneDX 1.6 equivalent | Recommendation | Rationale |
 | --- | --- | --- | --- | --- | --- |
-| `accelerators[].kind` | str | `tpm` / `hsm` / `network_hsm` / `accelerator` / `dpu` | — | no equivalent | Internal taxonomy; surfaced in CBOM as `accelerator:kind` property. |
+| `accelerators[].kind` | str | `hsm` / `accel` / `dpu` / `gpu` / `tpm` / `network_hsm` | — | no equivalent | Internal taxonomy; surfaced in CBOM as `accelerator:kind` property. |
 | `accelerators[].name` | str | Vendor product name | `name` (component-level in CBOM) | keep | Mapped per asset. |
-| `accelerators[].detail` | str | PCI vendor:device, sysfs path, or version | — | no equivalent | Free-form detail; CBOM property. |
+| `accelerators[].detail` | str | Matching `lspci` line, device path, client config path, or s390x card/domain/mode/status | — | no equivalent | Free-form detail; CBOM property. |
 | `accelerators[].pqc_capable` | bool (optional) | Appliance/firmware advertises PQC | — | no equivalent | Capability flag; CBOM `accelerator:pqc_capable` property. |
-| `accelerators[].version` | str (optional) | Version string when available | — | no equivalent | Free-form. |
+| `accelerators[].cex_level` | str (optional) | s390x Crypto Express level, e.g. `CEX8` | — | no equivalent | Hardware context. |
+| `accelerators[].cex_mode` | str (optional) | s390x Crypto Express mode, e.g. `EP11`, `CCA` | — | no equivalent | Hardware context. |
 
 ### `openssl.*`
 
@@ -213,7 +217,7 @@ change.
 | Path | Type | Description | CycloneDX 1.6 equivalent | Recommendation | Rationale |
 | --- | --- | --- | --- | --- | --- |
 | `ipsec_pqc.available` | bool | IPsec stack detected | — | no equivalent | Host probe. |
-| `ipsec_pqc.implementation` | str | `strongswan` / `libreswan` / `ipsec` | `protocolProperties.type=ipsec` (asset) | keep | Already projected to one CBOM protocol asset. |
+| `ipsec_pqc.implementation` | str | `strongswan` / `libreswan` | `protocolProperties.type=ipsec` (asset) | keep | Already projected to one CBOM protocol asset. |
 | `ipsec_pqc.pqc` | bool | Stack advertises any PQC KE | — | no equivalent | Capability flag. |
 | `ipsec_pqc.evidence` | str | What proved PQC support (or absence) | — | no equivalent | Editorial. |
 | `ipsec_pqc.version` | str | Stack version | — | no equivalent | Host context. |
@@ -339,6 +343,38 @@ OS package inventory (RPM/DEB/pacman/APK shape, normalised to
 `cryptoProperties`. SPDX 3.0 has `software_Package`, but that is
 covered by the `--spdx` output, not by aligning `--json` to CycloneDX.
 **No equivalent for `cryptoProperties`.**
+
+## Fields added in schemas 1.1 to 1.6
+
+Mapped at object level: none of these objects is a rename candidate, for
+the same structural reason as above. "Projected" names what `--cbom`
+(CycloneDX 1.7) already emits from the object; "not projected" means a
+CycloneDX concept exists but the CBOM does not carry this data today.
+
+| Path | Type | Description | CycloneDX 1.6 equivalent | Recommendation | Rationale |
+| --- | --- | --- | --- | --- | --- |
+| `memory` | dict | Role-aware memory tier (`1.1`) | — | no equivalent | Internal verdict input. |
+| `host_fs_detections_unavailable` | dict | Detections that saw the container, not the host | — | no equivalent | Scan diagnostics. |
+| `crypto_policy` | dict | System crypto policy and what it lets PQC do (`1.5`) | — | no equivalent | Configuration posture, not an asset. |
+| `openssl.config` | dict | Effective OpenSSL configuration and default groups (`1.5`) | — | no equivalent | Configuration posture. |
+| `openssl.tls_group_references` / `ssh_pqc.kex_references` | dict | IANA codepoints, RFC / draft status per group (`1.5`) | `algorithmProperties` identity fields | keep | Registry facts about assets the CBOM already emits; no rename target. |
+| `openssl.third_party_providers` / `openssl.third_party_algorithms` | list / dict | Non-built-in OpenSSL providers and their algorithms | — | no equivalent | Diagnostic. |
+| `cnsa_2_0.tls_key_exchange` | dict | CNSA 2.0 split of offered TLS groups (`1.5`) | — | no equivalent | Compliance interpretation. |
+| `ipsec_pqc.configured` | dict | Configured IKEv2 proposals classified (`1.5`) | `protocolProperties.ikev2TransformTypes` | keep | Per-connection proposals would extend the IPsec protocol asset; not projected. |
+| `trust_store.certificates` | list[obj] | Per-certificate fields (`1.5`) | `certificateProperties` | keep | Projected: one `certificate` asset per SHA-256 fingerprint (CycloneDX 1.7). |
+| `crypto_material` | dict | Filesystem certificates, private-key metadata, keystores (`1.5`) | `certificateProperties`; `relatedCryptoMaterialProperties` (type=private-key) | keep | Certificates projected (CycloneDX 1.7, with `crypto_material:path`); private keys and keystores not projected. |
+| `service_crypto_linkage` | dict | Listening services → crypto library (`1.5`) | `component` type=application with `dependencies` | keep | Projected (CycloneDX 1.7): one application component per service, depending on its library component. |
+| `signing_keys` | dict | Package-manager signing keys (`1.5`) | `relatedCryptoMaterialProperties` (type=public-key) | keep | Not projected. |
+| `inventory_metadata` | dict | Operator-supplied OMB M-23-02 facts (`1.5`) | — | no equivalent | Projected as `inventory:*` properties on the CBOM host component, outside `cryptoProperties`. |
+| `sshd` | dict | Effective sshd key exchange and host keys (`1.6`) | `protocolProperties` (type=ssh) | keep | The CBOM's SSH protocol asset comes from `ssh_pqc`; sshd's offered methods are not projected. |
+| `crypto_libraries` | dict | PQC capability of non-OpenSSL libraries (`1.6`) | `component` type=library with `provides` | keep | Projected (CycloneDX 1.7): library components with purls, linked to the algorithm assets they provide. |
+| `process_crypto_linkage` | dict | Every process → crypto library (`1.6`) | — | no equivalent | Runtime attribution, not inventory; not projected. |
+| `scan_mode` | dict \| null | Offline `--root` scan marker (`1.6`) | — | no equivalent | Projected as the CBOM host component type `operating-system` plus `scan:*` properties. |
+| `boot_chain` | dict | Secure Boot, module signing, IMA/EVM, TPM PQC (`1.6`) | `certificateProperties` (Secure Boot certificates) | keep | Not projected. |
+| `kerberos` | dict | Enctypes, keytabs, PKINIT (`1.6`) | `algorithmProperties` (enctypes) | keep | Not projected. |
+| `tunnels` | dict | WireGuard PSK presence, OpenVPN key exchange (`1.6`) | `protocolProperties` (type=other) | keep | Not projected. |
+| `dnssec` | dict | DNSSEC signing algorithms and validators (`1.6`) | `algorithmProperties` (signing algorithms) | keep | Not projected. |
+| `pqc_deployment_gap` | dict | Capable / configured verdict per protocol, service, client (`1.6`) | — | no equivalent | Derived verdict, not an asset. |
 
 ## Renames recommended
 

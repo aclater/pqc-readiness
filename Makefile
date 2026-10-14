@@ -6,12 +6,11 @@ PY ?= python3
 RUFF ?= ruff
 MYPY ?= mypy
 PODMAN ?= podman
-IMAGE ?= pqc-readiness:dev
 IMAGE_UBI8 ?= pqc-readiness:ubi8
 IMAGE_UBI10 ?= pqc-readiness:ubi10
 IMAGE_DEBIAN ?= pqc-readiness:debian
 
-.PHONY: help test test-pyz dist golden lint typecheck check check-readme container container-build container-ubi8 container-ubi10 container-debian clean
+.PHONY: help test test-pyz dist golden lint typecheck check check-readme container container-ubi8 container-ubi10 container-debian clean
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | awk -F':.*##' '{printf "  %-20s %s\n", $$1, $$2}'
@@ -38,8 +37,6 @@ check: lint typecheck test ## All of the above
 
 check-readme: ## Verify README.md documents every --help flag
 	@bash scripts/check-readme-flags.sh
-
-container-build: container-ubi10 ## Alias for container-ubi10 (back-compat)
 
 container: container-ubi8 container-ubi10 container-debian ## Build all three container images
 

@@ -103,10 +103,6 @@ def test_every_shipped_containerfile_is_built_in_ci() -> None:
     all_workflow_text = "\n".join(wf.read_text() for wf in WORKFLOWS.glob("*.yml"))
 
     missing = [name for name in shipped if name not in all_workflow_text]
-    # Containerfile.ubuntu-fips is documented as out-of-band (FIPS
-    # validation is manual); exempt it explicitly so this test only
-    # guards the three images CI is responsible for.
-    missing = [name for name in missing if name != "Containerfile.ubuntu-fips"]
     assert not missing, f"Containerfiles not built by any workflow: {missing}"
 
 

@@ -42,4 +42,4 @@ hardware:
 
 ## Related
 
-The README's *What it detects* section, which describes the ISA tiers.
+`isa_tier`, `isa_score` and `isa_reason` in the [JSON reference](../json-output.md#top-level-keys).

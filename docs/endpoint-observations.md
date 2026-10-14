@@ -159,9 +159,10 @@ Validate output against the JSON Schema before handing it over;
   `ip`-only record matches only a listener bound to that specific
   address. Most services bind the wildcard, so include `fqdn` or `sni`,
   or the certificate fingerprint, whenever you have them.
-- "Configured" reflects host-wide defaults. Per-service settings (an
-  `httpd` `SSLOpenSSLConfCmd Groups`, an `sshd` `KexAlgorithms` line) are
-  not read yet; sshd's effective configuration is #105.
+- For TLS, QUIC, DTLS and IKEv2, "configured" reflects host-wide
+  defaults: per-service settings such as an `httpd`
+  `SSLOpenSSLConfCmd Groups` line are not read. SSH is the exception: it
+  uses sshd's effective `KexAlgorithms` (#105).
 - The join reads `service_crypto_linkage`, so hosts need
   `--scan-services`. Without it, records match the host
   (`no_service_scan`) but not a listener.

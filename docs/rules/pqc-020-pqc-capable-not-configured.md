@@ -5,8 +5,8 @@
 ## What it detects
 
 The per-host deployment-gap verdict (`pqc_deployment_gap`, #107) found at
-least one protocol or listening service in the `capable_not_configured`
-state: the software can negotiate a post-quantum key exchange, but its
+least one protocol, listening service or outbound client process group in
+the `capable_not_configured` state: the software can negotiate a post-quantum key exchange, but its
 configuration keeps it classical.
 
 - **TLS:** the system OpenSSL offers hybrid ML-KEM groups

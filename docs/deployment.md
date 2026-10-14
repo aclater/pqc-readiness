@@ -1,0 +1,133 @@
+# Deploying pqc-readiness
+
+How to run the scanner beyond a one-off command: as a single file copied to
+hosts, in containers, as a systemd quadlet, as an OpenShift DaemonSet, against
+offline images, and how to roll the results up across a fleet. For Ansible,
+see [ansible.md](ansible.md).
+
+## Single-file deployment
+
+The tool is a stdlib-only Python package. `make dist` (or
+`python3 scripts/build_zipapp.py`) builds `dist/pqc-readiness.pyz`, one
+executable file with no dependencies. Copy it, with or without the
+`pqc-readiness` wrapper, to any host with Python 3.9+ and run it:
+
+```bash
+make dist
+scp dist/pqc-readiness.pyz pqc-readiness host:/usr/local/bin/
+ssh host /usr/local/bin/pqc-readiness --json
+```
+
+Debugging on a target host: `python3 -m zipfile -l pqc-readiness.pyz`
+lists the modules, and `python3 -m zipfile -e pqc-readiness.pyz /tmp/pqc`
+extracts them for reading or `grep`.
+
+## Containers and OpenShift
+
+This repository does not publish container images. Build one from the
+Containerfile for your fleet, push it to your own registry, and set the image
+reference in the quadlet or DaemonSet to it, pinned by digest. The manifests'
+default `ghcr.io/aclater/pqc-readiness:v2` reference is a placeholder.
+
+The shipped quadlet and DaemonSet run the basic scan with `--bench`; the
+services overlay adds `--scan-services`. None of them runs the other
+`--scan-*` inventories. To collect packages, certificates, signing keys or
+crypto libraries from every node, add those flags to the quadlet's `Exec=` or
+the DaemonSet's `command`.
+
+Containerfiles ship for each supported base image:
+
+| File | Base | Use case |
+| --- | --- | --- |
+| `Containerfile.ubi10` | `registry.access.redhat.com/ubi10/ubi-minimal:10.2` | RHEL / Fedora fleets; default |
+| `Containerfile.ubi8` | `registry.access.redhat.com/ubi8/ubi-minimal:8.10` | RHEL 8 / Rocky 8 / AlmaLinux 8 |
+| `Containerfile.debian` | `docker.io/library/debian:12-slim` | Debian / Ubuntu fleets |
+
+```bash
+make container           # build all three images
+make container-ubi10     # UBI 10 only
+make container-ubi8      # UBI 8 only
+make container-debian    # Debian only
+```
+
+All images run as non-root UID 1001 with a Python-only HEALTHCHECK
+(`ubi*-minimal` lacks `curl`).
+
+`deploy/quadlet/pqc-readiness.container` is a systemd quadlet that
+runs the probe daily against the host.
+
+`deploy/openshift/daemonset.yaml` is the fleet DaemonSet — non-root,
+hostPID, custom SCC dropping all capabilities, read-only host bind
+mounts of `/proc /sys /dev /etc /usr` and the rpm database directory
+`/var/lib/rpm`. That rpm mount covers every layout, because on EL10,
+Fedora and SUSE `/var/lib/rpm` is a symlink to `/usr/lib/sysimage/rpm`
+and the bind mount follows it. `/usr` is mounted whole (#187) because the
+paths the probe reads there (`/usr/lib/os-release`, the crypto-policies
+back-ends in `/usr/share/crypto-policies`, SUSE's vendor sshd config in
+`/usr/etc/ssh`) exist only on some distros, and a missing narrower source
+either stops the pod (`type: Directory`), gets created on the node by
+CRI-O (untyped hostPath), or makes podman refuse to start. The quadlet
+mounts the same paths, so it no longer needs editing on Debian/Ubuntu.
+Inside the pod
+the host root is mounted at `/host` and the probe is invoked with
+`--host-mount /host` so its reads target the node, not the container
+image.
+
+For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in [`deploy/openshift/services/`](openshift-services-overlay.md) instead (adds only `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`).
+For per-node summary ConfigMaps that ACM governance policies and Compliance
+Operator CEL rules can evaluate, apply the opt-in overlay with
+`oc apply -k deploy/openshift-summary` ([details](integrations/openshift-node-summaries.md);
+it adds a token and a ConfigMap-only Role, nothing else).
+
+For Ansible-based deployments see [ansible.md](ansible.md)
+and the runnable playbooks under [`deploy/ansible/`](../deploy/ansible/).
+
+## Scanning images offline
+
+`--root PATH` inventories a filesystem tree without running anything from it
+(#152). Use it for container images, golden images and disk images before they
+are deployed:
+
+```bash
+# Container image: export its rootfs, then scan the tree.
+mkdir rootfs && podman export "$(podman create registry.access.redhat.com/ubi10/ubi)" | tar -x -C rootfs
+pqc-readiness --root rootfs --scan-packages --scan-trust-store \
+  --scan-crypto-material --scan-signing-keys --json
+```
+
+| | `--host-mount PATH` | `--root PATH` |
+|---|---|---|
+| Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
+| CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
+| OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
+| Packages, certificates, keys, crypto policy, signing keys | Read from the host | Read from the tree |
+| Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
+
+Package databases are read in-process for every format the matrix covers (rpm
+SQLite / Berkeley DB / ndb, dpkg `status`, apk, pacman), so the scanner never
+runs the tree's binaries or its own package tools against the tree. Checked
+against the in-image `rpm -qa` / `dpkg-query -W` on UBI 8, UBI 9, UBI 10,
+Fedora 44, Debian 13 and openSUSE Leap 16 container images: identical package
+lists, and no subprocess runs during the scan. Scanning a disk image needs it
+mounted read-only first (e.g. `guestmount --ro`), which usually requires root.
+
+## Fleet aggregation
+
+`--aggregate DIR` reads every `*.json` produced by `--save` (or by the
+DaemonSet output volume) and emits a fleet rollup: counts by arch,
+OS, ISA tier, verdict, runtime environment, and accelerator kind, plus
+unique CPU models and a `replace_required_count`.
+
+```bash
+pqc-readiness --aggregate /var/lib/pqc-readiness                       # JSON
+pqc-readiness --aggregate /var/lib/pqc-readiness --aggregate-format csv  # CSV
+```
+
+Files with mismatched `schema_version` land under `skipped` with a
+reason rather than being silently merged.
+
+To see what endpoints actually negotiate, add `--observations FILE`:
+records from any network-side source, in a small neutral format, are
+matched to the hosts and to the listening services found by
+`--scan-services`, and each endpoint is labelled capable / configured /
+observed. See [endpoint-observations.md](endpoint-observations.md).

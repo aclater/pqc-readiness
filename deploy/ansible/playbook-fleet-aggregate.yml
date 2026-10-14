@@ -5,7 +5,7 @@
 # `pqc-readiness --aggregate` over the collected directory to produce
 # a single fleet-wide rollup.
 #
-# This mirrors the pattern documented under "Aggregation" in README.md:
+# This mirrors the `--aggregate` rollup (docs/json-output.md):
 # the same `--aggregate DIR` mode that consumes the DaemonSet output
 # volume on OpenShift consumes the Ansible-fetched directory here.
 #
@@ -15,7 +15,7 @@
 #     <hostname>.json     one per target
 #     fleet-rollup.json   the --aggregate output
 #
-# Validated against `ansible-core 2.20.5`.
+# Passes `ansible-playbook --syntax-check` with `ansible-core 2.21.5`.
 ---
 - name: Phase 1 — run the probe on every target and emit JSON
   hosts: pqc_targets

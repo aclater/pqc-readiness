@@ -1,7 +1,7 @@
 # Running pqc-readiness from Ansible
 
 `pqc-readiness` ships an `--ansible` flag that wraps the standard
-[`--json`](../README.md#json-output---json) output in
+[`--json`](json-output.md) output in
 `{ansible_facts: {pqc_readiness: ...}}` and always exits 0, so the
 probe slots into a normal Ansible facts pipeline. This document is the
 runnable, copy-pasteable guide to that workflow: ad-hoc invocation,
@@ -14,8 +14,8 @@ stderr and has no effect on the exit code. Gate in the play instead,
 e.g. `failed_when: pqc_readiness.cnsa_2_0.status != "compliant"`.
 
 The example playbooks live under
-[`deploy/ansible/`](../deploy/ansible/) and have been validated
-against `ansible-core 2.20.5`.
+[`deploy/ansible/`](../deploy/ansible/) and pass
+`ansible-playbook --syntax-check` with `ansible-core 2.21.5`.
 
 ## Ad-hoc invocation
 
@@ -144,9 +144,10 @@ Output:
 
 - `<rollup_dir>/<hostname>.json` — one per target.
 - `<rollup_dir>/fleet-rollup.json` — counts by arch, OS, ISA tier,
-  verdict, runtime environment, accelerator kind; unique CPU model
-  list; `replace_required_count`. Same schema as
-  [README ## Aggregation](../README.md#aggregation-1).
+  verdict, runtime environment and accelerator kind, the unique CPU
+  models, `replace_required_count` and the fleet `pqc_deployment_gap`
+  rollup. Field reference:
+  [`--aggregate` rollup](json-output.md#--aggregate-rollup).
 
 ## Aligning with the `crypto_policies` system role
 
@@ -178,7 +179,8 @@ keeping existing subpolicies, and leaves rebooting to you
 
 ## Privilege requirements
 
-The probe does *not* need `become: yes` for the headline readiness
+The default probe (no `--scan-*` flags, which is what the example
+playbooks run) does *not* need `become: yes` for the headline readiness
 signal. ISA detection, OpenSSL inspection, kernel TLS / FIPS state,
 SSH PQC kex enumeration, IPsec checks, NSS, accelerator enumeration
 via `lspci -nn`, the `/proc/crypto` and `/proc/cpuinfo` reads, and
@@ -186,12 +188,12 @@ the trust-store scan all work as an unprivileged user on every Linux
 distribution this script targets. `--ansible` mode itself works
 without become.
 
-The one field that goes from "unknown" to populated when you escalate
-is `tpm_pqc.pqc_advertised`:
+Two fields of the default probe change when you escalate:
 
 | Field | Without become | With become |
 | --- | --- | --- |
 | `tpm_pqc.pqc_advertised` | absent — `tpm_pqc.note` is `"tpm2_getcap failed"` and `tpm_pqc.raw` shows `Failed to open ... /dev/tpmrm0: Permission denied` | populated boolean (almost always `false`; TPM 2.0 specs do not yet mandate PQC) |
+| `sshd.source` | `config files`: the scanner follows `sshd_config` and its `Include` chain. Where `sshd_config` is readable only by root, as on RHEL-family hosts, `sshd` reports what it could read | `sshd -T`, the server's exact effective configuration |
 
 The reason is concrete: `tpm2_getcap algorithms` opens
 `/dev/tpmrm0`, which is restricted to root or members of the `tss`
@@ -200,24 +202,29 @@ membership is a per-host policy decision that lives outside this
 script.
 
 In practice: leave the probe at `become: false` for routine inventory
-runs. Escalate only when you specifically need TPM PQC capability data
-— the difference is one boolean. The `playbook-set-fact.yml` example
-exposes this as a `become_for_tpm` variable that defaults to `false`
-and can be flipped per run:
+runs, and escalate when you need TPM PQC capability data or sshd's exact
+effective key exchange. The `playbook-set-fact.yml` example exposes this
+as a `become_for_tpm` variable that defaults to `false` and can be
+flipped per run:
 
 ```bash
 ansible-playbook -i inventory.ini deploy/ansible/playbook-set-fact.yml \
   --extra-vars become_for_tpm=true
 ```
 
-Other root-only paths are not exercised by the default probe. The
-script does not call `dmidecode`, does not invoke `lspci -vvv`, and
-does not require write access anywhere on the target.
+The opt-in `--scan-*` flags have their own needs. `--scan-services`
+and `--scan-processes` see other users' processes only as root (or with
+`CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`); `--scan-boot-chain` reads
+the TPM's PQC support only as root or a `tss` group member; and
+`--scan-tunnels` reads NetworkManager WireGuard profiles only as root.
+Add `become: true` to the probe task when you pass them. The script
+never calls `dmidecode` or `lspci -vvv`, and never writes anywhere on
+the target.
 
 ## Sample `ansible_facts.pqc_readiness` shape
 
 The fact tree under `pqc_readiness` mirrors the standard `--json`
-schema [documented in the README](../README.md#json-output---json).
+schema documented in [`docs/json-output.md`](json-output.md).
 Downstream tasks should rely on these keys:
 
 ```yaml
@@ -233,7 +240,7 @@ pqc_readiness:
     tools: true
     note: "tpm2_getcap failed"          # without become; pqc_advertised: false with become
   cnsa_2_0:
-    status: "partial"                    # or "compliant" / "non-compliant"
+    status: "partial"                    # or "compliant" / "non_compliant" / "unknown"
     kem_compliant: true
     signature_compliant: true
   schema_version: "1.6"
@@ -248,18 +255,15 @@ keys that consumers most often branch on:
 - `replace_required` — boolean for fleet planning.
 - `openssl.pqc_native` — whether the host's OpenSSL ≥ 3.5 PQC
   primitives are available.
-- `cnsa_2_0.status` — `compliant` / `partial` / `non-compliant`.
+- `cnsa_2_0.status` — `compliant` / `partial` / `non_compliant` /
+  `unknown`.
 - `exit_code` — the exit code the probe would return outside the
   `--ansible` wrapper, for compatibility with `--check TIER`.
 
 ## Versions validated
 
-The example playbooks were validated with:
-
-```text
-ansible-playbook --syntax-check
-ansible-core 2.20.5
-```
+The example playbooks pass `ansible-playbook --syntax-check` with
+`ansible-core 2.21.5` (checked 2026-10-14).
 
 Either run `ansible --version` to confirm parity with your runtime,
 or update the version in this section if you adapt the playbooks for
