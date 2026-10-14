@@ -165,7 +165,9 @@ def in_tree(p: str | os.PathLike[str]) -> Path:
     try:
         return Path(pre + resolve_in_root(rel, pre))
     except OSError as e:
-        log.debug("in_tree: cannot resolve %s: %s", s, e)
+        # The path is left out: listed entries include private-key files,
+        # and only the failure matters here.
+        log.debug("in_tree: %s under %s", e.strerror, pre)
         return Path(pre + _LOOP_SINK + os.path.normpath(rel))
 
 
