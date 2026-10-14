@@ -41,7 +41,10 @@ Version **2.3.0**. All JSON changes are additive, so the schema goes to
   The CLI-only lists (algorithms, TLS groups, providers) are `null`, with
   the reason in `openssl.cli_probe`. As a result **CNSA 2.0 reads `partial`
   instead of `compliant`** in container scans: the old `compliant` came
-  from the image's algorithm lists, not the host's.
+  from the image's algorithm lists, not the host's. OpenSSH is read from
+  the host the same way (#256): `ssh_pqc.version` and its kex list come
+  from the host's binaries or package, so a node can lose an ML-KEM kex it
+  was wrongly credited with (an Ubuntu 24.04 node has only sntrup761).
 - **Re-scan your fleet** after upgrading: schema 1.7 reports won't merge
   with 1.6 ones.
 
@@ -100,6 +103,18 @@ Version **2.3.0**. All JSON changes are additive, so the schema goes to
   scanner image (#228, see the upgrade notes). On OpenShift 4.22 the scan
   now reports the node's OpenSSL 3.5.5, which sshd and haproxy actually
   load, instead of the image's 3.5.8.
+- **OpenSSH version and kex list in container scans** came from the
+  scanner image (#256): every DaemonSet scan reported the image's OpenSSH
+  9.9p1 and its ML-KEM kex, though a Leap 16 node runs 10.0p2 and an
+  Ubuntu 24.04 node (9.6p1) has only the sntrup761 hybrid. They now come
+  from the host's binaries, with its OpenSSH package as the version
+  fallback (`ssh_pqc.version_source`, `kex_source`, `package`, `binaries`,
+  `cli_probe`, `scanner_cli_version`). Offline `--root` scans now answer
+  `ssh_pqc` from the tree, and a host with sshd but no `ssh` client is no
+  longer reported as having no OpenSSH. Kex names read from binaries now
+  count only when the binary's kex table points at them, which is exact
+  on Alpine too: the list equals `ssh -Q kex` on Fedora 44, Rocky 9, Leap
+  16, Ubuntu 24.04, Debian 13 and Alpine 3.22.
 - **An unreadable path no longer aborts the scan** (#229). On Python
   3.9-3.12, one directory the scanner couldn't read ended the run with a
   traceback. Now only the detection that needed it is affected, and an
@@ -179,8 +194,8 @@ Version **2.3.0**. All JSON changes are additive, so the schema goes to
   expected around March 2027 (#150).
 - wolfSSL in package-less images embeds no matchable version string, so
   its version stays undetermined.
-- Under `--host-mount`, `ssh_pqc.version` still comes from the scanner
-  image's OpenSSH (#256).
+- Under `--host-mount`, IPsec tool versions still come from the scanner
+  image (#265).
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 

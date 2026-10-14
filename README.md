@@ -35,8 +35,8 @@ What makes it easy to deploy and trust:
 - **Runs where your hosts are:** on a live host, in a container against the
   host's filesystem, as a DaemonSet on OpenShift, Kubernetes, RKE2 or K3s,
   or against an offline image, including OpenWrt and Yocto.
-- **Reports the host, not the scanner:** in a container, OpenSSL and
-  package facts come from the node, and findings name the pod and
+- **Reports the host, not the scanner:** in a container, OpenSSL, OpenSSH
+  and package facts come from the node, and findings name the pod and
   namespace.
 - **Verifiable:** release images are signed and carry build provenance and
   a CycloneDX SBOM attestation.
@@ -63,8 +63,8 @@ ships a hybrid ML-DSA-87+Ed448 key.
   its verdict, and rule `pqc-021` flags endpoints pinned to classical groups;
 - **embedded and minimal systems**: OpenWrt, Yocto and Buildroot
   inventories, SBOMs and library versions, even without a package database;
-- **host-accurate container scans**: OpenSSL facts from the node, not the
-  scanner image, and findings named by pod and namespace;
+- **host-accurate container scans**: OpenSSL and OpenSSH facts from the
+  node, not the scanner image, and findings named by pod and namespace;
 - **offline sshd analysis** from the image's config and binaries;
 - **Kubernetes, RKE2, K3s and Rancher** manifests, validated on a live
   cluster, and CBOMs and SBOMs that share canonical package identifiers.
@@ -112,7 +112,7 @@ always runs; the `--scan-*` flags add deeper inventories.
 | Area | What it reports | Flag |
 | --- | --- | --- |
 | CPU and accelerators | AVX-512 / ARMv8 / s390x CPACF support for PQC; HSMs, TPMs (including TPM 2.0 v1.85 PQC), DPUs, QAT, Crypto Express, PKCS#11 modules | always |
-| OpenSSL, OpenSSH, NSS, IPsec | PQC algorithms and TLS groups, SSH key exchanges, IKEv2 proposals; in a container, the host's OpenSSL version from its package or libcrypto | always |
+| OpenSSL, OpenSSH, NSS, IPsec | PQC algorithms and TLS groups, SSH key exchanges, IKEv2 proposals; in a container, the host's OpenSSL and OpenSSH versions from their packages and binaries | always |
 | Configuration | System crypto policy, `openssl.cnf` defaults, effective `sshd` configuration (parsed from the tree and its binaries in offline scans), FIPS mode and its algorithm fence, CNSA 2.0 compliance; unreadable files are reported as unreadable, not missing | always |
 | Deployment gap | Per-protocol and per-service verdict: deployed, capable but not configured, not capable | always |
 | Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains; versions from the library itself in images with no package database | `--scan-crypto-libraries` |
