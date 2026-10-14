@@ -34,6 +34,7 @@ import re
 from typing import Any
 
 from .. import _platform as _platform
+from . import config_read as _config_read
 from . import packages as _packages
 from . import protocols as _protocols
 from . import runtime as _runtime
@@ -222,6 +223,18 @@ def _read_host_file(path: str) -> str | None:
         return None
 
 
+def _read_policy_file(path: str, unreadable: list[dict[str, str]]) -> str | None:
+    """Like _read_host_file, but a file that exists and can't be read is
+    recorded in `unreadable` rather than treated as absent (#232).  The
+    prefix-aware resolution keeps back-end links inside the host tree."""
+    try:
+        return _config_read.read_host_text(path)
+    except _config_read.ConfigUnreadable as e:
+        log.debug("crypto_policy: %s", e)
+        unreadable.append(e.as_entry())
+        return None
+
+
 def _available_subpolicies() -> list[str]:
     names: set[str] = set()
     for d in _MODULE_DIRS:
@@ -405,8 +418,21 @@ def detect_crypto_policy() -> dict[str, Any]:
     overlap: `active` (role: crypto_policies_active),
     `available_subpolicies` (crypto_policies_available_subpolicies) and
     `reboot_required` (crypto_policies_reboot_required)."""
-    state = _read_host_file(f"{CRYPTO_POLICIES_DIR}/state/current")
-    configured_text = _read_host_file(f"{CRYPTO_POLICIES_DIR}/config")
+    unreadable: list[dict[str, str]] = []
+    state = _read_policy_file(f"{CRYPTO_POLICIES_DIR}/state/current", unreadable)
+    configured_text = _read_policy_file(f"{CRYPTO_POLICIES_DIR}/config", unreadable)
+    if state is None and configured_text is None and unreadable:
+        out_u: dict[str, Any] = {
+            "available": False,
+            "reason": (
+                f"{unreadable[0]['path']} is not readable ({unreadable[0]['reason']})"
+            ),
+            "unreadable": unreadable,
+        }
+        note = _runtime._host_fs_note_for("crypto_policy")
+        if note:
+            out_u.update(note)
+        return out_u
     if state is None and configured_text is None:
         cc = detect_crypto_config()
         if cc is not None:
@@ -437,9 +463,14 @@ def detect_crypto_policy() -> dict[str, Any]:
     name = parse_policy_name(state if state is not None else configured_line or "")
     backends: dict[str, dict[str, Any]] = {}
     for b in _BACKENDS:
-        text = _read_host_file(f"{CRYPTO_POLICIES_DIR}/back-ends/{b}.config")
+        before = len(unreadable)
+        text = _read_policy_file(
+            f"{CRYPTO_POLICIES_DIR}/back-ends/{b}.config", unreadable
+        )
         if text is None:
             backends[b] = {"readable": False}
+            if len(unreadable) > before:
+                backends[b]["reason"] = unreadable[-1]["reason"]
             continue
         backends[b] = {"readable": True, **_PARSERS[b](text)}
 
@@ -473,6 +504,8 @@ def detect_crypto_policy() -> dict[str, Any]:
         "pqc_enabled": _pqc_enabled(backends),
         "backends": backends,
     }
+    if unreadable:
+        out["unreadable"] = unreadable
     note = _runtime._host_fs_note_for("crypto_policy")
     if note:
         out.update(note)

@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from .detect import config_read as _config_read
 from .detect import config_services as _config_services
 from .detect import runtime_services as _svc
 
@@ -277,14 +278,24 @@ def _tls(report: Mapping[str, Any]) -> dict[str, Any]:
 
 def _ssh(report: Mapping[str, Any]) -> dict[str, Any]:
     sshd = report.get("sshd") or {}
+    # An sshd_config that exists but can't be read means sshd is there and
+    # its configuration unknown, not that it's absent (#232).
     present = bool(
-        sshd.get("available") or (report.get("ssh_pqc") or {}).get("available")
+        sshd.get("available")
+        or sshd.get("unreadable")
+        or (report.get("ssh_pqc") or {}).get("available")
     )
     cap, cap_from = ssh_capable(report)
     conf, conf_from = ssh_configured(report)
     note = None
     if conf is True and sshd.get("pqc_first") is False:
         note = f"PQC offered, but {sshd.get('first_kex')} is preferred first"
+    elif sshd.get("unreadable") and (
+        not sshd.get("available") or sshd.get("kex_source") == "unreadable-config"
+    ):
+        note = "sshd configuration not readable by this user; " + (
+            _config_read.PERMISSION_HINT
+        )
     return _verdict(cap, conf, cap_from, conf_from, note=note, present=present)
 
 

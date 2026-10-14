@@ -198,6 +198,7 @@ Each list item describes one detected device or HSM client configuration:
 | `path_source` | string | `OPENSSL_CONF`, `OPENSSLDIR` (from `openssl version -d`) or `distribution default` (always under `--host-mount`, where the environment and binary belong to the image). Defaults: `/etc/pki/tls/openssl.cnf` (RHEL family), `/etc/ssl/openssl.cnf` (Debian / Ubuntu / SUSE). |
 | `files` | list[string] | Every file read, in order, following `.include` (a directory include reads its `*.cnf` / `*.conf` files in sorted order). |
 | `include_errors` | list[string] | Includes that could not be read: missing, unreadable, or a cycle / depth limit. Stock Ubuntu 26.04 lists two here: directories that exist only once its optional `crypto-config` package is installed. |
+| `unreadable` | list[object] | Present when a config file or include directory exists but this user can't read it (#232). An unprivileged scan of a host whose files are `0600 root` gets this instead of a "not found" reason; run as root or with `CAP_DAC_READ_SEARCH` to read them. Each item is `{path, reason}`; the path is also in `include_errors`. When `available` is false, `reason` names the first unreadable candidate. |
 | `init_section` | string \| null | Section named by `openssl_conf`. |
 | `system_default_section` | string \| null | Section named by `ssl_conf` → `system_default` (RHEL-family / SUSE: `crypto_policy`, which includes the crypto-policies back-end). |
 | `providers_configured` | list[object] | Entries of the `providers` section: `{name, section, activate, module, third_party}`. `activate` is null when the section doesn't set it. Commented-out snippets (Fedora's `pkcs11-provider.conf`) don't appear. |
@@ -315,7 +316,8 @@ they overlap (`crypto_policies_active`, `crypto_policies_available_subpolicies`,
 | `reboot_required` | bool \| null | The FIPS policy and kernel FIPS mode disagree (`base_policy == "FIPS"` vs `/proc/sys/crypto/fips_enabled`); they only change together across a reboot (role: `crypto_policies_reboot_required`). Null when either is unknown. |
 | `pqc_enabled` | object | Per protocol, does the policy let PQC through: `tls_key_exchange`, `tls_signatures` (OpenSSL back-end), `ssh_key_exchange_client`, `ssh_key_exchange_server`, `ike_key_exchange` (libreswan). `null` when the deciding back-end is missing or unreadable. |
 | `backends` | object | Parsed back-ends keyed `opensslcnf`, `gnutls`, `nss`, `openssh`, `opensshserver`, `libreswan`. Each has `readable` (bool); readable ones add the fields below. Back-ends are absolute symlinks into `/usr/share/crypto-policies/<POLICY>/`, resolved inside the `--host-mount` prefix (mount `/usr/share/crypto-policies` read-only as well as `/etc`). |
-| `readable` | bool | The back-end file (after symlink resolution inside the host prefix) could be read. |
+| `unreadable` | list[object] | Present when a policy file (`state/current`, `config`, a back-end) exists but this user can't read it (#232). An unprivileged scan of a host whose files are `0600 root` gets this instead of a "not found" reason; run as root or with `CAP_DAC_READ_SEARCH` to read them. Items are `{path, reason}`. When neither `state/current` nor `config` can be read, `available` is false and `reason` says so. |
+| `readable` | bool | The back-end file (after symlink resolution inside the host prefix) could be read. When it exists but can't be read, `reason` says why (e.g. `permission denied; run as root or with CAP_DAC_READ_SEARCH`); an absent back-end has no `reason`. |
 | `groups` | list[string] | `opensslcnf` / `gnutls`: TLS groups in preference order (`*`, `?` markers and `GROUP-` prefixes stripped). |
 | `pqc_groups` | object | `hybrid` / `pure_pqc` lists of PQC key-exchange names (OpenSSL canonical names, oqs-provider aliases such as `p256_mlkem768`, GnuTLS and NSS spellings). |
 | `signature_algorithms` | list[string] | `opensslcnf` / `gnutls`: signature algorithms in preference order. |
@@ -370,8 +372,9 @@ list exactly.
 | `reason` | string | Why `available` is false. |
 | `source` | string | `sshd -T` (root, no `--host-mount`) or `config files`. |
 | `config_files` | list of strings | Files read, in order, when `source` is `config files` (`Include` globs expanded lexically; parsing stops at the first `Match` block). |
+| `unreadable` | list[object] | `{path, reason}` for config files or Include directories that exist but this user can't read (#232). An unprivileged scan of a host whose files are `0600 root` gets this instead of a "not found" reason; run as root or with `CAP_DAC_READ_SEARCH` to read them. When `/etc/ssh/sshd_config` itself is unreadable, `available` is false, `reason` names it, and the SSH gap row is `unknown` (not `not_present`) with a `note`. |
 | `kex_offered` | list or null | Effective `KexAlgorithms`, in preference order. `null` when nothing sets it (OpenSSH's compiled-in default applies) or when it is set relative to that default. |
-| `kex_source` | string | `configured`, or `openssh-compiled-default` when `kex_offered` is null. |
+| `kex_source` | string | `configured`; `openssh-compiled-default` when nothing sets KexAlgorithms; or `unreadable-config` when a file or Include directory that exists couldn't be read before any KexAlgorithms line, so the value sshd uses is unknown (`kex_offered`, `pqc_offered` and `pqc_first` are null). |
 | `kex_modifier` | object | Present when `KexAlgorithms` starts with `+`, `-` or `^`: `{operator, algorithms}`. |
 | `kex_groups` | object | `pure_pqc` / `hybrid` / `classical` split of `kex_offered`, same classifier as `ssh_pqc.kex_groups`. |
 | `kex_references` | object | Registry facts (RFC 10042 / RFC 9941, draft/final status, CNSA 2.0 eligibility) for each offered PQC method, as `ssh_pqc.kex_references`. |
@@ -522,7 +525,8 @@ Each `services[]` entry:
 | `default_groups_from` | string \| null | stunnel only: the binary its compiled default group list was read from. |
 | `config_from_command_line` | list[string] | haproxy and stunnel, live scans with `--scan-services` only: config files read because a running daemon that owns a listening socket was started with them (`haproxy -f <file\|dir>`, `stunnel <file>`) outside the standard paths. Absent when none. |
 | `files` | list[string] | Configuration files read, includes expanded. |
-| `unreadable` | list[object] | `{path, reason}` for files or directories that exist but couldn't be read (PostgreSQL data directories and slapd.d are root / service-user only), or required includes that are missing. |
+| `unreadable` | list[object] | `{path, reason}` for files or directories that exist but couldn't be read (PostgreSQL data directories and slapd.d are root / service-user only, and an unprivileged scan can't read `0600` configs: `permission denied; run as root or with CAP_DAC_READ_SEARCH`), or that are larger than 1 MiB. |
+| `missing` | list[string] | Present when the configuration names a file that doesn't exist (e.g. an include of an absent file). Until #232 these were listed under `unreadable`. |
 | `endpoints` | list[object] | TLS endpoints; see below. |
 | `error` | string | Present only if the parser failed on this service. |
 
