@@ -632,17 +632,21 @@ def build_findings(r: _report.Report) -> list[Finding]:
     findings: list[Finding] = []
 
     osinfo = r.openssl
-    if osinfo.get("available") and not osinfo.get("pqc_native", False):
+    # pqc_native is null when the host's version couldn't be read (#228).
+    if osinfo.get("available") and osinfo.get("pqc_native") is False:
         findings.append(
             Finding(
                 rule_id="pqc-001-openssl-pre-3.5",
                 level="warning",
                 message=(
-                    f"OpenSSL {osinfo.get('version', 'unknown')} is older "
-                    "than 3.5.0 — native ML-KEM / ML-DSA are not available."
+                    # `version` already starts with "OpenSSL" (CLI output or
+                    # "OpenSSL <package version>"); don't print it twice.
+                    f"OpenSSL {str(osinfo.get('version') or 'unknown').removeprefix('OpenSSL ')} "
+                    "is older than 3.5.0 — native ML-KEM / ML-DSA are not available."
                 ),
                 properties={
                     "openssl:version": osinfo.get("version"),
+                    "openssl:version_source": osinfo.get("version_source"),
                     "openssl:upgrade_path": osinfo.get("upgrade_path"),
                 },
             )

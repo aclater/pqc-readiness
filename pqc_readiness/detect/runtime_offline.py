@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import re
 import struct
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +28,7 @@ from .. import report as _report
 from ..detect import certs as _certs
 from ..detect import certs_discovery as _certs_discovery
 from ..detect import config_openssl as _config_openssl
+from ..detect import openssl_host as _openssl_host
 from ..detect import config_policy as _config_policy
 from ..detect import osinfo as _osinfo
 from ..detect import packages as _packages
@@ -108,38 +108,6 @@ _INCOMPATIBLE_FLAGS: tuple[tuple[str, str], ...] = (
     ("recommend", "--recommend"),
 )
 
-# OpenSSL library packages per family, in preference order.
-_OPENSSL_PACKAGES: dict[str, tuple[str, ...]] = {
-    "rhel": ("openssl-libs", "openssl"),
-    "suse": ("libopenssl3", "openssl-3", "openssl"),
-    "debian": ("libssl3t64", "libssl3", "openssl"),
-    "alpine": ("libssl3", "openssl"),
-    "arch": ("openssl",),
-}
-
-# OpenSSL library package names in trees whose family has no registered
-# tool, matched against whichever database the tree has (#217): Yocto
-# (libcrypto3 / libssl3), OpenWrt (libopenssl3), and generic names.
-_OPENSSL_PROBED_PACKAGES: tuple[str, ...] = (
-    "libcrypto3",
-    "libopenssl3",
-    "libssl3",
-    "openssl-libs",
-    "libopenssl1.1",
-    "openssl",
-)
-
-# libcrypto files, newest ABI first, for trees with no package database
-# (Buildroot, minimal Yocto images; #217).
-_LIBCRYPTO_FILES: tuple[str, ...] = (
-    "libcrypto.so.3*",
-    "libcrypto.so.1.1*",
-    "libcrypto.so",
-)
-_OPENSSL_EMBEDDED_VERSION = re.compile(rb"OpenSSL (\d+\.\d+\.\d+[a-z]?) ")
-# Forks that embed an "OpenSSL x.y.z" compatibility string.
-_NOT_OPENSSL = (b"AWS-LC", b"BoringSSL", b"LibreSSL")
-
 # ELF e_machine values -> platform.machine()-style names.
 _ELF_MACHINES: dict[int, str] = {
     3: "i686",
@@ -204,94 +172,21 @@ def tree_hostname() -> str:
     return text.strip().splitlines()[0].strip() if text.strip() else ""
 
 
-def _version_tuple(version: str) -> list[int] | None:
-    m = re.match(r"(?:\d+:)?(\d+)\.(\d+)(?:\.(\d+))?", version)
-    if not m:
-        return None
-    return [int(m.group(1)), int(m.group(2)), int(m.group(3) or 0)]
-
-
-def openssl_package(family: str) -> dict[str, str] | None:
-    """The tree's OpenSSL library package (name, version), from its own
-    package database: the only safe source, since running the scanner's
-    `openssl` would describe the scanning machine."""
-    names = _OPENSSL_PACKAGES.get(family)
-    if not names:
-        found = _packages.probe_package_db_cached()
-        if not found:
-            return None
-        by_name: dict[str, dict[str, str]] = {p["name"]: p for p in found["packages"]}
-        for name in _OPENSSL_PROBED_PACKAGES:
-            if name in by_name:
-                return by_name[name]
-        return None
-    pkgs: list[dict[str, str]] = []
-    if family in ("rhel", "suse"):
-        # The full inventory, not a named lookup: it is read in-process for
-        # every rpm database format, whereas named lookups on Berkeley DB /
-        # ndb run the scanner's `rpm -q` (and on sqlite trust the Name
-        # index).  It is cached, so the NSS lookup reuses it.
-        inv = _packages.query_rpm_packages()
-        if inv.get("available"):
-            pkgs = [
-                {"name": p["name"], "version": p["version"]}
-                for p in inv["packages"]
-                if p["name"] in names
-            ]
-    else:
-        try:
-            all_pkgs, _ = _packages.read_prefixed_package_db(family)
-        except OSError as e:
-            log.debug("offline root: no %s package database: %s", family, e)
-            return None
-        pkgs = [p for p in all_pkgs if p["name"] in names]
-    for name in names:
-        for p in pkgs:
-            if p["name"] == name:
-                return p
-    return None
-
-
-def openssl_library() -> dict[str, Any] | None:
-    """The tree's libcrypto file and the version it embeds ("OpenSSL
-    3.5.7 ..."), for trees with no package database.  Read, never run.
-    Returns {path, version}; version is None when the file carries no
-    version string.  None when the tree has no OpenSSL libcrypto."""
-    for f in _libraries._find_files(_LIBCRYPTO_FILES):
-        blob = _libraries._read_library(f)
-        if blob is None or any(mark in blob for mark in _NOT_OPENSSL):
-            continue
-        m = _OPENSSL_EMBEDDED_VERSION.search(blob)
-        return {
-            "path": _libraries._unhost(f),
-            "version": m.group(1).decode() if m else None,
-        }
-    return None
-
-
 def offline_openssl(os_release: dict[str, Any]) -> dict[str, Any]:
     """OpenSSL section for a tree: capability probes are not applicable,
     but the packaged version and the tree's openssl.cnf still answer what
     the image would offer by default.  Without a package (#217), the
     version comes from the libcrypto file; with neither, OpenSSL is not
     in the tree."""
-    family = os_release.get("family", "unknown")
-    pkg = openssl_package(family)
-    lib = None if pkg else openssl_library()
-    if pkg:
-        version, source = pkg["version"], "package"
-    elif lib and lib["version"]:
-        version, source = lib["version"], "library"
-    else:
-        version, source = None, None
-    vt = _version_tuple(version) if version else None
+    ev = _openssl_host.openssl_evidence(os_release)
+    vt = ev["version_tuple"]
     out = not_applicable(_BINARY_REASON.format(tool="`openssl list`"))
     out.update(
         {
-            "package": pkg,
-            "library": lib,
-            "installed": bool(pkg or lib),
-            "version_source": source,
+            "package": ev["package"],
+            "library": ev["library"],
+            "installed": ev["installed"],
+            "version_source": ev["version_source"],
             "version_tuple": vt,
             "pqc_native_expected": (tuple(vt[:2]) >= (3, 5)) if vt else None,
             "config": _config_openssl.detect_openssl_config(os_release, vt),

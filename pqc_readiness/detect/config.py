@@ -10,6 +10,7 @@ from typing import Any
 from .. import _platform as _platform
 from ..detect import hardware as _hardware
 from ..detect import config_openssl as _config_openssl
+from ..detect import openssl_host as _openssl_host
 
 log = logging.getLogger("pqc-readiness")
 
@@ -274,9 +275,13 @@ def fips_pqc_conflict_check(
     workflow (RHEL 9 / 10 FIPS provider does not yet include PQC)."""
     if not fips.get("kernel"):
         return {"in_conflict": False, "explanation": "Kernel FIPS mode not enabled."}
-    has_pqc = bool(
-        (openssl.get("kem_algorithms") or []) or (openssl.get("sig_algorithms") or [])
-    )
+    kems, sigs = openssl.get("kem_algorithms"), openssl.get("sig_algorithms")
+    if kems is not None or sigs is not None:
+        has_pqc = bool(kems or sigs)
+    else:
+        # No host CLI (#225 / #228): OpenSSL 3.5+ ships ML-KEM / ML-DSA in
+        # its default provider, so infer exposure from the host's version.
+        has_pqc = openssl.get("pqc_native") is True
     if not has_pqc:
         return {
             "in_conflict": False,
@@ -532,7 +537,92 @@ def classify_tls_groups(group_names: list[str]) -> dict[str, list[str]]:
     }
 
 
+# Fields only the `openssl` CLI can answer.  When the CLI is missing or
+# belongs to the scanner image they are null, and `cli_probe` says why.
+CLI_ONLY_FIELDS: tuple[str, ...] = (
+    "kem_algorithms",
+    "sig_algorithms",
+    "tls_groups",
+    "tls_pqc_groups",
+    "providers",
+    "third_party_providers",
+    "third_party_algorithms",
+)
+
+_SCANNER_CLI_REASON = (
+    "--host-mount: the openssl on PATH is the scanner image's ({version}), "
+    "so algorithm lists, TLS groups and providers would describe the image, "
+    "not the host"
+)
+_NO_CLI_REASON = (
+    "openssl CLI not on PATH; algorithm lists, TLS groups and providers need it"
+)
+
+
+def _openssl_from_files(
+    os_release: dict[str, Any] | None, scanner_cli: bool
+) -> dict[str, Any]:
+    """The `openssl` section when the CLI can't describe the host: under
+    --host-mount, where it is the scanner image's (#228), or on a host
+    with no CLI at all (#225).  Version and PQC capability come from the
+    host's package database or libcrypto file; the CLI-only fields are
+    null."""
+    osr = os_release or {}
+    ev = _openssl_host.openssl_evidence(osr)
+    if scanner_cli:
+        rc, ver = _platform._openssl_version_text()
+        scanner_version = ver.strip() if rc == 0 else "unknown"
+        reason = _SCANNER_CLI_REASON.format(version=scanner_version)
+    else:
+        scanner_version = None
+        reason = _NO_CLI_REASON
+    if not ev["installed"]:
+        out: dict[str, Any] = {
+            "available": False,
+            "reason": (
+                "no OpenSSL package or libcrypto found on the host"
+                if scanner_cli
+                else "openssl not on PATH"
+            ),
+        }
+        if scanner_cli:
+            out["scanner_cli_version"] = scanner_version
+        return out
+    vt = ev["version_tuple"]
+    out = {
+        "available": True,
+        "version": f"OpenSSL {ev['version']}" if ev["version"] else "unknown",
+        "version_tuple": vt,
+        "pqc_native": (tuple(vt[:2]) >= (3, 5)) if vt else None,
+        "version_source": ev["version_source"],
+        "package": ev["package"],
+        "library": ev["library"],
+        "cli_probe": {"available": False, "reason": reason},
+    }
+    for field in CLI_ONLY_FIELDS:
+        out[field] = None
+    if scanner_cli:
+        out["scanner_cli_version"] = scanner_version
+    out["upgrade_path"] = openssl_upgrade_path(vt, osr)
+    out["config"] = _config_openssl.detect_openssl_config(osr, vt)
+    return out
+
+
 def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
+    has_cli = bool(shutil.which("openssl"))
+    # Under --host-mount the CLI on PATH is the scanner image's (#228).
+    host_mount = bool(_platform.HOST_PREFIX) and not _platform.OFFLINE_ROOT
+    if host_mount or not has_cli:
+        return _openssl_from_files(os_release, scanner_cli=has_cli)
+    return openssl_cli_capability(os_release)
+
+
+def openssl_cli_capability(
+    os_release: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Probe the `openssl` CLI on PATH.  Describes the host only on a
+    bare-metal or VM scan; `openssl_capability()` decides when to use it.
+    The benchmarks call it directly, since they measure the local binary."""
     if not shutil.which("openssl"):
         return {"available": False, "reason": "openssl not on PATH"}
     out: dict[str, Any] = {"available": True}
@@ -545,6 +635,7 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     out["pqc_native"] = bool(out["version_tuple"]) and tuple(
         out["version_tuple"][:2]
     ) >= (3, 5)
+    out["version_source"] = "cli"
     rc_kem, kems = _platform._run(["openssl", "list", "-kem-algorithms"], timeout=5)
     rc = rc_kem
     out["kem_algorithms"] = (
@@ -577,8 +668,7 @@ def openssl_capability(os_release: dict[str, Any] | None = None) -> dict[str, An
     records = parse_openssl_provider_records(providers) if rc == 0 else {}
     out["providers"] = sorted(records)
     # Providers and algorithms that don't ship with OpenSSL itself, e.g. a
-    # source-built OQS provider (#106).  Like the rest of this object they
-    # describe the scanner's own openssl binary under --host-mount.
+    # source-built OQS provider (#106).
     out["third_party_providers"] = _config_openssl.third_party_providers(records)
     out["third_party_algorithms"] = {
         "kem": _config_openssl.third_party_algorithms(kems) if rc_kem == 0 else [],

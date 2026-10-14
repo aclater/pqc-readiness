@@ -21,8 +21,8 @@ Measured layouts (2026-10-13, fixtures in tests/fixtures/openssl_config/):
 
 Everything is read through the host prefix, so the result describes the
 host under --host-mount.  The loaded-provider and algorithm lists come
-from the `openssl` binary and describe the scanner image there; they are
-reported by `openssl_capability()`, not here.
+from the `openssl` binary; `openssl_capability()` reports them, and leaves
+them null under --host-mount, where the binary is the scanner image's.
 """
 
 from __future__ import annotations

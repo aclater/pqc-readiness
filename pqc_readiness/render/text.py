@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .. import report as _report
+from .. import algorithms as _algorithms
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
 from ..detect import protocols_boot as _boot
@@ -338,21 +339,40 @@ def _render_text_openssl_tls_groups(tls_groups: dict[str, Any]) -> list[str]:
     return L
 
 
+def _openssl_source_note(r: _report.Report) -> str:
+    """Where the version came from when it isn't the CLI (#225, #228)."""
+    src = r.openssl.get("version_source")
+    if src == "package":
+        pkg = r.openssl.get("package") or {}
+        return f" (host package {pkg.get('name')})"
+    if src == "library":
+        return f" (from {(r.openssl.get('library') or {}).get('path')})"
+    return ""
+
+
 def _render_text_openssl(r: _report.Report) -> list[str]:
     """Section 4: OpenSSL PQC capability (version, KEMs, sigs, TLS groups)."""
     L: list[str] = [C.wrap(C.BOLD, "4. PQC library capability (OpenSSL)")]
     if not r.openssl.get("available"):
         L.append(f"   {r.openssl.get('reason', 'unknown')}")
     else:
-        L.append(f"   Version:       {r.openssl.get('version')}")
         L.append(
-            f"   PQC native:    {'yes (>=3.5)' if r.openssl.get('pqc_native') else 'no'}"
+            f"   Version:       {r.openssl.get('version')}{_openssl_source_note(r)}"
         )
-        kems = r.openssl.get("kem_algorithms") or []
-        sigs = r.openssl.get("sig_algorithms") or []
-        L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
-        L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
-        L.extend(_render_text_openssl_tls_groups(r.openssl.get("tls_groups") or {}))
+        native = r.openssl.get("pqc_native")
+        shown = (
+            "yes (>=3.5)" if native is True else "no" if native is False else "unknown"
+        )
+        L.append(f"   PQC native:    {shown}")
+        if _algorithms.openssl_cli_probed(r.openssl):
+            kems = r.openssl.get("kem_algorithms") or []
+            sigs = r.openssl.get("sig_algorithms") or []
+            L.append(f"   ML-KEM:        {', '.join(kems) if kems else 'not exposed'}")
+            L.append(f"   PQC sigs:      {', '.join(sigs) if sigs else 'not exposed'}")
+            L.extend(_render_text_openssl_tls_groups(r.openssl.get("tls_groups") or {}))
+        else:
+            why = (r.openssl.get("cli_probe") or {}).get("reason", "not probed")
+            L.append(C.wrap(C.DIM, f"   Algorithms and TLS groups not probed: {why}."))
         cfg = r.openssl.get("config") or {}
         if cfg.get("available"):
             src = cfg.get("default_groups_source")
@@ -1183,7 +1203,12 @@ def render_markdown(r: _report.Report) -> str:
     L.append("")
     if r.openssl.get("available"):
         L.append("## OpenSSL PQC capability")
-        L.append(f"- Version: `{r.openssl.get('version')}`")
+        L.append(f"- Version: `{r.openssl.get('version')}`{_openssl_source_note(r)}")
+    if r.openssl.get("available") and not _algorithms.openssl_cli_probed(r.openssl):
+        why = (r.openssl.get("cli_probe") or {}).get("reason", "not probed")
+        L.append(f"- Algorithms and TLS groups: _not probed_ ({why})")
+        L.append("")
+    elif r.openssl.get("available"):
         L.append(
             f"- KEM algorithms: {', '.join(r.openssl.get('kem_algorithms') or []) or '_none_'}"
         )

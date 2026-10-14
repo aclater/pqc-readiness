@@ -9,8 +9,13 @@ The host's OpenSSL is available but reports no native PQC support
 built-in ML-KEM, ML-DSA and SLH-DSA, so this means OpenSSL is older than
 3.5.
 
-The finding carries `openssl:version` and `openssl:upgrade_path`, a
-family-aware hint for the specific host.
+The finding carries `openssl:version`, `openssl:version_source` and
+`openssl:upgrade_path`, a family-aware hint for the specific host.
+`openssl:version_source` says where the version came from: `cli` (the
+`openssl` binary on a bare-metal or VM scan), or `package` / `library`
+under `--host-mount`, where the binary is the scanner image's (#228), and on
+hosts with no `openssl` binary, such as OpenWrt (#225). A host whose
+libcrypto carries no version string isn't judged.
 
 In an offline `--root` scan the OpenSSL binary can't run, so the rule
 judges the tree's OpenSSL library package instead: it fires when the

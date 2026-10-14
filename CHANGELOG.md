@@ -54,6 +54,17 @@ changes it.
   run into a `ModuleNotFoundError`; if it's the only one, the launcher says
   so and exits 127. OpenWrt hosts get their own install hint
   (`opkg install python3` up to 24.10, `apk add python3` from 25.12).
+- **OpenSSL facts come from the host, not the scanner image** (#228). Under
+  `--host-mount` (every DaemonSet and quadlet deployment) `openssl.version`
+  and `pqc_native` were the scanner image's, so a node with OpenSSL 3.0 or
+  3.2 was reported PQC-capable. They now come from the host's OpenSSL
+  package, else its libcrypto file (`openssl.version_source`); the
+  CLI-only lists (algorithms, TLS groups, providers) are `null` with the
+  reason in `openssl.cli_probe`, and the verdict, pqc-001, pqc-008 and the
+  FIPS check fall back to the host's version.
+- **Hosts with libcrypto but no `openssl` CLI** (OpenWrt, minimal images)
+  report the library's version instead of "openssl not on PATH", so
+  pqc-001 fires for a pre-3.5 library (#225).
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
