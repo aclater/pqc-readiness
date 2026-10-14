@@ -38,6 +38,7 @@ from ..detect import protocols_libraries as _libraries
 from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
 from ..detect import protocols_tunnels as _tunnels
+from ..detect import config_services as _config_services
 from ..detect import protocols_signing as _signing
 
 log = logging.getLogger("pqc-readiness")
@@ -378,6 +379,11 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
     dnssec: dict[str, Any] = {}
     if getattr(args, "scan_dnssec", False):
         dnssec = _dnssec.scan_dnssec()
+    # Service TLS settings are config files (#216).
+    openssl = offline_openssl(os_release)
+    service_tls_config: dict[str, Any] = {}
+    if getattr(args, "scan_service_configs", False):
+        service_tls_config = _config_services.scan_service_configs(os_release, openssl)
 
     return _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -388,7 +394,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         isa_reason="offline --root scan: no CPU behind a filesystem tree",
         memory=dict(host_state),
         fips=dict(host_state),
-        openssl=offline_openssl(os_release),
+        openssl=openssl,
         tpm_pqc=dict(host_state),
         ssh_pqc=not_applicable(_BINARY_REASON.format(tool="`ssh -Q kex`")),
         ipsec_pqc=offline_ipsec(),
@@ -406,6 +412,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         crypto_material=crypto_material,
         runtime_environment=dict(host_state),
         service_crypto_linkage=dict(host_state),
+        service_tls_config=service_tls_config,
         process_crypto_linkage=dict(host_state),
         packages=packages,
         signing_keys=signing_keys,

@@ -87,7 +87,8 @@ The rules fall into four groups:
 - `pqc-011`–`pqc-018`: software that will fail at PQC (services, Go binaries,
   crypto libraries, IPsec stacks and bundled crypto that can't do it, and
   capability that could not be determined).
-- `pqc-020`: PQC-capable software configured to stay classical.
+- `pqc-020`–`pqc-021`: PQC-capable software configured to stay classical,
+  and services whose own TLS configuration keeps ML-KEM out.
 - `pqc-030`–`pqc-034`: the boot chain, Kerberos, WireGuard, OpenVPN and DNSSEC.
 
 Output validates against the official SARIF 2.1.0 schema. For code-scanning

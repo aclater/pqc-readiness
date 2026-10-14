@@ -13,6 +13,7 @@ from .. import report as _report
 from .. import gap as _gap
 from .. import registry as _registry
 from ..detect import config_policy as _config_policy
+from ..detect import config_services as _config_services
 from ..detect import config_sshd as _config_sshd
 from ..detect import protocols_libraries as _libraries
 from ..detect import runtime_services as _services
@@ -380,6 +381,27 @@ RULE_SPECS: tuple[RuleSpec, ...] = (
         default_level="warning",
         help_uri=f"{SARIF_HELP_BASE}/pqc-020-pqc-capable-not-configured.md",
     ),
+    RuleSpec(
+        id="pqc-021-service-config-blocks-pqc",
+        short_description=(
+            "A service's own TLS configuration keeps post-quantum key exchange out."
+        ),
+        full_description=(
+            "A server daemon on this host sets its own TLS key-exchange "
+            "groups or protocol range, and that setting rules out hybrid "
+            "ML-KEM although the host's TLS library supports it: a group "
+            "list without an ML-KEM group (nginx ssl_ecdh_curve, Apache "
+            "SSLOpenSSLConfCmd Groups, HAProxy curves, stunnel curves, "
+            "Postfix tls_eecdh_auto_curves, PostgreSQL ssl_groups, OpenLDAP "
+            "TLSECName, ...), a built-in classical default compiled into the "
+            "service, TLS 1.3 disabled, or a service that can only use a "
+            "single elliptic curve (PostgreSQL before 18).  A service's own "
+            "setting overrides the system crypto policy, so these services "
+            "stay classical even after the policy enables PQC."
+        ),
+        default_level="warning",
+        help_uri=f"{SARIF_HELP_BASE}/pqc-021-service-config-blocks-pqc.md",
+    ),
     # pqc-030 .. pqc-039: detect-protocols lane (#137 rule-ID blocks).
     RuleSpec(
         id="pqc-030-classical-boot-chain",
@@ -539,6 +561,9 @@ SECURITY_SEVERITY: dict[str, str] = {
     # Capability-vs-configuration summary (#107): a config change fixes it;
     # below pqc-008 / pqc-010, which it partly restates.
     "pqc-020-pqc-capable-not-configured": "4.5",
+    # A service's own config keeps PQC out (#216): fixed by a config change
+    # (or, for PostgreSQL < 18, an upgrade); same band as pqc-008 / pqc-010.
+    "pqc-021-service-config-blocks-pqc": "5.0",
 }
 
 # partialFingerprints key.  SARIF lets producers name their own
@@ -835,6 +860,7 @@ def build_findings(r: _report.Report) -> list[Finding]:
     gap_finding = _capable_not_configured_finding(r)
     if gap_finding is not None:
         findings.append(gap_finding)
+    findings.extend(_service_config_findings(r))
     boot = r.boot_chain
     layers = _boot.describe_classical_layers(boot)
     if layers:
@@ -976,6 +1002,37 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
             "gap:clients": clients,
         },
     )
+
+
+def _service_config_findings(r: _report.Report) -> list[Finding]:
+    """pqc-021 (#216): one result per server endpoint whose own TLS
+    configuration keeps PQC out while the host's TLS library can do it."""
+    out = []
+    blocked = _gap.service_config_blocks(
+        {"openssl": r.openssl, "service_tls_config": r.service_tls_config}
+    )
+    for item in blocked:
+        ep = item["endpoint"]
+        out.append(
+            Finding(
+                rule_id="pqc-021-service-config-blocks-pqc",
+                level="warning",
+                message=_config_services.describe_blocked(item) + ".",
+                properties={
+                    "service:name": item["service"],
+                    "service:version": item.get("version"),
+                    "service:config_file": ep["file"],
+                    "service:config_line": ep.get("line"),
+                    "service:ports": ep.get("ports"),
+                    "service:groups": ep.get("groups"),
+                    "service:groups_source": ep.get("groups_source"),
+                    "service:tls13_allowed": ep.get("tls13_allowed"),
+                },
+                subject=f"{item['service']}:{ep['file']}:{ep.get('line') or ''}:"
+                + ",".join(str(p) for p in ep.get("ports") or []),
+            )
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -100,6 +100,7 @@ always runs; the `--scan-*` flags add deeper inventories.
 | Deployment gap | Per-protocol and per-service verdict: deployed, capable but not configured, not capable | always |
 | Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains | `--scan-crypto-libraries` |
 | Services and processes | Which crypto library each listening service and running process actually uses | `--scan-services`, `--scan-processes` |
+| Service TLS settings | Each server daemon's own TLS groups and protocol range (nginx, Apache, HAProxy, stunnel, Squid, Postfix, Dovecot, PostgreSQL, MariaDB/MySQL, Redis/Valkey, OpenLDAP, 389 DS, Tomcat), which override the system policy | `--scan-service-configs` (implied by `--scan-services`) |
 | Certificates and keys | Trust store and service certificates by algorithm OID, private keys (metadata only), Java keystores | `--scan-trust-store`, `--scan-crypto-material` |
 | Packages and signing keys | Installed packages with bundled crypto; package-manager signing keys | `--scan-packages`, `--scan-signing-keys` |
 | Boot chain | Secure Boot certificates, kernel module signing, IMA/EVM, TPM | `--scan-boot-chain` |
@@ -136,7 +137,7 @@ full description of each; `pqc-readiness --help` prints them too.
 
 | Purpose | Flags |
 | --- | --- |
-| Deeper scans | `--scan-packages`, `--scan-trust-store` (`--trust-store-max-certs N`), `--scan-crypto-material` (`--crypto-material-path PATH`, `--crypto-material-max-files N`), `--scan-signing-keys`, `--scan-services`, `--scan-processes`, `--scan-crypto-libraries`, `--scan-boot-chain`, `--scan-kerberos`, `--scan-tunnels`, `--scan-dnssec` |
+| Deeper scans | `--scan-packages`, `--scan-trust-store` (`--trust-store-max-certs N`), `--scan-crypto-material` (`--crypto-material-path PATH`, `--crypto-material-max-files N`), `--scan-signing-keys`, `--scan-services`, `--scan-service-configs`, `--scan-processes`, `--scan-crypto-libraries`, `--scan-boot-chain`, `--scan-kerberos`, `--scan-tunnels`, `--scan-dnssec` |
 | Benchmarks | `--bench`, `--bench-tls`, `--threads N`, `--seconds N` |
 | What to scan | `--host-mount PATH` (a live host mounted into a container), `--root PATH` (an offline image or rootfs) |
 | Output format | `--json`, `--markdown`, `--cbom`, `--spdx`, `--sbom`, `--sarif`, `--ndjson`, `--prometheus`, `--ansible` |

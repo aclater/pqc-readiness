@@ -1,0 +1,5 @@
+dn: cn=config
+objectClass: olcGlobal
+cn: config
+olcTLSCertificateFile: /etc/pqct/cert.pem
+olcTLSCertificateKeyFile: /etc/pqct/key.pem

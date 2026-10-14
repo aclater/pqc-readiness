@@ -53,6 +53,7 @@ running as another user can read it.
 | `pqc_readiness_trust_store_truncated` | — | 1 when `--trust-store-max-certs` stopped the scan early. | `--scan-trust-store` |
 | `pqc_readiness_packages` | — | Installed packages. | `--scan-packages` |
 | `pqc_readiness_bundled_crypto_packages` | — | Installed packages that bundle their own crypto implementation. | `--scan-packages` |
+| `pqc_readiness_service_tls_endpoints` | `service` (nginx, apache, haproxy, stunnel, squid, postfix, dovecot, postgresql, mysql, redis, openldap, 389-ds, tomcat), `pqc` = pqc / classical / library_default | Server TLS endpoints by what the service's own configuration does with PQC key exchange: offers it, keeps it out, or follows the host's TLS default. | `--scan-service-configs` or `--scan-services` |
 | `pqc_readiness_last_run_timestamp_seconds` | — | Unix time the report was generated. | always |
 
 These describe what the host *can* do (capability). They don't say what a

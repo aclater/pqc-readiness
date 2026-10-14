@@ -13,6 +13,8 @@ from ..detect import protocols_boot as _boot
 from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
 from ..detect import protocols_tunnels as _tunnels
+from ..detect import config_services as _config_services
+from .. import gap as _gap
 
 
 # ---------------------------------------------------------------------------
@@ -796,6 +798,49 @@ def _render_text_dnssec(r: _report.Report) -> list[str]:
     return L
 
 
+def _render_text_service_tls(r: _report.Report) -> list[str]:
+    """Per-service TLS settings (--scan-service-configs, #216)."""
+    stc = r.service_tls_config
+    if not stc:
+        return []
+    L: list[str] = [C.wrap(C.BOLD, "18. Service TLS configuration")]
+    if not stc.get("available"):
+        L += [f"   Unavailable: {stc.get('reason')}", ""]
+        return L
+    state = {True: "PQC", False: "classical", None: "library default"}
+    summary = stc.get("summary") or {}
+    if not summary.get("endpoints"):
+        names = ", ".join(
+            _config_services.SERVICE_LABELS.get(n, n)
+            for n in summary.get("services") or []
+        )
+        L.append(f"   No TLS endpoints configured ({names}).")
+    for svc in stc.get("services") or []:
+        label = _config_services.SERVICE_LABELS.get(svc["service"], svc["service"])
+        version = f" {svc['version']}" if svc.get("version") else ""
+        eps = svc.get("endpoints") or []
+        if not eps:
+            for u in svc.get("unreadable") or []:
+                L.append(f"   {label}: {u['path']} unreadable ({u['reason']})")
+            continue
+        for ep in eps:
+            ports = ",".join(str(p) for p in ep.get("ports") or []) or "-"
+            groups = ":".join(ep.get("groups") or []) or "-"
+            L.append(
+                f"   {label}{version} port {ports}: "
+                f"{state[ep.get('pqc_key_exchange')]}  "
+                f"(groups {groups}, {ep.get('groups_source')})"
+            )
+    for item in _gap.service_config_blocks(
+        {"openssl": r.openssl, "service_tls_config": stc}
+    ):
+        L.append(
+            C.wrap(C.YELLOW, "   " + _config_services.describe_blocked(item) + ".")
+        )
+    L.append("")
+    return L
+
+
 def _offline_na_sections(r: _report.Report) -> str:
     """Human-readable list of what an offline --root scan cannot answer."""
     return (
@@ -973,6 +1018,7 @@ def render_text_offline(r: _report.Report) -> str:
     L.extend(_render_text_trust_store(r))
     L.extend(_render_text_signing_keys(r))
     L.extend(_render_text_crypto_libraries(r))
+    L.extend(_render_text_service_tls(r))
     L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_verdict(r))
     # Reused live sections carry live numbering ("9.", "11."); offline
@@ -1092,6 +1138,7 @@ def render_text(r: _report.Report) -> str:
     L.extend(_render_text_kerberos(r))
     L.extend(_render_text_tunnels(r))
     L.extend(_render_text_dnssec(r))
+    L.extend(_render_text_service_tls(r))
     L.extend(_render_text_pqc_failures(r))
     L.extend(_render_text_deployment_gap(r))
     L.extend(_render_text_verdict(r))

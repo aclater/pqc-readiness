@@ -60,10 +60,13 @@ To build your own image instead (for example on a different base), use the
 Containerfiles directly and push to your registry.
 
 The shipped quadlet and DaemonSet run the basic scan with `--bench`; the
-services overlay adds `--scan-services`. None of them runs the other
-`--scan-*` inventories. To collect packages, certificates, signing keys or
-crypto libraries from every node, add those flags to the quadlet's `Exec=` or
-the DaemonSet's `command`.
+services overlay adds `--scan-services`, which also reads each daemon's own
+TLS configuration (`--scan-service-configs`) from the node's read-only `/etc`
+and `/usr` mounts. PostgreSQL data directories aren't mounted, so PostgreSQL
+endpoints aren't covered there. None of them runs the other `--scan-*`
+inventories. To collect packages, certificates, signing keys or crypto
+libraries from every node, add those flags to the quadlet's `Exec=` or the
+DaemonSet's `command`.
 
 Containerfiles ship for each supported base image:
 
@@ -141,7 +144,7 @@ pqc-readiness --root rootfs --scan-packages --scan-trust-store \
 | Subject | A **live** host whose `/proc`, `/sys`, `/etc`… are bind-mounted into the scanner's container | A **filesystem tree** with no running kernel behind it |
 | CPU, memory, accelerators, kernel, kTLS, FIPS mode, services, benchmarks | Read from the host | Not applicable (marked in every output format) |
 | OpenSSL / SSH / IPsec capability | Probed with the scanner's tools | Not applicable; OpenSSL's version comes from the tree's package database (or, with none, from the version string in its `libcrypto`) and its defaults from the tree's `openssl.cnf`; IPsec proposals from the tree's config files |
-| Packages, certificates, keys, crypto policy, signing keys | Read from the host | Read from the tree |
+| Packages, certificates, keys, crypto policy, signing keys, service TLS configuration | Read from the host | Read from the tree |
 | Verdict | Readiness tier and exit code 0–3 | `NOT APPLICABLE - offline filesystem scan`, exit code 0 |
 
 Package databases are read in-process for every format the matrix covers (rpm

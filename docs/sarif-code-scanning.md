@@ -41,6 +41,7 @@ critical.
 | `pqc-010-sshd-pqc-kex-not-offered` | 5.0 | medium |
 | `pqc-016-ipsec-classical-only-ike` | 5.0 | medium |
 | `pqc-033-openvpn-classical-key-exchange` | 5.0 | medium |
+| `pqc-021-service-config-blocks-pqc` | 5.0 | medium |
 | `pqc-020-pqc-capable-not-configured` | 4.5 | medium |
 | `pqc-006-no-network-hsm-pqc-firmware` | 4.3 | medium |
 | `pqc-031-kerberos-weak-enctypes` | 4.3 | medium |
