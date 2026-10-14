@@ -383,7 +383,6 @@ OPENVPN_DIRS = ("/etc/openvpn", "/etc/openvpn/server", "/etc/openvpn/client")
 
 
 def scan_openvpn() -> dict[str, Any]:
-    base = Path(_platform.HOST_PREFIX or "/")
     paths: list[str] = []
     configs: list[dict[str, Any]] = []
     for d in OPENVPN_DIRS:
@@ -391,8 +390,8 @@ def scan_openvpn() -> dict[str, Any]:
         if err:
             configs.append({"path": d, "readable": False, "reason": err})
     for pattern in OPENVPN_GLOBS:
-        for p in sorted(base.glob(pattern.lstrip("/"))):
-            host = "/" + str(p.relative_to(base))
+        # Directories resolve inside the tree, not the scanner's (#258).
+        for host in _platform.host_glob(pattern):
             if host not in paths:
                 paths.append(host)
     for path in paths[:MAX_CONFIGS]:

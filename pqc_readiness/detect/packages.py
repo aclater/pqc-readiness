@@ -307,30 +307,12 @@ def resolve_under_prefix(path: str, prefix: str, max_links: int = 40) -> str:
     each component under `prefix` and re-rooting absolute link targets
     under it too, so a host symlink is never followed into the scanner
     container's own filesystem.  Returns the resolved host-relative path.
-    With an empty prefix this is plain symlink resolution."""
-    pending = [c for c in path.split("/") if c]
-    done: list[str] = []
-    links = 0
-    while pending:
-        part = pending.pop(0)
-        if part == ".":
-            continue
-        if part == "..":
-            if done:
-                done.pop()
-            continue
-        candidate = prefix + "/" + "/".join([*done, part])
-        if os.path.islink(candidate):
-            links += 1
-            if links > max_links:
-                raise RpmdbError(f"too many symlinks resolving {path}")
-            target = os.readlink(candidate)
-            if target.startswith("/"):
-                done = []
-            pending = [c for c in target.split("/") if c] + pending
-            continue
-        done.append(part)
-    return "/" + "/".join(done)
+    With an empty prefix this is plain symlink resolution.  The resolver
+    itself is _platform.resolve_in_root (shared with host_path, #258)."""
+    try:
+        return _platform.resolve_in_root(path, prefix, max_links)
+    except OSError as e:
+        raise RpmdbError(f"too many symlinks resolving {path}") from e
 
 
 def locate_rpmdb() -> tuple[str, Path, str] | None:
@@ -350,12 +332,31 @@ def locate_rpmdb() -> tuple[str, Path, str] | None:
         seen.add(host_dir)
         local_dir = Path(_platform.HOST_PREFIX + host_dir)
         for fname in _RPMDB_FILES:
-            f = local_dir / fname
+            f_dir, f = host_dir, local_dir / fname
+            if _platform.HOST_PREFIX and _platform.safe_is_symlink(f):
+                # The database file itself is a link: resolve it under the
+                # prefix too, or the OS would follow an absolute target to
+                # the scanning machine's own rpmdb (#258).  Readers join
+                # the file name onto the directory, so the target must
+                # keep the name.
+                try:
+                    target = resolve_under_prefix(
+                        f"{host_dir}/{fname}", _platform.HOST_PREFIX
+                    )
+                except RpmdbError as e:
+                    log.debug("rpmdb: %s", e)
+                    continue
+                f_dir, _, base = target.rpartition("/")
+                f_dir = f_dir or "/"
+                if base != fname:
+                    log.debug("rpmdb: %s links to %s; skipping", f, target)
+                    continue
+                f = Path(_platform.HOST_PREFIX + target)
             if not _platform.safe_is_file(f):
                 continue
             backend = rpmdb_backend_by_magic(f)
             if backend is not None:
-                return host_dir, local_dir, backend
+                return f_dir, f.parent, backend
             log.debug("rpmdb: %s has no recognised magic; skipping", f)
     return None
 
@@ -1010,7 +1011,9 @@ def read_prefixed_package_db(family: str) -> tuple[list[dict[str, str]], str]:
             raise FileNotFoundError(str(local))
         pkgs = []
         for desc in sorted(local.glob("*/desc")):
-            parsed = parse_pacman_desc(desc.read_text(errors="replace"))
+            # A linked entry resolves inside the prefix (#258).
+            text = _platform.in_tree(desc).read_text(errors="replace")
+            parsed = parse_pacman_desc(text)
             if parsed:
                 pkgs.append(parsed)
         return pkgs, host_rel

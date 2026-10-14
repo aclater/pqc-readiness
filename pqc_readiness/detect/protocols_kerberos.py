@@ -497,10 +497,9 @@ def _keytab_paths(config: dict[str, Any]) -> list[str]:
             name = name.split(":", 1)[1]
         if name.startswith("/") and "%" not in name:
             paths.insert(0, name)
-    base = Path(_platform.HOST_PREFIX or "/")
     for pattern in KEYTAB_GLOBS:
-        for p in sorted(base.glob(pattern.lstrip("/"))):
-            host = "/" + str(p.relative_to(base))
+        # Directories resolve inside the tree, not the scanner's (#258).
+        for host in _platform.host_glob(pattern):
             if host not in paths:
                 paths.append(host)
     return paths

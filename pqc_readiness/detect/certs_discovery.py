@@ -115,8 +115,11 @@ def expiry_bucket(not_after: str, now: datetime | None = None) -> str:
 
 def _host_root(path: str) -> Path:
     """The process-visible location of host path `path` (under the
-    --host-mount prefix when one is set)."""
-    return Path(_platform.HOST_PREFIX + path) if _platform.HOST_PREFIX else Path(path)
+    --host-mount prefix when one is set), with symlinks resolved inside
+    the prefix so a linked root is walked in the tree (#258)."""
+    if not _platform.HOST_PREFIX:
+        return Path(path)
+    return _platform.in_tree(_platform.HOST_PREFIX + path)
 
 
 def _host_rel(local: Path) -> str:
