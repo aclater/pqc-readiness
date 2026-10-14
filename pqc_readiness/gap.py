@@ -477,6 +477,8 @@ def _clients(
                 "exe": grp.get("exe"),
                 "process": grp.get("process"),
                 "systemd_units": list(grp.get("systemd_units") or []),
+                "containers": list(grp.get("containers") or []),
+                "containers_omitted": int(grp.get("containers_omitted") or 0),
                 "client_processes": clients,
                 "crypto_families": families,
                 **v,

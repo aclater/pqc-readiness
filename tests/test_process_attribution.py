@@ -322,3 +322,187 @@ def test_local_pid_is_not_used_under_a_host_prefix(
     os.symlink(exe, init / "exe")
     (g,) = rp.scan_processes()["groups"]
     assert g["sample_pids"] == [1]
+
+
+# ---------------------------------------------------------------------------
+# Container identity on process groups (#262)
+# ---------------------------------------------------------------------------
+
+
+def _cid(n: int) -> str:
+    return f"{n:064x}"
+
+
+def _crio(cid: str, pod_uid: str = tsl.POD_UID) -> str:
+    return (
+        "0::/kubepods.slice/kubepods-burstable.slice/"
+        f"kubepods-burstable-pod{pod_uid}.slice/crio-{cid}.scope\n"
+    )
+
+
+def _pod_host(host: FakeHost, containers: int) -> None:
+    """``containers`` client processes of one exe on an old OpenSSL, each in
+    its own CRI-O container listed by the kubelet, plus a host process of
+    the same exe outside any container."""
+    _populate(host)
+    host.file("/usr/lib64/old/libcrypto.so.3", OLD_LIBCRYPTO)
+    exe = host.file("/usr/bin/sidecar", _elf(interp=True, buildinfo=None))
+    logs = host.root / "var" / "log" / "containers"
+    logs.mkdir(parents=True, exist_ok=True)
+    for i in range(containers):
+        cid = _cid(i + 1)
+        (logs / f"web-{i}_shop_proxy-{cid}.log").write_text("")
+        host.process(
+            3000 + i,
+            comm="sidecar",
+            maps=_maps("/usr/lib64/old/libcrypto.so.3"),
+            exe=exe,
+            cgroup=_crio(cid),
+        )
+
+
+def test_process_group_carries_its_containers(host: FakeHost) -> None:
+    _pod_host(host, 2)
+    g = _group(rp.scan_processes(), "/sidecar")
+    assert g["process_count"] == 2 and g["container_processes"] == 2
+    assert [
+        (c["pod_namespace"], c["pod_name"], c["container_name"])
+        for c in g["containers"]
+    ] == [
+        ("shop", "web-0", "proxy"),
+        ("shop", "web-1", "proxy"),
+    ]
+    assert g["containers"][0]["runtime"] == "cri-o"
+    assert g["containers"][0]["id"] == _cid(1)
+    assert "containers_omitted" not in g
+
+
+def test_host_process_group_has_no_containers(host: FakeHost) -> None:
+    _client_host(host)
+    g = _group(rp.scan_processes(), "/agent")
+    assert g["containers"] == [] and g["container_processes"] == 0
+
+
+def test_process_group_containers_are_capped(host: FakeHost) -> None:
+    _pod_host(host, rp._MAX_CONTAINERS + 2)
+    g = _group(rp.scan_processes(), "/sidecar")
+    assert len(g["containers"]) == rp._MAX_CONTAINERS
+    assert g["containers_omitted"] == 2
+    assert g["container_processes"] == rp._MAX_CONTAINERS + 2
+
+
+def test_containers_label() -> None:
+    one = {
+        "id": _cid(7),
+        "pod_name": "web-0",
+        "pod_namespace": "shop",
+        "container_name": "proxy",
+    }
+    unnamed = {
+        "id": _cid(7),
+        "pod_name": None,
+        "pod_namespace": None,
+        "container_name": None,
+    }
+    assert rs.containers_label("/usr/bin/x", [one]) == "proxy (pod shop/web-0)"
+    assert rs.containers_label("/usr/bin/x", [unnamed]) == (
+        f"/usr/bin/x (container {_cid(7)[:12]})"
+    )
+    assert (
+        rs.containers_label("/usr/bin/x", [one, unnamed]) == "/usr/bin/x (2 containers)"
+    )
+    assert (
+        rs.containers_label("/usr/bin/x", [one], omitted=4)
+        == "/usr/bin/x (5 containers)"
+    )
+    assert rs.containers_label("/usr/bin/x", []) == "/usr/bin/x"
+
+
+def test_text_report_names_the_pod_of_a_group(host: FakeHost) -> None:
+    from pqc_readiness import report as _report
+    from pqc_readiness.render import text as _text
+
+    _pod_host(host, 1)
+    r = _report.Report(process_crypto_linkage=rp.scan_processes())  # type: ignore[call-arg]
+    lines = "\n".join(_text._render_text_processes(r))
+    assert "proxy (pod shop/web-0) x1 [idle]" in lines
+
+
+def test_client_gap_carries_the_group_containers() -> None:
+    from pqc_readiness import gap as _gap
+
+    pcl = {
+        "available": True,
+        "groups": [
+            {
+                "exe": "/usr/bin/sidecar",
+                "process": "sidecar",
+                "crypto_libraries": [],
+                "go": {
+                    "go_version": "go1.24.4",
+                    "default_hybrid_kex": "X25519MLKEM768",
+                    "godebug_tlsmlkem": "0",
+                },
+                "roles": {"server": 0, "client": 1, "idle": 0},
+                "systemd_units": [],
+                "containers": [
+                    {
+                        "runtime": "cri-o",
+                        "id": _cid(1),
+                        "pod_uid": None,
+                        "pod_name": "web-0",
+                        "pod_namespace": "shop",
+                        "container_name": "proxy",
+                    }
+                ],
+            }
+        ],
+    }
+    report = {"process_crypto_linkage": pcl}
+    protocols = {"tls": {"state": "deployed"}}
+    clients = _gap._clients(report, protocols)
+    (item,) = clients["items"]
+    assert item["containers"][0]["pod_name"] == "web-0"
+    assert item["containers_omitted"] == 0
+
+
+def test_pqc020_names_the_pod_of_a_client_group() -> None:
+    from pqc_readiness import report as _report
+    from pqc_readiness.render import sarif as _sarif
+
+    container = {
+        "runtime": "cri-o",
+        "id": _cid(1),
+        "pod_uid": None,
+        "pod_name": "web-0",
+        "pod_namespace": "shop",
+        "container_name": "proxy",
+    }
+    gap = {
+        "protocols": {"tls": {"state": "deployed"}},
+        "services": {"items": []},
+        "clients": {
+            "items": [
+                {
+                    "exe": "/usr/bin/sidecar",
+                    "process": "sidecar",
+                    "state": "capable_not_configured",
+                    "follows_host_default": False,
+                    "containers": [container],
+                    "containers_omitted": 0,
+                },
+                {
+                    "exe": "/usr/bin/agent",
+                    "process": "agent",
+                    "state": "capable_not_configured",
+                    "follows_host_default": False,
+                    "containers": [],
+                },
+            ]
+        },
+    }
+    r = _report.Report(pqc_deployment_gap=gap)  # type: ignore[call-arg]
+    f = _sarif._capable_not_configured_finding(r)
+    assert f is not None
+    assert f.properties["gap:clients"] == ["proxy (pod shop/web-0)", "/usr/bin/agent"]
+    assert "proxy (pod shop/web-0)" in f.message

@@ -968,7 +968,12 @@ def _capable_not_configured_finding(r: _report.Report) -> Finding | None:
         and not s.get("follows_host_default")
     ]
     clients = [
-        str(c.get("exe") or c.get("process"))
+        # Named by container and pod when the group runs in one (#262).
+        _services.containers_label(
+            str(c.get("exe") or c.get("process")),
+            c.get("containers") or [],
+            int(c.get("containers_omitted") or 0),
+        )
         for c in (g.get("clients") or {}).get("items") or []
         # Outbound client process groups (#202); as for services, only the
         # ones whose verdict differs from the host's TLS verdict.
@@ -1087,9 +1092,7 @@ def _listener_who(lst: dict[str, Any]) -> str:
     c = lst.get("container") or {}
     if c:
         name = c.get("container_name") or _process_name(lst) or "process"
-        if c.get("pod_name"):
-            return f"{name} (pod {c.get('pod_namespace')}/{c['pod_name']})"
-        return f"{name} (container {str(c.get('id'))[:12]})"
+        return _services.container_label(c, name)
     return lst.get("systemd_unit") or _process_name(lst) or "unattributed process"
 
 
