@@ -218,6 +218,8 @@ _RPMTAG_NAMES: dict[int, str] = {
     1002: "release",
     1003: "epoch",
     1022: "arch",
+    # SOURCERPM: names the Yocto recipe a package was built from (#227).
+    1044: "sourcerpm",
 }
 
 
