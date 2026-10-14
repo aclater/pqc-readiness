@@ -10,6 +10,10 @@ ML-KEM / ML-DSA (`crypto_libraries.libraries.<name>.pqc_capable` is `false`):
 - **GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC:** no PQC algorithm or group
   names inside the library file (evidence `binary`), or a version below the
   upstream release that added them (evidence `version`).
+- **Mbed TLS / TF-PSA-Crypto** (the TLS stack of most embedded images,
+  OpenWrt's default): any installed version. No release (through Mbed TLS
+  4.2.0 / TF-PSA-Crypto 1.2.0) offers ML-KEM or ML-DSA to applications or
+  ML-KEM groups in TLS; only LMS signature verification.
 - **JDK installs:** older than JDK 24 (no ML-KEM / ML-DSA in the JCA,
   JEP 496 / 497).
 - **Go toolchains:** older than Go 1.24, so programs built with them get no
@@ -28,6 +32,8 @@ connections through it stay classical while OpenSSH itself offers ML-KEM.
 - libssh CHANGELOG: <https://gitlab.com/libssh/libssh-mirror/-/blob/master/CHANGELOG>
 - wolfSSL ChangeLog: <https://github.com/wolfSSL/wolfssl/blob/master/ChangeLog.md>
 - AWS-LC releases: <https://github.com/aws/aws-lc/releases>
+- Mbed TLS releases: <https://github.com/Mbed-TLS/mbedtls/releases>;
+  TF-PSA-Crypto releases: <https://github.com/Mbed-TLS/TF-PSA-Crypto/releases>
 - JEP 496 (ML-KEM) / 497 (ML-DSA), **final** in JDK 24:
   <https://openjdk.org/jeps/496>, <https://openjdk.org/jeps/497>
 - Go 1.24 release notes: <https://go.dev/doc/go1.24>
@@ -43,6 +49,11 @@ old JDK / Go install nothing uses.
 - **Debian / Ubuntu:** `apt install --only-upgrade libgnutls30t64 libgcrypt20 libssh-4`
   (package names vary by release); `openjdk-25-jdk` or newer.
 - **SUSE:** `zypper up libgnutls30 libgcrypt20 libssh4`; `java-25-openjdk`.
+- **Mbed TLS (embedded images):** no upgrade adds PQC yet. Where the image
+  can carry it, build the TLS-terminating components against OpenSSL 3.5 or
+  later (OpenWrt: the `libustream-openssl` and `px5g-standalone` variants;
+  Buildroot: `BR2_PACKAGE_OPENSSL`), and track Mbed TLS / TF-PSA-Crypto
+  releases for ML-KEM.
 
 ## False positives and limitations
 

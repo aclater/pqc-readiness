@@ -22,7 +22,7 @@ CPACF / Crypto Express on s390x), attached cryptographic accelerators
 (HSMs, DPUs, TPMs, CPU offload engines), kernel and OS crypto plumbing
 (`/proc/crypto`, kernel TLS, FIPS mode), and library versions
 (OpenSSL ≥ 3.5 PQC algorithms, OpenSSH `ssh -Q kex`, IPsec stacks, NSS,
-GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDKs and Go toolchains).
+GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains).
 
 With the opt-in `--scan-*` flags it also inventories the host's
 cryptographic material and trust anchors: installed packages, trust-store
