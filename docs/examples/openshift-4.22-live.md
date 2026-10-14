@@ -58,7 +58,7 @@ Full scan with the branch build, run inside the services pod with the capability
 
 | | |
 | --- | --- |
-| OpenSSL | Reported as `3.5.8`, native ML-KEM / ML-DSA / SLH-DSA. **That is the scanner image's OpenSSL, not the node's.** The node's `libcrypto`, as linked by sshd and haproxy, is `3.5.5` ([#228](https://github.com/aclater/pqc-readiness/issues/228)). Both are PQC-capable, so the verdict holds here |
+| OpenSSL | Reported as `3.5.8`, native ML-KEM / ML-DSA / SLH-DSA. **That is the scanner image's OpenSSL, not the node's.** The node's `libcrypto`, as linked by sshd and haproxy, is `3.5.5`. Both are PQC-capable, so the verdict holds here. Fixed in [#228](https://github.com/aclater/pqc-readiness/issues/228): run on the same pod and node, the fixed scanner reports `OpenSSL 3.5.5` with `version_source: package` (the node's `openssl-libs`), and leaves the algorithm lists `null` because the CLI is the image's |
 | Crypto policy | `DEFAULT`, no subpolicies; PQC disabled for TLS, SSH and IKE |
 | OpenSSL default groups | `X25519 secp256r1 X448 secp521r1 secp384r1 ffdhe2048…8192`: no hybrid groups |
 | sshd | Offers only classical key exchange (`curve25519-sha256`, ECDH, DH group exchange), although the installed OpenSSH supports `mlkem768x25519-sha256` |
