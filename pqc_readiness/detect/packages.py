@@ -364,7 +364,15 @@ def _fetch_rpmdb_sqlite(
 
     uri_path = quote(str(db_file))
     last_err: Exception | None = None
-    for uri_params in ("mode=ro", "mode=ro&immutable=1"):
+    # An offline --root tree cannot change underneath the scan, so open it
+    # immutable first: a WAL-mode reader otherwise updates the tree's
+    # rpmdb.sqlite-shm even with mode=ro, and the scan must not write to
+    # the tree (#224).  Live hosts keep mode=ro first, since rpm may be
+    # writing concurrently.
+    attempts = ("mode=ro", "mode=ro&immutable=1")
+    if _platform.OFFLINE_ROOT:
+        attempts = ("mode=ro&immutable=1", "mode=ro")
+    for uri_params in attempts:
         try:
             con = sqlite3.connect(f"file:{uri_path}?{uri_params}", uri=True, timeout=2)
         except sqlite3.Error as e:

@@ -427,3 +427,32 @@ def test_offline_debian_tree_uses_dpkg_status(
     assert r["openssl"]["package"] == {"name": "libssl3t64", "version": "3.5.1-1"}
     assert r["openssl"]["pqc_native_expected"] is True
     assert r["nss"]["not_applicable"] is True
+
+
+def test_offline_wal_rpmdb_is_not_written(
+    el9_tree: Path,
+    no_prefix: None,
+    no_subprocess: list[list[str]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#224: a WAL-mode rpmdb.sqlite (as Yocto images ship it) must be read
+    without touching the tree: mode=ro alone still creates or updates the
+    -shm / -wal files, so offline scans open the database immutable."""
+    import sqlite3
+
+    db = el9_tree / "var/lib/rpm/rpmdb.sqlite"
+    con = sqlite3.connect(db)
+    assert con.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+    con.close()
+
+    def snapshot() -> dict[str, tuple[int, int, bytes]]:
+        return {
+            p.name: (p.stat().st_mtime_ns, p.stat().st_size, p.read_bytes())
+            for p in sorted(db.parent.iterdir())
+        }
+
+    before = snapshot()
+    r = _run_json(capsys, "--root", str(el9_tree), "--scan-packages")
+    assert r["packages"]["total_packages"] == 5
+    assert snapshot() == before
+    assert no_subprocess == []
