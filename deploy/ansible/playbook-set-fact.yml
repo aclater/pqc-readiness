@@ -16,17 +16,17 @@
 # `become: false` is the default — the probe runs fine without root.
 # Set `become_for_tpm: true` (vars below) to escalate just for the probe
 # task; that fills in `tpm_pqc.pqc_advertised` (TPM 2.0 query needs
-# /dev/tpmrm0 access).  See docs/ansible.md for the full privilege
-# requirements list.
+# /dev/tpmrm0 access) and reads sshd's effective config with `sshd -T`.
+# See docs/ansible.md for the full privilege requirements list.
 #
-# Validated against `ansible-core 2.20.5`.
+# Passes `ansible-playbook --syntax-check` with `ansible-core 2.21.5`.
 ---
 - name: Probe PQC readiness across the fleet and capture facts
   hosts: pqc_targets
   gather_facts: false
   vars:
-    # Set true to run the probe under become — the only field this
-    # actually changes today is tpm_pqc.pqc_advertised.
+    # Set true to run the probe under become: fills in
+    # tpm_pqc.pqc_advertised and switches sshd.source to `sshd -T`.
     become_for_tpm: false
   tasks:
     - name: Run pqc-readiness with --ansible

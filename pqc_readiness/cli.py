@@ -388,7 +388,8 @@ def render_output(r: _report.Report, args: argparse.Namespace) -> str:
             return _recommendation.render_recommendation_markdown(r, rec)
         return _recommendation.render_recommendation_text(r, rec)
     # First registered format whose flag is set wins (registry precedence:
-    # json > cbom > spdx > sarif > markdown > quiet); plain text otherwise.
+    # json > cbom > spdx > sbom > sarif > prometheus > ndjson > markdown >
+    # quiet); plain text otherwise.
     for fmt in _registry.outputs():
         if getattr(args, fmt.dest):
             return fmt.render(r)
