@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# Turns the OpenShift DaemonSets into plain Kubernetes ones (#219).
+#
+# 1. Drops the SecurityContextConstraints: OpenShift-only.  On Kubernetes
+#    the namespace's Pod Security Admission labels admit the pods instead
+#    (deploy/openshift/namespace.yaml; services/ uses ../namespace).
+# 2. Replaces the /var/lib/rpm mount with /var/lib, read-only and
+#    recursively read-only.  OpenShift nodes all use rpm; Kubernetes
+#    fleets mix rpm, dpkg, apk and pacman nodes, and a hostPath of type
+#    Directory that is missing on a node keeps the pod from starting there
+#    (an untyped one is created on the host by the container runtime).
+#    /var/lib exists on every node and holds every package database the
+#    scanner reads.  Visibility is still bounded by file permissions: the
+#    base pod runs as UID 1001 with no capabilities.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      kind: SecurityContextConstraints
+    patch: |-
+      $patch: delete
+      apiVersion: security.openshift.io/v1
+      kind: SecurityContextConstraints
+      metadata:
+        name: unused
+  - target:
+      kind: DaemonSet
+    patch: |-
+      apiVersion: apps/v1
+      kind: DaemonSet
+      metadata:
+        name: unused
+      spec:
+        template:
+          spec:
+            containers:
+              - name: probe
+                # volumeMounts merge on mountPath, volumes on name.
+                volumeMounts:
+                  - mountPath: /host/var/lib/rpm
+                    $patch: delete
+                  - name: host-varlib
+                    mountPath: /host/var/lib
+                    readOnly: true
+                    recursiveReadOnly: Enabled
+            volumes:
+              - name: host-rpmdb
+                $patch: delete
+              - name: host-varlib
+                hostPath:
+                  path: /var/lib
+                  type: Directory

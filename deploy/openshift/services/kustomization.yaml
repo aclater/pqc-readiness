@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Lets other kustomizations reuse the services variant (#219:
+# deploy/kubernetes/services).  `oc apply -f services.yaml` still works.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - services.yaml

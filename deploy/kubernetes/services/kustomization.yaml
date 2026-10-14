@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Opt-in --scan-services variant for Kubernetes / RKE2 / K3s (#219):
+#   kubectl apply -k deploy/kubernetes/services
+# Deploy it instead of the base, as on OpenShift.  The pod stays non-root;
+# a dedicated interpreter in the services image carries CAP_SYS_PTRACE and
+# CAP_DAC_READ_SEARCH as file capabilities (see
+# deploy/openshift/services/Containerfile for why).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../namespace
+  - ../../openshift/services
+components:
+  - ../portable

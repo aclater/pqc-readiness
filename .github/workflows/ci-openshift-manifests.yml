@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
-# CI for the OpenShift manifests and the opt-in --scan-services image (#181).
+# CI for the OpenShift and Kubernetes manifests and the opt-in
+# --scan-services image (#181, #219).
 #
 # Kept as its own workflow so it can't collide with other lanes' edits to
 # ci.yml / ci-containers.yml (#137 lane rules).
@@ -69,6 +70,19 @@ jobs:
             build /d/openshift-summary > /tmp/summary-built.yaml
           podman run --rm -v /tmp/summary-built.yaml:/b.yaml:ro ghcr.io/yannh/kubeconform:v0.8.0 \
             -strict -summary -skip SecurityContextConstraints /b.yaml
+
+      - name: Kubernetes / RKE2 / K3s variants (#219) - kustomize build + kubeconform + posture tests
+        # deploy/kubernetes reuses these DaemonSets and drops the SCC, so the
+        # built output is validated strictly with no kinds skipped.
+        run: |
+          mkdir -p /tmp/k8s-built
+          for v in base:kubernetes services:kubernetes/services; do
+            podman run --rm -v "$PWD/deploy:/d:ro" registry.k8s.io/kustomize/kustomize:v5.8.3 \
+              build "/d/${v#*:}" > "/tmp/k8s-built/${v%%:*}.yaml"
+          done
+          podman run --rm -v /tmp/k8s-built:/b:ro ghcr.io/yannh/kubeconform:v0.8.0 \
+            -strict -summary /b/base.yaml /b/services.yaml
+          PQC_K8S_BUILT_DIR=/tmp/k8s-built pytest -q tests/test_kubernetes_manifests.py
 
       - name: Summary overlay (#157) - ACM / Compliance Operator samples vs upstream CRDs
         # Schemas generated from pinned CRDs: Compliance Operator v1.8.2,
