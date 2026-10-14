@@ -89,6 +89,7 @@ own Python, OpenSSL and OpenSSH, but not a booted kernel.
 | `ci-openshift-manifests.yml` | Every PR and push | Validates the DaemonSet and overlays with kubeconform, runs posture tests (non-root, dropped capabilities, read-only mounts), and checks the services image's file capabilities at runtime |
 | `ci-prometheus.yml` | Every PR and push | Renders `--prometheus` output and checks it with `promtool check metrics` |
 | `ci-tier2-weekly.yml` | Mondays, or on demand | Runs the suite in the stock container image of each Tier 2 distribution (Fedora, Rocky and AlmaLinux 9 and 10, Debian 13, Ubuntu 26.04, SLES via SUSE BCI) |
+| `release-images.yml` | Each published release, or on demand for a release tag | Builds the UBI 10, UBI 8, Debian and services images from the release's checksum-verified zipapp, runs the suite inside each, verifies the services image's file capabilities, then pushes, signs and attests them |
 
 ## Booted VM matrix
 
@@ -121,7 +122,10 @@ A release PR is the only change that bumps `SCHEMA_VERSION`. Before it merges,
 the JSON schema change is checked to be additive against the previous release
 tag. After the release is published, the `pqc-readiness.pyz` and `.sha256`
 release assets are downloaded, the checksum is verified, and the downloaded
-file is run to confirm it reports the expected version and schema.
+file is run to confirm it reports the expected version and schema. The release images
+are built from that same verified zipapp; their tags and digests are recorded
+in the release's `container-images.txt`, and a test keeps the deploy manifests
+pointing at the current release's image tag.
 
 ## What is not tested
 
