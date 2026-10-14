@@ -597,6 +597,9 @@ Each `groups[]` entry:
 | `sample_pids` | list[int] | Up to five PIDs. |
 | `systemd_units` | list[string] | Units (`*.service` / `*.scope`) of the group's processes, at most ten. |
 | `systemd_units_omitted` | int | Present when more than ten units were seen. |
+| `containers` | list[object] | Containers the group's processes run in (#262), at most ten, sorted by namespace, pod and container: the `container` object of `service_crypto_linkage.listeners[]` (`{runtime, id, pod_uid, pod_name, pod_namespace, container_name}`, same sources and limits). Empty when no process is in a container. |
+| `containers_omitted` | int | Present when more than ten containers were seen. |
+| `container_processes` | int | Processes in the group that run in a container. |
 | `network_namespaces` | list[string] | `host` and/or `other`, as in `service_crypto_linkage`. |
 | `roles` | object | Process counts by role: `server` (holds a listening TCP or bound UDP socket), `client` (holds established TCP connections and no listening socket: outbound-only), `idle` (neither). "Established TCP" says nothing about TLS on the connection. |
 | `established_tcp_connections` | int | Established TCP sockets held by the group's processes. |
@@ -776,6 +779,8 @@ Each `clients.items[]` entry adds to the verdict keys:
 | `exe` | string | Executable path of the group. |
 | `process` | string | Process name. |
 | `systemd_units` | list[string] | Units of the group's processes. |
+| `containers` | list[object] | The group's `containers` (#262). |
+| `containers_omitted` | int | The group's `containers_omitted`, or 0. |
 | `client_processes` | int | Processes in the group in the `client` role. |
 | `crypto_families` | list[string] | Library families the group maps, plus `go`. |
 | `follows_host_default` | bool | The group reached the host's TLS verdict through the host default; false for a Go binary (its own default) or a group whose libraries give a different state. Only groups with `false` count in `gaps` and `pqc-020`. |
@@ -784,7 +789,10 @@ Each `clients.items[]` entry adds to the verdict keys:
 SARIF / NDJSON: rule `pqc-020-pqc-capable-not-configured` reports one
 host-level result listing every protocol, and every service and client
 group that differs from its host's verdict, in `capable_not_configured` (a warning when it covers IPsec or services, a note
-when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`).
+when it only restates the TLS / SSH gaps of `pqc-008` / `pqc-010`). A client
+group in one container is named by container and pod, e.g.
+`proxy (pod shop/web-0)`; a group spread over several is named by
+executable with a count, e.g. `/usr/bin/sidecar (3 containers)` (#262).
 ### `boot_chain`
 
 `{}` unless `--scan-boot-chain`. Linux only; read in-process, no subprocess. Live hosts only: `--root` rejects the flag. Under `--host-mount` the kernel config and modules are read from the host's `/usr/lib/modules/<release>/` (reachable through the deployments' read-only `/usr` mount; Fedora / RHEL ship the config there), never from the container's `/boot` or `/lib/modules`.

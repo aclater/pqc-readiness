@@ -15,6 +15,7 @@ from ..detect import protocols_dnssec as _dnssec
 from ..detect import protocols_kerberos as _kerberos
 from ..detect import protocols_tunnels as _tunnels
 from ..detect import config_services as _config_services
+from ..detect import runtime_services as _services
 from .. import gap as _gap
 
 
@@ -1016,8 +1017,13 @@ def _render_text_processes(r: _report.Report) -> list[str]:
             libs = ", ".join(x for x in (libs, f"Go {go.get('go_version')}") if x)
         roles = g.get("roles") or {}
         role = "/".join(k for k in ("server", "client", "idle") if roles.get(k))
+        who = _services.containers_label(
+            str(g.get("exe") or g.get("process")),
+            g.get("containers") or [],
+            int(g.get("containers_omitted") or 0),
+        )
         L.append(
-            f"   {C.wrap(C.RED, 'no PQC')}  {g.get('exe') or g.get('process')} "
+            f"   {C.wrap(C.RED, 'no PQC')}  {who} "
             f"x{g.get('process_count')} [{role}]  {libs}"
         )
     if pc.get("note"):

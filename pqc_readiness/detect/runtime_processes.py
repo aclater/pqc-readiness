@@ -50,6 +50,7 @@ PROCESSES_TIME_BUDGET_S_DEFAULT = 30.0
 PROCESSES_MAX_GROUPS_DEFAULT = 500
 _SAMPLE_PIDS = 5
 _MAX_UNITS = 10
+_MAX_CONTAINERS = 10
 
 _TCP_ESTABLISHED = "01"
 
@@ -205,6 +206,9 @@ def scan_processes(
                 "process_count": 0,
                 "sample_pids": [],
                 "systemd_units": set(),
+                # Container ID -> container_identity() (#262).
+                "containers": {},
+                "container_processes": 0,
                 "network_namespaces": set(),
                 "roles": {"server": 0, "client": 0, "idle": 0},
                 "established_tcp_connections": 0,
@@ -215,6 +219,10 @@ def scan_processes(
             g["sample_pids"].append(pid)
         if details.get("systemd_unit"):
             g["systemd_units"].add(details["systemd_unit"])
+        container = details.get("container")
+        if container:
+            g["container_processes"] += 1
+            g["containers"].setdefault(container["id"], container)
         g["network_namespaces"].add(
             "host" if ns is not None and ns == host_ns else "other"
         )
@@ -239,6 +247,18 @@ def scan_processes(
         if len(units) > _MAX_UNITS:
             g["systemd_units_omitted"] = len(units) - _MAX_UNITS
         g["network_namespaces"] = sorted(g["network_namespaces"])
+        containers = sorted(
+            g["containers"].values(),
+            key=lambda c: (
+                c.get("pod_namespace") or "~",
+                c.get("pod_name") or "~",
+                c.get("container_name") or "~",
+                c["id"],
+            ),
+        )
+        g["containers"] = containers[:_MAX_CONTAINERS]
+        if len(containers) > _MAX_CONTAINERS:
+            g["containers_omitted"] = len(containers) - _MAX_CONTAINERS
 
     with_crypto = sum(g["process_count"] for g in ordered)
     by_family: dict[str, int] = {}

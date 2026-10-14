@@ -722,6 +722,29 @@ def container_identity(cgroup: str | None, cache: _Cache) -> dict[str, Any] | No
     }
 
 
+def container_label(c: dict[str, Any], name: str) -> str:
+    """``name (pod <namespace>/<pod>)`` for a container_identity() result,
+    or ``name (container <id12>)`` when the kubelet names are unknown."""
+    if c.get("pod_name"):
+        return f"{name} (pod {c.get('pod_namespace')}/{c['pod_name']})"
+    return f"{name} (container {str(c.get('id'))[:12]})"
+
+
+def containers_label(
+    name: str, containers: list[dict[str, Any]], omitted: int = 0
+) -> str:
+    """Label for a process group (#262): one container is named as by
+    container_label(); several are counted.  ``name`` alone when the
+    group runs outside containers."""
+    total = len(containers) + omitted
+    if total == 1 and containers:
+        c = containers[0]
+        return container_label(c, c.get("container_name") or name)
+    if total > 1:
+        return f"{name} ({total} containers)"
+    return name
+
+
 def _comm(pid: int) -> str | None:
     try:
         return _proc(pid, "comm").read_text().strip() or None

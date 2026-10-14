@@ -92,7 +92,6 @@ changes it.
   Include comes before any `KexAlgorithms`, `kex_source` is
   `unreadable-config` and the offered list is null. Service configs move
   includes of absent files from `unreadable` to a new `missing` list.
-  2.2.0 services image carries only the provenance attestation.
 - **Postfix and other master/worker daemons get a deployment-gap verdict**
   (#240). Postfix's `master` owns ports 25/587 but never loads OpenSSL; its
   `smtpd` workers do. `--scan-services` reported those listeners with no
@@ -101,7 +100,6 @@ changes it.
   descendant process, or (when no worker is running) the libraries a worker
   executable links, and says which in the new
   `service_crypto_linkage.listeners[].crypto_libraries_from`.
-  2.2.0 services image carries only the provenance attestation.
 - **Findings name the container and pod** (#233). A listener in a
   Kubernetes container used to be named by its `crio-<64 hex>.scope` unit.
   `--scan-services` now reports each listener's `container` (runtime, ID,
@@ -122,6 +120,13 @@ changes it.
   scanning machine's OS, and linked trust-store certificates, libraries,
   JDKs, the rpm database file, IKE includes and linked config directories
   were read from (or missed on) the scanning machine.
+- **Process groups name their containers and pods** (#262).
+  `--scan-processes` groups now carry `containers` (the same identity
+  `--scan-services` listeners got in #233, at most ten per group, plus
+  `containers_omitted`) and `container_processes`. The text report and
+  `pqc-020` client entries name a group in one container as e.g.
+  `proxy (pod shop/web-0)`, and one spread over several containers by
+  executable with a count.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
