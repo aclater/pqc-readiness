@@ -278,7 +278,9 @@ def test_openssl_capability_carries_config_and_third_party(
         lambda: (0, (out_dir / "providers.txt").read_text()),
     )
     host(F / "fedora44-oqs")
-    out = pr.detect.config.openssl_capability({"family": "rhel"})
+    # The CLI probe itself; openssl_capability() doesn't use it under
+    # --host-mount (#228), see tests/test_openssl_host_source.py.
+    out = pr.detect.config.openssl_cli_capability({"family": "rhel"})
     assert [p["name"] for p in out["third_party_providers"]] == ["oqsprovider"]
     assert len(out["third_party_algorithms"]["kem"]) == 56
     assert out["config"]["third_party_providers_configured"] == ["oqsprovider"]

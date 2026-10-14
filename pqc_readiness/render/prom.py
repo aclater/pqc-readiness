@@ -136,7 +136,12 @@ def render_prometheus(r: _report.Report) -> str:
                 "1 when the OpenSSL in use exposes NIST PQC algorithms natively (3.5+).",
                 [({}, native)],
             )
-    tls = _group_counts(openssl.get("tls_groups")) if openssl.get("available") else []
+    # Null groups (no CLI describing the host, #228) are unknown, not zero.
+    tls = (
+        _group_counts(openssl.get("tls_groups"))
+        if isinstance(openssl.get("tls_groups"), dict)
+        else []
+    )
     ssh = r.ssh_pqc or {}
     ssh_groups = _group_counts(ssh.get("kex_groups")) if ssh.get("available") else []
     m.family(

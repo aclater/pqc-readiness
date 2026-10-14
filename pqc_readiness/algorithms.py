@@ -312,12 +312,22 @@ def ssh_kex_references(kex_names: list[str]) -> dict[str, dict[str, object]]:
     return out
 
 
+def openssl_cli_probed(openssl: dict[str, Any]) -> bool:
+    """True when the algorithm lists, TLS groups and providers in an
+    `openssl` section were probed with a CLI that describes the host.
+    False when the CLI is missing or is the scanner image's (#225, #228):
+    the lists are null then, which means unknown, not empty."""
+    if not openssl.get("available"):
+        return False
+    return bool((openssl.get("cli_probe") or {}).get("available", True))
+
+
 def annotate_key_exchange(openssl: dict[str, Any], ssh: dict[str, Any]) -> None:
     """Attach registry references next to the classified PQC groups:
     `openssl.tls_group_references` and `ssh_pqc.kex_references`.  Sibling
     keys, so consumers of the `tls_groups` / `kex_groups` buckets are
     unaffected.  Only added when the probe ran."""
-    if openssl.get("available"):
+    if openssl_cli_probed(openssl):
         groups = openssl.get("tls_groups") or {}
         openssl["tls_group_references"] = tls_group_references(
             [*(groups.get("pure_pqc") or []), *(groups.get("hybrid") or [])]

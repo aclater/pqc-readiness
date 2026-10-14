@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import _platform as _platform
+from . import algorithms as _algorithms
 from .detect import config as _config
 from . import registry as _registry
 
@@ -126,7 +127,7 @@ def _bench_provided_algorithms(osinfo: dict[str, Any] | None) -> set[str] | None
     Returns None when no capability data is available, which the caller
     must treat as "unknown" and fall back to its own lookup.  Names are
     upper-cased so the membership test is case-insensitive."""
-    if not osinfo or not osinfo.get("available"):
+    if not osinfo or not _algorithms.openssl_cli_probed(osinfo):
         return None
     names = list(osinfo.get("kem_algorithms") or []) + list(
         osinfo.get("sig_algorithms") or []
@@ -703,8 +704,10 @@ def run_tls_handshake_bench(
             "available": False,
             "reason": f"OpenSSL pre-3.5 lacks ML-KEM groups (got {ver.strip()})",
         }
-    if osinfo is None:
-        osinfo = _config.openssl_capability()
+    if osinfo is None or not _algorithms.openssl_cli_probed(osinfo):
+        # The handshake bench runs the local binary, so it needs that
+        # binary's groups even when the report's describe the host (#228).
+        osinfo = _config.openssl_cli_capability()
     if not osinfo.get("available"):
         return {"available": False, "reason": "openssl_capability probe failed"}
     suites = _tls_build_suites(osinfo)

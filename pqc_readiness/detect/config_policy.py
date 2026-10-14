@@ -487,8 +487,13 @@ def policy_blocks_capable_pqc(
     back-end: the "capable but not configured" case (#104, feeds #107)."""
     if not crypto_policy.get("available"):
         return False
-    tg = openssl.get("tls_groups") or {}
-    capable = bool(tg.get("hybrid") or tg.get("pure_pqc"))
+    tg = openssl.get("tls_groups")
+    if isinstance(tg, dict):
+        capable = bool(tg.get("hybrid") or tg.get("pure_pqc"))
+    else:
+        # Groups not probed (no CLI describing the host, #225 / #228):
+        # OpenSSL 3.5+ ships the hybrid ML-KEM groups by default.
+        capable = openssl.get("pqc_native") is True
     return (
         capable
         and (crypto_policy.get("pqc_enabled") or {}).get("tls_key_exchange") is False

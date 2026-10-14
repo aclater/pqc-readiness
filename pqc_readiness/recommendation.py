@@ -478,7 +478,13 @@ def _tls_group_caveats(
     hybrid_groups = list(tls_groups.get("hybrid") or [])
     pure_groups = list(tls_groups.get("pure_pqc") or [])
     usable = _tls_groups_for(openssl, kem_chosen, kem_mode)
-    if openssl.get("available"):
+    if openssl.get("available") and not _algorithms.openssl_cli_probed(openssl):
+        caveats.append(
+            "The TLS groups this host's OpenSSL advertises were not probed "
+            f"({(openssl.get('cli_probe') or {}).get('reason', 'no CLI')}); "
+            f"confirm the TLS {endpoint} offers a group carrying {kem_chosen}."
+        )
+    elif openssl.get("available"):
         if kem_mode == "hybrid" and not hybrid_groups:
             caveats.append(
                 "No TLS 1.3 hybrid groups are advertised by this OpenSSL "

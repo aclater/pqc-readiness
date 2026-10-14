@@ -153,12 +153,20 @@ def evaluate_cnsa_2_0(
     than "non_compliant" so callers do not act on a vacuously-False reading.
     """
     notes: list[str] = []
-    openssl_known = bool(openssl.get("available"))
+    # Algorithm lists need a CLI that describes the host (#225, #228).
+    openssl_known = _algorithms.openssl_cli_probed(openssl)
     proc_known = proc_crypto_text is not None
 
     kem = openssl_known and "ML-KEM-1024" in (openssl.get("kem_algorithms") or [])
     sig = openssl_known and "ML-DSA-87" in (openssl.get("sig_algorithms") or [])
-    if not openssl_known:
+    if not openssl_known and openssl.get("available"):
+        why = (openssl.get("cli_probe") or {}).get("reason") or "not probed"
+        notes.append(
+            f"OpenSSL {openssl.get('version')} found, but its algorithm lists "
+            f"were not probed ({why}); cannot verify ML-KEM-1024 (KEM) or "
+            "ML-DSA-87 (signature) availability."
+        )
+    elif not openssl_known:
         notes.append(
             "OpenSSL not available; cannot verify ML-KEM-1024 (KEM) or "
             "ML-DSA-87 (signature) availability."
