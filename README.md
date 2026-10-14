@@ -766,6 +766,9 @@ CI or in maintainer testing — not a support contract.
 | **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 26.04 LTS, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Weekly — `.github/workflows/ci-tier2-weekly.yml` runs the full `pytest` suite inside each distro's stock container image every Monday (non-blocking; fixes accepted). **EL8 (RHEL 8, Rocky 8, AlmaLinux 8) is the exception:** it is not in the weekly matrix but runs on every PR instead — `.github/workflows/ci-ubi8.yml` builds `Containerfile.ubi8` and runs the full `pytest` suite under the AppStream `python3.9` interpreter inside the UBI 8 image (a container image, not a booted EL8 host). EL8 stays Tier 2 because stock EL8 cloud images need a manual Python prerequisite (see *RHEL 8 / Rocky 8 / AlmaLinux 8 specifics*). |
 | **3** | Arch, Alpine, others | Best-effort, community-supported |
 
+For what the scanner reports on each of these distributions out of the box, see the
+[cross-OS example output](docs/examples/os-matrix-2026-10.md).
+
 Cross-distro probing uses a single `detect_os()` source of truth that
 resolves family from `/etc/os-release` `ID` + `ID_LIKE`, so derivatives
 the explicit table doesn't name (Linux Mint → debian, Manjaro → arch,
@@ -992,6 +995,7 @@ Reproducible technical findings produced by `pqc-readiness`-driven testing. Refe
 - [`docs/integrations/`](docs/integrations/) — tested ingestion recipes and observed behaviour: [Dependency-Track](docs/integrations/dependency-track.md) (CBOM), [DefectDojo](docs/integrations/defectdojo.md) (SARIF), [ServiceNow Vulnerability Response](docs/integrations/servicenow-vr.md) (NDJSON findings; converter tested, instance steps not live-tested), [ACM / Compliance Operator per-node summaries](docs/integrations/openshift-node-summaries.md), [Event-Driven Ansible](docs/integrations/event-driven-ansible.md), [SUSE Multi-Linux Manager](docs/integrations/suse-multi-linux-manager.md), [plain SBOM for graph tools](docs/integrations/sbom-graph-tools.md) (`--sbom`). Each page lists what was tested and what wasn't.
 - [`docs/ansible.md`](docs/ansible.md) — Ansible playbooks (`set_fact`, fleet aggregation), privilege model, downstream fact shape.
 - [`docs/schema-alignment.md`](docs/schema-alignment.md) — field-by-field mapping of `--json` against CycloneDX 1.6's `cryptoProperties` schema.
+- [`docs/examples/os-matrix-2026-10.md`](docs/examples/os-matrix-2026-10.md) — example output: a full v2.2.0 scan of 20 stock Linux images (EL8/9/10 including RHEL via UBI, Fedora, Amazon Linux, Ubuntu, openSUSE) with the deployment-gap verdict, findings matrix and benchmarks per OS.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — third-party-product reference policy, the README ↔ `--help` rule.
 
 ## License
