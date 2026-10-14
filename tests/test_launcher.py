@@ -273,3 +273,135 @@ def test_launcher_and_readme_give_the_same_suse_prerequisite(
     text = readme.read_text(encoding="utf-8")
     assert SUSE_INSTALL_CMD in text
     assert "zypper --gpg-auto-import-keys ref" in text
+
+
+# --------------------------------------------------------------- OpenWrt (#226)
+
+EMBEDDED = Path(__file__).resolve().parent / "fixtures" / "embedded"
+OPENWRT_OS_RELEASES = [
+    str(EMBEDDED / "openwrt-24.10.8" / "usr" / "lib" / "os-release"),
+    str(EMBEDDED / "openwrt-25.12.5" / "usr" / "lib" / "os-release"),
+]
+
+
+@pytest.mark.parametrize("os_release", OPENWRT_OS_RELEASES)
+def test_launcher_openwrt_guidance_names_full_python3(
+    launcher_executable: Path, utils_path: str, os_release: str
+) -> None:
+    proc = _no_python_guidance(utils_path, os_release)
+    assert proc.returncode == 127
+    assert "opkg install python3 " in proc.stderr  # 24.10 and earlier
+    assert "apk add python3 " in proc.stderr  # 25.12 and later
+    assert "python3-light" in proc.stderr  # says why not the light package
+    for other in ("dnf module install", "zypper", "apt-get"):
+        assert other not in proc.stderr
+
+
+def _stripped_python(bin_dir: Path, name: str = "python3") -> Path:
+    """Like OpenWrt's python3-light: reports 3.11, but the stdlib import
+    probe fails on `logging`."""
+    bin_dir.mkdir(exist_ok=True)
+    py = bin_dir / name
+    py.write_text(
+        "#!/bin/sh\n"
+        'case "$2" in *importlib*) echo logging ; exit 1 ;; esac\n'
+        'case "$1" in -c) echo 3.11 ; exit 0 ;; esac\n'
+        "echo 'ModuleNotFoundError: No module named logging' >&2\nexit 1\n"
+    )
+    py.chmod(0o755)
+    return py
+
+
+@pytest.mark.parametrize("os_release", OPENWRT_OS_RELEASES)
+def test_launcher_rejects_stripped_python_with_openwrt_hint(
+    launcher_executable: Path, utils_path: str, tmp_path: Path, os_release: str
+) -> None:
+    py = _stripped_python(tmp_path / "py")
+    proc = subprocess.run(
+        [str(launcher_executable), "--version"],
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": f"{py.parent}:{utils_path}",
+            "PQC_READINESS_OS_RELEASE": os_release,
+        },
+        check=False,
+    )
+    assert proc.returncode == 127
+    assert f"found Python 3.9+ at {py} (no 'logging' module)" in proc.stderr
+    assert "stripped build" in proc.stderr
+    assert "opkg install python3 " in proc.stderr
+    assert "ModuleNotFoundError" not in proc.stderr  # never reached the zipapp
+
+
+def test_launcher_skips_stripped_python_for_a_complete_one(
+    launcher_executable: Path, utils_path: str, tmp_path: Path
+) -> None:
+    """A stripped `python3.11` earlier in the search order is passed over
+    for a complete `python3`."""
+    bin_dir = tmp_path / "py"
+    _stripped_python(bin_dir, "python3.11")
+    marker = tmp_path / "ran-with"
+    full = bin_dir / "python3"
+    full.write_text(
+        '#!/bin/sh\ncase "$1" in -c) echo 3.12 ; exit 0 ;; esac\n'
+        f'echo "$@" > {marker}\nexit 0\n'
+    )
+    full.chmod(0o755)
+    proc = subprocess.run(
+        [str(launcher_executable), "--version"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{bin_dir}:{utils_path}"},
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "--version" in marker.read_text()
+
+
+def test_launcher_import_probe_passes_on_the_running_python() -> None:
+    """The real probe, against the interpreter running the suite (which
+    can run the package, so it must pass)."""
+    script = LAUNCHER.read_text()
+    needed = script.split('STDLIB_NEEDED="', 1)[1].split('"', 1)[0].split()
+    import importlib
+
+    for m in needed:
+        importlib.import_module(m)
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("sys"), "stdlib_module_names"),
+    reason="sys.stdlib_module_names needs Python 3.10+",
+)
+def test_launcher_import_probe_lists_every_load_time_stdlib_import() -> None:
+    """STDLIB_NEEDED must equal the package's module-level stdlib imports,
+    so a new import can't slip past the stripped-interpreter check."""
+    import ast
+    import sys
+
+    found: set[str] = set()
+    for f in (REPO_ROOT / "pqc_readiness").rglob("*.py"):
+        for node in ast.parse(f.read_text()).body:
+            if isinstance(node, ast.Import):
+                found |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                found.add(node.module.split(".")[0])
+    stdlib = {m for m in found if m in sys.stdlib_module_names} - {"__future__"}
+    script = LAUNCHER.read_text()
+    listed = set(script.split('STDLIB_NEEDED="', 1)[1].split('"', 1)[0].split())
+    assert listed == stdlib, (
+        f"add to STDLIB_NEEDED: {sorted(stdlib - listed)}; "
+        f"remove: {sorted(listed - stdlib)}"
+    )
+
+
+def test_launcher_and_readme_give_the_same_openwrt_prerequisite() -> None:
+    script = LAUNCHER.read_text()
+    readme = REPO_ROOT / "README.md"
+    if not readme.exists():
+        pytest.skip("README.md not present in this checkout")
+    text = readme.read_text(encoding="utf-8")
+    for cmd in ("opkg update && opkg install python3", "apk update && apk add python3"):
+        assert cmd in text
+        assert cmd in script
