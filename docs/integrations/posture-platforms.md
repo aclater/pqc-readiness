@@ -30,7 +30,7 @@ Every component carries `detectedBy: pqc-readiness@<version>`.
 | (always) | CPU instruction-set features, accelerators, TPM, PKCS#11 modules | `isa/<flag>`, `accel/<n>/<name>`, `tpm/<name>`, `pkcs11/<n>` |
 | `--scan-trust-store` | One `certificate` per unique CA certificate, plus a trust-store summary | `cert/sha256:<fingerprint>`, `trust-store/summary` |
 | `--scan-crypto-material` | Certificates found on the filesystem (leaf and CA), merged with trust-store ones that share a fingerprint; every path in `crypto_material:path` properties | `cert/sha256:<fingerprint>` |
-| `--scan-crypto-libraries` | `library` components with a distribution purl (`rpm`, `deb`, `apk` or `alpm` by family), the PQC algorithms each library embeds, and `provides` links from library to algorithm | `pkg:rpm/<distro>/<name>@<version>?distro=<id>-<version>`, `library/<lib>/<kind>/<name>` |
+| `--scan-crypto-libraries` | `library` components with a distribution purl (`rpm`, `deb`, `apk` or `alpm` by family), the PQC algorithms each library embeds, and `provides` links from library to algorithm | The package's exact purl, as `--sbom` emits it (`pkg:rpm/<distro>/<name>@<version>-<release>?arch=<arch>&distro=<id>-<version>`), `library/<lib>/<kind>/<name>` |
 | `--scan-services` | One `application` per listening service (named by systemd `.service` unit, else executable path), with `service:endpoint` properties and `dependsOn` the crypto library it maps | `service/<unit-or-exe>`; libraries it maps that no other scan reported get `pkg:generic/<name>@<version>` |
 
 Certificates carry the CycloneDX 1.7 certificate fields: SHA-256 `fingerprint`,
@@ -82,13 +82,20 @@ and `metadata.timestamp` change, and `version` is always `1`. So:
   systemd unit or executable path, libraries by purl (the purl changes when the
   library is upgraded, which is the point).
 
-**Offline scans have no hostname.** Every `--root` CBOM is `host/unknown`, so
-name each one before importing several images side by side. The helper in
+**Name offline scans.** A `--root` tree takes its name from its own
+`/etc/hostname`, and most images and container trees have none, so their CBOMs
+would all be `host/unknown`. Give each one a name with `--host-name` before
+importing several images side by side:
+
+```bash
+pqc-readiness --root ./rootfs --host-name ubi10-2-1791893534 --cbom --scan-trust-store --scan-crypto-libraries > image.cdx.json
+```
+
+For documents produced without it, the helper in
 [`deploy/cbom/cbom_tools.py`](../../deploy/cbom/cbom_tools.py) renames the host
 and its dependency edges:
 
 ```bash
-pqc-readiness --root ./rootfs --cbom --scan-trust-store --scan-crypto-libraries > image.cdx.json
 python3 deploy/cbom/cbom_tools.py name-host image.cdx.json image-named.cdx.json ubi10-2-1791893534
 ```
 
@@ -101,7 +108,7 @@ the assets carry, not on bom-refs.
 | Join | Key in the pqc-readiness CBOM | Notes |
 | --- | --- | --- |
 | Certificates seen on the network or in code | `cryptoProperties.certificateProperties.fingerprint` (SHA-256, hex) | Exact match. Matches tell you which host holds the certificate an endpoint presents |
-| Packages in an SBOM (`--sbom` or another tool's) | Library `purl`: type, namespace, name and upstream version | **Not an exact purl match.** CBOM library purls carry the upstream version without release, arch or epoch (`pkg:rpm/fedora/gnutls@3.8.13?distro=fedora-44`); package SBOMs carry the full version (`pkg:rpm/fedora/gnutls@3.8.13-1.fc44?arch=x86_64&distro=fedora-44`). Stacks the scanner probes directly (OpenSSL, NSS, OpenSSH, Java runtimes, Go) get `pkg:generic` purls with no package to match |
+| Packages in an SBOM (`--sbom` or another tool's) | Library `purl` | **Exact match** when the scan resolved the package: library components carry the purl `--sbom` emits for it, full version-release plus `arch` and `epoch` (`pkg:rpm/fedora/gnutls@3.8.13-1.fc44?arch=x86_64&distro=fedora-44`; #222). On dpkg, apk and pacman hosts the version already includes the revision. Stacks the scanner probes directly (OpenSSL, NSS, OpenSSH, Java runtimes, Go) get `pkg:generic` purls with no package to match |
 | A host's own `--sbom` | `metadata.component.bom-ref` | `--cbom` and `--sbom` from the same host share `host/<hostname>` |
 | Network endpoints | `service:endpoint` properties (`tcp/<address>:<port>`) on service components | For endpoint-level joins, the JSON report and [endpoint observations](../endpoint-observations.md) carry more detail |
 
@@ -174,12 +181,14 @@ directory, an object store bucket or an upload API):
 - **No findings or risk scores.** Findings are SARIF/NDJSON
   ([rules](../rules/README.md)); import them into the platform's findings
   feature if it has one.
-- **Property names are mostly not namespaced.** Most component properties use
-  short prefixes (`detectedBy`, `certificate:*`, `crypto_material:*`,
-  `trust_store:*`, `isa:*`, `service:*`, `host:*`, `inventory:*`), the
-  interoperability and library properties use `pqc-readiness:*`, and the
-  federal profile uses `federal:*`. If your platform merges properties from
-  several tools, map them by `detectedBy`.
+- **Property names are mostly not namespaced by default.** Most component
+  properties use short prefixes (`detectedBy`, `certificate:*`,
+  `crypto_material:*`, `trust_store:*`, `isa:*`, `service:*`, `host:*`,
+  `inventory:*`), the interoperability and library properties use
+  `pqc-readiness:*`, and the federal profile uses `federal:*`. If your
+  platform merges properties from several tools, add
+  `--cbom-namespaced-properties` to prefix every name with `pqc-readiness:`
+  (#222). It's opt-in so existing importers keep working.
 - **Offline scans** (`--root`) contain no CPU, accelerator, OpenSSL-runtime or
   service components, only what the tree's files show.
 

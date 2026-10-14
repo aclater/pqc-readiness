@@ -462,8 +462,15 @@ def _package_versions(spec: dict[str, Any], family: str) -> list[dict[str, str]]
         inv = _packages.query_rpm_named(tuple(names))
         if not inv.get("available"):
             return []
+        # release / epoch / arch let the CBOM emit the exact purl --sbom
+        # uses for the same package (#222).
         return [
             {"name": p["name"], "version": p.get("version", "")}
+            | {
+                k: str(p[k])
+                for k in ("release", "epoch", "arch")
+                if p.get(k) not in (None, "")
+            }
             for p in inv["packages"]
         ]
     if family == "debian":

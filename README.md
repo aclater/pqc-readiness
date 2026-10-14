@@ -139,9 +139,9 @@ full description of each; `pqc-readiness --help` prints them too.
 | --- | --- |
 | Deeper scans | `--scan-packages`, `--scan-trust-store` (`--trust-store-max-certs N`), `--scan-crypto-material` (`--crypto-material-path PATH`, `--crypto-material-max-files N`), `--scan-signing-keys`, `--scan-services`, `--scan-service-configs`, `--scan-processes`, `--scan-crypto-libraries`, `--scan-boot-chain`, `--scan-kerberos`, `--scan-tunnels`, `--scan-dnssec` |
 | Benchmarks | `--bench`, `--bench-tls`, `--threads N`, `--seconds N` |
-| What to scan | `--host-mount PATH` (a live host mounted into a container), `--root PATH` (an offline image or rootfs) |
+| What to scan | `--host-mount PATH` (a live host mounted into a container), `--root PATH` (an offline image or rootfs), `--host-name NAME` (the name to report, e.g. for an offline tree) |
 | Output format | `--json`, `--markdown`, `--cbom`, `--spdx`, `--sbom`, `--sarif`, `--ndjson`, `--prometheus`, `--ansible` |
-| Output shaping | `--cbom-version {1.7,1.6}`, `--cbom-profile {none,federal-draft}`, `--cbom-interop {none,dependency-track,sbom-only}`, `--sarif-anchor PATH`, `--inventory-metadata FILE` |
+| Output shaping | `--cbom-version {1.7,1.6}`, `--cbom-profile {none,federal-draft}`, `--cbom-interop {none,dependency-track,sbom-only}`, `--cbom-namespaced-properties`, `--sarif-anchor PATH`, `--inventory-metadata FILE` |
 | Recommendations | `--recommend`, `--policy {cnsa-2.0,nist-civilian,eu-anssi-bsi,commercial,auto}`, `--role {tls-server,tls-client,signing-service,firmware-signing,generic}` |
 | Gates | `--check {excellent,good,marginal,poor,cnsa-2.0}`, `--fips-strict` |
 | Where output goes | `--output FILE`, `--save`, `--quiet`, `--no-color` |

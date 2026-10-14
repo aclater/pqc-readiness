@@ -36,6 +36,16 @@ changes it.
   as absent for the one detection that needed it, and an opt-in scan that
   still hits an unreadable path reports `available: false` with the path
   in `reason` while every other section completes.
+- **CBOMs join with SBOMs and with each other** (#222). Library components
+  for a package the scan resolved carry the same exact purl `--sbom` emits
+  (full version-release, `arch`, `epoch`), so a purl join between a host's
+  CBOM and SBOM matches. `packages.bundled_crypto` and
+  `crypto_libraries.libraries.<lib>.packages` gain `release`, `epoch` and
+  `arch` where the database records them. New `--host-name NAME` names the
+  host in every output; offline `--root` trees without `/etc/hostname` no
+  longer all come out as `host/unknown`. New opt-in
+  `--cbom-namespaced-properties` prefixes every CBOM property name with
+  `pqc-readiness:`.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
