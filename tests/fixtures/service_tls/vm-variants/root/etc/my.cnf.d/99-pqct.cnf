@@ -1,0 +1,3 @@
+[mysqld]
+ssl_cert=/etc/pqct/cert.pem
+ssl_key=/etc/pqct/key.pem

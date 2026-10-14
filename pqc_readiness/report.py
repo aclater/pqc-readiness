@@ -72,6 +72,9 @@ class Report:
     # --scan-services (#111): listening sockets -> owning process -> the
     # crypto library it maps (or Go toolchain).  {} when not requested.
     service_crypto_linkage: dict[str, Any] = field(default_factory=dict)
+    # --scan-service-configs (implied by --scan-services), #216: each server
+    # daemon's own TLS settings per endpoint.  {} when not requested.
+    service_tls_config: dict[str, Any] = field(default_factory=dict)
     # --scan-processes (#155): every process (servers and outbound-only
     # clients) -> the crypto library / Go runtime it maps, grouped by
     # executable and library version.  {} when not requested.

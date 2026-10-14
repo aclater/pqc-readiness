@@ -489,6 +489,7 @@
     "scan_mode": null,
     "schema_version": "1.6",
     "service_crypto_linkage": {},
+    "service_tls_config": {},
     "signing_keys": {},
     "ssh_pqc": {
       "available": false

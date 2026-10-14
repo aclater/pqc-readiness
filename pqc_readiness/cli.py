@@ -25,6 +25,7 @@ from .detect import certs as _certs
 from .detect import certs_discovery as _certs_discovery
 from .detect import config as _config
 from .detect import config_policy as _config_policy
+from .detect import config_services as _config_services
 from .detect import config_sshd as _config_sshd
 from .detect import hardware as _hardware
 from .detect import osinfo as _osinfo
@@ -271,6 +272,11 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
         services_info = _runtime_services.scan_services()
+    service_tls_info: dict[str, Any] = {}
+    if getattr(args, "scan_service_configs", False) or getattr(
+        args, "scan_services", False
+    ):
+        service_tls_info = _config_services.scan_service_configs(os_release, osinfo)
     processes_info: dict[str, Any] = {}
     if getattr(args, "scan_processes", False):
         processes_info = _runtime_processes.scan_processes()
@@ -353,6 +359,7 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
         crypto_material=crypto_material_info,
         runtime_environment=runtime_env,
         service_crypto_linkage=services_info,
+        service_tls_config=service_tls_info,
         process_crypto_linkage=processes_info,
         host_fs_detections_unavailable=host_fs_detections_unavailable,
         packages=packages_info,
