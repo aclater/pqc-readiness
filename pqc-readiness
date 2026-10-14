@@ -74,13 +74,40 @@ is_py_39_plus() {
     [ "$minor" -ge 9 ] 2>/dev/null
 }
 
+# Stdlib modules the package imports at load time.  Stripped builds
+# (OpenWrt's python3-light) report 3.9+ but lack some of them, and the
+# zipapp would die with ModuleNotFoundError (#226).  Kept equal to the
+# package's module-level stdlib imports by tests/test_launcher.py.
+STDLIB_NEEDED="argparse base64 binascii collections contextlib dataclasses datetime errno fnmatch functools glob gzip hashlib ipaddress json logging lzma os pathlib platform posixpath re select shutil socket stat statistics struct subprocess sys tempfile threading time typing urllib uuid xml"
+
+# Prints the first module in STDLIB_NEEDED that $1 can't import and
+# returns 1; prints nothing and returns 0 when every module imports.
+missing_stdlib() {
+    # shellcheck disable=SC2086  # word-split the module list on purpose
+    "$1" -c '
+import importlib, sys
+for m in sys.argv[1:]:
+    try:
+        importlib.import_module(m)
+    except ImportError:
+        print(m)
+        sys.exit(1)
+' $STDLIB_NEEDED 2>/dev/null
+}
+
 # Try explicit minor-version names first, newest to oldest, then the
 # generic `python3` and `python` shims.  Explicit names match the
 # RHEL 8 AppStream module binaries (python3.9, python3.11, python3.12)
 # directly — installing the module exposes them on PATH without
 # touching the system `python3` symlink.
+stripped=
 for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3 python; do
     if is_py_39_plus "$candidate"; then
+        if ! gone=$(missing_stdlib "$candidate"); then
+            # Remember the first stripped one for the message; keep looking.
+            [ -n "$stripped" ] || stripped="$(command -v -- "$candidate") (no '${gone:-stdlib}' module)"
+            continue
+        fi
         if [ "$MODE" = pyz ]; then
             exec "$candidate" "$PYZ" "$@"
         fi
@@ -98,6 +125,7 @@ os_family() {
         [ -n "$f" ] && [ -r "$f" ] || continue
         ids=$( . "$f" 2>/dev/null; printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}" )
         case $ids in
+            *" openwrt "*) echo openwrt; return ;;
             *" suse "*|*" sles "*|*" opensuse"*) echo suse; return ;;
             *" rhel "*|*" centos "*|*" fedora "*) echo rhel; return ;;
             *" debian "*|*" ubuntu "*) echo debian; return ;;
@@ -108,14 +136,33 @@ os_family() {
     echo other
 }
 
-cat >&2 <<'EOF'
+if [ -n "$stripped" ]; then
+    printf 'pqc-readiness: found Python 3.9+ at %s,\n' "$stripped" >&2
+    cat >&2 <<'EOF'
+but it is a stripped build that lacks standard-library modules this tool
+needs.  Install the full Python package (see below).
+EOF
+else
+    cat >&2 <<'EOF'
 pqc-readiness: no Python 3.9+ interpreter found on PATH.
 
 This tool requires Python 3.9 or newer; older interpreters cannot parse
 the modern type-hint syntax it uses.
 EOF
+fi
 
 case $(os_family) in
+openwrt)
+    cat >&2 <<'EOF'
+
+On OpenWrt install the full `python3` package; `python3-light` leaves out
+standard-library modules (logging among them) and can't run this tool:
+
+    opkg update && opkg install python3     # OpenWrt 24.10 and earlier
+    apk update && apk add python3           # OpenWrt 25.12 and later
+    /path/to/pqc-readiness [flags]
+EOF
+    ;;
 suse)
     cat >&2 <<'EOF'
 

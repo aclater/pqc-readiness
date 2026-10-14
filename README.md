@@ -192,6 +192,15 @@ sudo zypper --gpg-auto-import-keys ref
 sudo zypper -n in python311
 ```
 
+**OpenWrt** needs the full `python3` package. `python3-light` reports a
+supported version but leaves out standard-library modules; the launcher
+detects that and exits 127 with this fix:
+
+```bash
+opkg update && opkg install python3   # OpenWrt 24.10 and earlier
+apk update && apk add python3         # OpenWrt 25.12 and later
+```
+
 ## Deploying at scale
 
 - **Single file:** copy `pqc-readiness.pyz` to each host, or run it from

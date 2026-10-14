@@ -48,6 +48,12 @@ changes it.
   longer all come out as `host/unknown`. New opt-in
   `--cbom-namespaced-properties` prefixes every CBOM property name with
   `pqc-readiness:`.
+- **The launcher spots a stripped Python** (#226). An interpreter that
+  reports 3.9+ but can't import the standard-library modules the scanner
+  loads (OpenWrt's `python3-light` has no `logging`) is skipped instead of
+  run into a `ModuleNotFoundError`; if it's the only one, the launcher says
+  so and exits 127. OpenWrt hosts get their own install hint
+  (`opkg install python3` up to 24.10, `apk add python3` from 25.12).
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
