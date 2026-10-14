@@ -709,7 +709,9 @@ def container_identity(cgroup: str | None, cache: _Cache) -> dict[str, Any] | No
         runtime, cid = None, m2.group(1)
     uid = _POD_UID_RE.search(cgroup)
     pod_uid = uid.group(1).replace("_", "-") if uid else None
-    names = _container_names(cache).get(cid) if pod_uid else None
+    # Keyed by container ID: a kubelet entry names it even when the pod UID
+    # isn't recognisable in the cgroup path.
+    names = _container_names(cache).get(cid)
     return {
         "runtime": runtime,
         "id": cid,

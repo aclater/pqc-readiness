@@ -1128,3 +1128,16 @@ def test_listener_in_a_pod_is_named_from_the_kubelet_log_directory(
 def test_host_process_listener_has_null_container(host: FakeHost) -> None:
     _populate(host)
     assert _by_port(rs.scan_services(), "tcp", 22)["container"] is None
+
+
+def test_container_names_do_not_depend_on_the_pod_uid(host: FakeHost) -> None:
+    # AI review on #261: a cgroup layout whose pod UID isn't recognised still
+    # gets its names when the kubelet lists the container ID.
+    _kubelet_logs(host, f"web-0_shop_nginx-{CID}.log")
+    c = rs.container_identity(f"/system.slice/docker-{CID}.scope", rs._Cache())
+    assert c is not None and c["pod_uid"] is None
+    assert (c["pod_name"], c["pod_namespace"], c["container_name"]) == (
+        "web-0",
+        "shop",
+        "nginx",
+    )
