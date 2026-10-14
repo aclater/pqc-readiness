@@ -110,6 +110,18 @@ changes it.
   `multus-admission-controller (pod openshift-multus/...)`. Process names
   cut at 15 characters fall back to the executable's name. In a DaemonSet
   the names need `/var/log/containers` mounted.
+- **Offline `--root` scans never describe the scanning machine** (#258). A
+  tree without `os-release` was reported as the scanner's own kernel
+  ("Linux 7.2.10-…"); now its OS comes from `/etc/buildinfo` (Yocto) or
+  `/etc/openwrt_release`, or is `null` with a `reason`
+  (`os_release.source` / `os_release.reason`, additive).
+  `os_release.package_manager` is looked up in the tree, not on the
+  scanner's `PATH`, and repo `$basearch` is the tree's architecture.
+  Absolute symlinks inside a tree are now resolved inside it everywhere: an
+  `/etc/os-release -> /usr/lib/os-release` link used to report the
+  scanning machine's OS, and linked trust-store certificates, libraries,
+  JDKs, the rpm database file, IKE includes and linked config directories
+  were read from (or missed on) the scanning machine.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |

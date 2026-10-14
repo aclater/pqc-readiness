@@ -347,7 +347,16 @@ def _version_tuple(text: str | None) -> tuple[int, ...] | None:
 
 
 def _host(p: str) -> Path:
-    return Path(_platform.HOST_PREFIX + p) if _platform.HOST_PREFIX else Path(p)
+    """Host path `p` under the prefix, with symlinks resolved inside it so
+    an absolute link never reaches the scanning machine's files (#258)."""
+    pre = _platform.HOST_PREFIX
+    if not pre:
+        return Path(p)
+    try:
+        return Path(pre + _platform.resolve_in_root(p, pre))
+    except OSError as e:
+        log.debug("crypto libraries: cannot resolve %s: %s", p, e)
+        return Path(pre + p)
 
 
 def _unhost(p: Path) -> str:
@@ -368,18 +377,14 @@ def _find_files(patterns: tuple[str, ...]) -> list[Path]:
         for pat in patterns:
             for hit in sorted(base.glob(pat)):
                 try:
-                    real = hit.resolve()
+                    # Under a prefix, links resolve inside it (#258).
+                    real = (
+                        _host(_unhost(hit)) if _platform.HOST_PREFIX else hit.resolve()
+                    )
                 except OSError:
                     continue
                 if not _platform.safe_is_file(real) or str(real) in seen:
                     continue
-                if _platform.HOST_PREFIX and not str(real).startswith(
-                    _platform.HOST_PREFIX
-                ):
-                    # An absolute symlink resolved into the scanner image.
-                    real = Path(_platform.HOST_PREFIX + str(real))
-                    if not _platform.safe_is_file(real) or str(real) in seen:
-                        continue
                 seen.add(str(real))
                 out.append(real)
     return out
@@ -622,9 +627,12 @@ def _probe_jdks() -> dict[str, Any]:
         if not _platform.safe_is_dir(base):
             continue
         for entry in sorted(_platform.safe_iterdir(base)):
-            rel = entry / "release"
+            # /usr/lib/jvm entries are often absolute links through
+            # /etc/alternatives; resolve them inside the prefix (#258).
+            target = _platform.in_tree(entry) if _platform.HOST_PREFIX else entry
+            rel = target / "release"
             try:
-                real = str(entry.resolve())
+                real = str(target if _platform.HOST_PREFIX else target.resolve())
                 text = rel.read_text(errors="replace")
             except OSError:
                 continue
@@ -678,9 +686,11 @@ def _probe_go() -> dict[str, Any]:
     seen: set[str] = set()
     for root in _GO_ROOTS:
         for hit in sorted(glob.glob(str(_host(root)))):
-            vf = Path(hit) / "VERSION"
+            # Resolve a linked GOROOT inside the prefix (#258).
+            target = _platform.in_tree(hit) if _platform.HOST_PREFIX else Path(hit)
+            vf = target / "VERSION"
             try:
-                real = str(Path(hit).resolve())
+                real = str(target if _platform.HOST_PREFIX else target.resolve())
                 first = vf.read_text(errors="replace").splitlines()[0].strip()
             except (OSError, IndexError):
                 continue

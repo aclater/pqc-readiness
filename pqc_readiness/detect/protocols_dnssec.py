@@ -282,7 +282,10 @@ def _bind_key_files(directory: str) -> list[dict[str, Any]]:
         for f in files:
             m = _KEYFILE.match(f.name)
             try:
-                key = str(f.resolve())
+                # Under a prefix, links resolve inside it (#258).
+                key = str(
+                    _platform.in_tree(f) if _platform.HOST_PREFIX else f.resolve()
+                )
             except (OSError, RuntimeError) as e:  # RuntimeError: symlink loop, <3.13
                 log.debug("dnssec: cannot resolve %s: %s", f, e)
                 continue

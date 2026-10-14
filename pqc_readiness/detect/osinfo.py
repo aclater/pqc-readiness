@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 import re
 import shutil
@@ -117,11 +118,105 @@ def parse_os_release(text: str) -> dict[str, Any]:
     }
 
 
+# Where a tree's package-manager binary would be; searched under --root
+# instead of the scanning machine's PATH (#258).
+_TREE_BIN_DIRS = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+
+
+def _tree_has_tool(tool: str) -> bool:
+    """Whether the --root tree ships `tool` (a file or a link, e.g. a
+    BusyBox applet), looked up in the tree rather than on this PATH."""
+    for d in _TREE_BIN_DIRS:
+        # The directory resolves inside the tree; the entry itself is not
+        # followed, so a link to a missing target still counts.
+        if os.path.lexists(_platform.host_path(d) / tool):
+            return True
+    return False
+
+
 def _resolve_package_manager(family: str) -> str | None:
     for tool in PKG_MANAGER_ORDER.get(family, []):
-        if shutil.which(tool):
+        if _platform.OFFLINE_ROOT:
+            if _tree_has_tool(tool):
+                return tool
+        elif shutil.which(tool):
             return tool
     return None
+
+
+def _read_tree_text(path: str, limit: int = 64 * 1024) -> str | None:
+    """Up to `limit` characters of a release file, or None when absent or
+    unreadable."""
+    try:
+        with open(_platform.host_path(path), encoding="utf-8", errors="replace") as fh:
+            return fh.read(limit)
+    except OSError as e:
+        log.debug("detect_os: cannot read %s: %s", path, e)
+        return None
+
+
+def read_buildinfo() -> dict[str, str]:
+    """DISTRO and DISTRO_VERSION from a Yocto image's /etc/buildinfo
+    (written by the image-buildinfo class).  Empty when the file is
+    absent or unreadable."""
+    text = _read_tree_text("/etc/buildinfo")
+    out: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key in ("DISTRO", "DISTRO_VERSION") and value.strip():
+            out[key] = value.strip()
+    return out
+
+
+def _os_release_text(fields: dict[str, str]) -> str:
+    """os-release lines for parse_os_release, which strips one pair of
+    surrounding quotes and does no unescaping."""
+    return "\n".join(f'{k}="{v}"' for k, v in fields.items() if v)
+
+
+def _from_openwrt_release() -> dict[str, Any] | None:
+    """os_release from /etc/openwrt_release (DISTRIB_* keys), for OpenWrt
+    trees without os-release.  Goes through parse_os_release so the
+    result matches a tree that has one."""
+    text = _read_tree_text("/etc/openwrt_release")
+    if text is None:
+        return None
+    keys: dict[str, str] = {}
+    for line in text.splitlines():
+        k, sep, v = line.partition("=")
+        if sep:
+            keys[k.strip()] = v.strip().strip("'\"")
+    fields = {
+        "ID": (keys.get("DISTRIB_ID") or "openwrt").lower(),
+        "VERSION_ID": keys.get("DISTRIB_RELEASE", ""),
+        "PRETTY_NAME": keys.get("DISTRIB_DESCRIPTION", ""),
+    }
+    out = parse_os_release(_os_release_text(fields))
+    out["source"] = "/etc/openwrt_release"
+    return out
+
+
+def _from_buildinfo() -> dict[str, Any] | None:
+    """os_release from a Yocto image's /etc/buildinfo, for images built
+    without the os-release recipe.  ID is the distro (e.g. poky), as the
+    os-release recipe would write it."""
+    info = read_buildinfo()
+    distro = info.get("DISTRO")
+    if not distro:
+        return None
+    version = info.get("DISTRO_VERSION", "")
+    out = parse_os_release(
+        _os_release_text(
+            {
+                "ID": distro.lower(),
+                "VERSION_ID": version,
+                "PRETTY_NAME": f"{distro} {version}".strip(),
+            }
+        )
+    )
+    out["source"] = "/etc/buildinfo"
+    return out
 
 
 def detect_os() -> dict[str, Any]:
@@ -149,7 +244,9 @@ def detect_os() -> dict[str, Any]:
 
 
 def _detect_os_impl() -> dict[str, Any]:
-    if _platform.is_macos():
+    # Under --root the tree, not the scanning machine, is described, so a
+    # macOS scanner still reads the tree's release files (#258).
+    if _platform.is_macos() and not _platform.OFFLINE_ROOT:
         ver = _platform._sysctl("kern.osproductversion") or platform.mac_ver()[0]
         return {
             "family": "macos",
@@ -173,6 +270,13 @@ def _detect_os_impl() -> dict[str, Any]:
         out = parse_os_release(text)
         out["package_manager"] = _resolve_package_manager(out["family"])
         return out
+    # Distro release files of their own, for images built without
+    # os-release (#258): OpenWrt's openwrt_release, Yocto's buildinfo.
+    for reader in (_from_openwrt_release, _from_buildinfo):
+        found = reader()
+        if found is not None:
+            found["package_manager"] = _resolve_package_manager(found["family"])
+            return found
     # Legacy fallbacks — only triggered when /etc/os-release is missing.
     rh_text: str | None = None
     if _platform.safe_exists(_platform.host_path("/etc/redhat-release")):
@@ -215,14 +319,24 @@ def _detect_os_impl() -> dict[str, Any]:
             "pretty_name": "SUSE Linux (legacy /etc/SuSE-release)",
             "package_manager": _resolve_package_manager("suse"),
         }
-    return {
+    unknown: dict[str, Any] = {
         "family": "unknown",
         "id": "unknown",
         "version_id": None,
         "version_codename": None,
-        "pretty_name": f"{platform.system()} {platform.release()}".strip(),
+        "pretty_name": None,
         "package_manager": None,
     }
+    if _platform.OFFLINE_ROOT:
+        # Never the kernel: under --root it's the scanning machine's (#258).
+        unknown["reason"] = (
+            "offline --root scan: the tree has no /etc/os-release, "
+            "/usr/lib/os-release, /etc/openwrt_release, /etc/buildinfo or "
+            "legacy release file, so its OS is not identified"
+        )
+    else:
+        unknown["pretty_name"] = f"{platform.system()} {platform.release()}".strip()
+    return unknown
 
 
 # Per-family install-hint table for missing tools.  Used in error

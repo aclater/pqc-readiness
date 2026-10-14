@@ -229,7 +229,8 @@ def _expand_include(pattern: str, base: Path) -> list[Path]:
         local = base.parent / p
     else:
         local = _platform.host_path(p)
-    return [Path(x) for x in sorted(_glob.glob(str(local)))]
+    # Each match resolves inside the --root tree before it's read (#258).
+    return [_platform.in_tree(x) for x in sorted(_glob.glob(str(local)))]
 
 
 def _strip_prefix(path: Path) -> str:

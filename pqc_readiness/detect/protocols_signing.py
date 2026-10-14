@@ -400,14 +400,21 @@ def parse_spki_pem(text: str) -> dict[str, Any]:
 
 
 def _host(p: str) -> Path:
-    """Host path under --host-mount.  Package-manager trust stores live
-    outside the namespaces host_path() redirects (/var/lib/rpm,
-    /usr/share/pacman ...), and they are always host state, so every
-    path here is prefixed."""
-    return Path(_platform.HOST_PREFIX + p) if _platform.HOST_PREFIX else Path(p)
+    """Host path under --host-mount / --root.  Package-manager trust
+    stores live outside the namespaces host_path() redirects
+    (/var/lib/rpm, /usr/share/pacman ...), and they are always host
+    state, so every path here is prefixed, with symlinks resolved inside
+    the prefix (#258)."""
+    return (
+        _platform.in_tree(_platform.HOST_PREFIX + p)
+        if _platform.HOST_PREFIX
+        else Path(p)
+    )
 
 
 def _read(path: Path, limit: int = 16 * 1024 * 1024) -> bytes:
+    # Files listed from a directory may themselves be links (#258).
+    path = _platform.in_tree(path)
     if path.stat().st_size > limit:
         raise KeyParseError(f"{path} larger than {limit} bytes; skipped")
     return path.read_bytes()
@@ -482,17 +489,32 @@ def _rpm_cli_pubkey_texts(db: tuple[str, Path, str] | None) -> list[str]:
 _REPO_DIRS = ("/etc/yum.repos.d", "/etc/zypp/repos.d")
 
 
+def _scanned_arch() -> str:
+    """The scanned system's architecture.  Under --root that's the tree's,
+    read from a binary's ELF header, never the scanning machine's (#258);
+    "" when the tree's can't be told."""
+    if _platform.OFFLINE_ROOT:
+        from . import runtime_offline as _runtime_offline
+
+        arch = _runtime_offline.tree_arch()
+        return "" if arch == "unknown" else arch
+    return platform.machine()
+
+
 def _repo_key_files(os_release: dict[str, Any]) -> list[str]:
     """Local key files referenced by `gpgkey=file://` in enabled repos.
-    $releasever / $basearch are expanded from the host; anything else
-    that remains a variable is globbed."""
+    $releasever / $basearch are expanded from the scanned system; anything
+    else that remains a variable (including $basearch when the
+    architecture is unknown) is globbed."""
     version = str(os_release.get("version_id") or "")
     subs = {
         "releasever": version,
         "releasever_major": version.split(".")[0],
-        "basearch": platform.machine(),
-        "arch": platform.machine(),
     }
+    arch = _scanned_arch()
+    if arch:
+        subs["basearch"] = arch
+        subs["arch"] = arch
     found: list[str] = []
     for d in _REPO_DIRS:
         root = _host(d)
@@ -500,7 +522,7 @@ def _repo_key_files(os_release: dict[str, Any]) -> list[str]:
             continue
         for repo in sorted(root.glob("*.repo")):
             try:
-                text = repo.read_text(errors="replace")
+                text = _platform.in_tree(repo).read_text(errors="replace")
             except OSError as e:
                 log.debug("signing keys: cannot read %s: %s", repo, e)
                 continue
@@ -576,7 +598,7 @@ def _apt_signed_by() -> tuple[list[str], list[str]]:
             files.extend(sorted(p.glob("*.list")) + sorted(p.glob("*.sources")))
     for f in files:
         try:
-            text = f.read_text(errors="replace")
+            text = _platform.in_tree(f).read_text(errors="replace")
         except OSError as e:
             log.debug("signing keys: cannot read %s: %s", f, e)
             continue
@@ -648,7 +670,7 @@ def _pacman_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Excepti
         try:
             trusted.update(
                 ln.split(":")[0].strip().upper()
-                for ln in t.read_text(errors="replace").splitlines()
+                for ln in _platform.in_tree(t).read_text(errors="replace").splitlines()
                 if ln.strip() and not ln.startswith("#")
             )
         except OSError as e:
@@ -690,13 +712,11 @@ def scan_signing_keys(os_release: dict[str, Any] | None = None) -> dict[str, Any
     family = os_release.get("family", "unknown")
     if family in ("rhel", "suse"):
         gen = list(_rpm_sources())
-        repo_files = [_host(p) for p in _repo_key_files(os_release)]
         expanded: list[Path] = []
-        for f in repo_files:
-            if any(c in str(f) for c in "*?["):
-                expanded.extend(
-                    sorted(Path(f.anchor).glob(str(f.relative_to(f.anchor))))
-                )
+        for pattern in _repo_key_files(os_release):
+            f = _host(pattern)
+            if any(c in pattern for c in "*?["):
+                expanded.extend(_host(h) for h in _platform.host_glob(pattern))
             elif _platform.safe_is_file(f):
                 expanded.append(f)
             else:

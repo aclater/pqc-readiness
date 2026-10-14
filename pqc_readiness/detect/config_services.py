@@ -106,17 +106,14 @@ def _sort_unreadable(svc: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_glob(pattern: str) -> list[str]:
-    """Host paths matching a glob (sorted, capped)."""
-    base = Path(_platform.HOST_PREFIX or "/")
+    """Host paths matching a glob (sorted, capped).  Directories on the
+    way resolve inside the tree, not the scanner's (#258)."""
     try:
-        found = sorted(base.glob(pattern.lstrip("/")))
+        found = _platform.host_glob(pattern)
     except (OSError, ValueError) as e:
         log.debug("service-configs: glob %s failed: %s", pattern, e)
         return []
-    out = []
-    for p in found[:MAX_GLOB_RESULTS]:
-        out.append("/" + str(p.relative_to(base)))
-    return out
+    return found[:MAX_GLOB_RESULTS]
 
 
 def _exists(path: str) -> bool:

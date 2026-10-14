@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 from datetime import datetime, timezone
@@ -446,6 +447,18 @@ _PEM_CERT_RE = re.compile(
 )
 
 
+def _cert_files(top: Path) -> list[Path]:
+    """*.pem and *.crt files under `top`, sorted.  Under a prefix, linked
+    subdirectories are not descended into: their targets could be the
+    scanning machine's directories (#258)."""
+    if not _platform.HOST_PREFIX:
+        return sorted(list(top.rglob("*.pem")) + list(top.rglob("*.crt")))
+    out: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(top, followlinks=False):
+        out.extend(Path(dirpath) / n for n in filenames if n.endswith((".pem", ".crt")))
+    return sorted(out)
+
+
 def _trust_store_candidates(target_dirs: list[str]) -> list[Path]:
     """Enumerate *.pem / *.crt files under target_dirs, de-duplicated by
     resolved path (distro trust stores are symlink farms) and in a
@@ -456,16 +469,20 @@ def _trust_store_candidates(target_dirs: list[str]) -> list[Path]:
         p = Path(d)
         if not _platform.safe_is_dir(p):
             continue
-        for cert in sorted(list(p.rglob("*.pem")) + list(p.rglob("*.crt"))):
+        for cert in _cert_files(p):
+            # Under --root, links resolve inside the tree: Debian's
+            # /etc/ssl/certs/*.pem are absolute links that the OS would
+            # follow onto the scanning machine's files (#258).
+            real = _platform.in_tree(cert)
             try:
-                key = str(cert.resolve())
+                key = str(real if _platform.OFFLINE_ROOT else cert.resolve())
             except OSError as e:
                 log.debug("scan_trust_store: cannot resolve %s: %s", cert, e)
                 continue
             if key in seen:
                 continue
             seen.add(key)
-            out.append(cert)
+            out.append(real)
     return out
 
 

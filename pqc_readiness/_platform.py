@@ -5,7 +5,10 @@ Other modules call these through the module (``_platform._run``) so tests have o
 from __future__ import annotations
 
 import argparse
+import errno
+import fnmatch
 import functools
+import glob as _glob
 import logging
 import os
 import shutil
@@ -84,15 +87,127 @@ def set_offline_root(root: str) -> None:
     set_host_prefix(root)
 
 
+def resolve_in_root(path: str, root: str, max_links: int = 40) -> str:
+    """Resolve symlinks in absolute path `path` as a system booted from
+    `root` would: each component is looked up under `root`, `..` stops at
+    the root, and absolute link targets are re-rooted under it, so a link
+    is never followed into the scanning machine's filesystem (#258).
+    Returns the resolved root-relative path ("/a/b").  Raises OSError
+    (ELOOP) past `max_links` links.  With an empty root this is plain
+    symlink resolution."""
+    pending = [c for c in path.split("/") if c]
+    done: list[str] = []
+    links = 0
+    while pending:
+        part = pending.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            if done:
+                done.pop()
+            continue
+        candidate = root + "/" + "/".join([*done, part])
+        if os.path.islink(candidate):
+            links += 1
+            if links > max_links:
+                raise OSError(errno.ELOOP, "too many symlinks resolving", path)
+            target = os.readlink(candidate)
+            if target.startswith("/"):
+                done = []
+            pending = [c for c in target.split("/") if c] + pending
+            continue
+        done.append(part)
+    return "/" + "/".join(done)
+
+
+# Where host_path() points a path whose symlinks loop under --root: a
+# name that can't exist in the tree, so the read fails instead of letting
+# the OS follow the loop's last link out of the tree.
+_LOOP_SINK = "/.pqc-readiness-symlink-loop"
+
+
 def host_path(p: str) -> Path:
     """Return Path(p) under HOST_PREFIX when --host-mount is in effect
     and p targets a kernel/state namespace.  Bare-metal callers and
-    user-space paths are unaffected."""
+    user-space paths are unaffected.
+
+    Under --root the tree is the whole filesystem, so every absolute path
+    maps into it, with symlinks resolved inside the tree (#258): an
+    absolute link such as /etc/os-release -> /usr/lib/os-release would
+    otherwise be followed by the OS onto the scanning machine's file.
+    --host-mount keeps plain prefixing: its /proc holds magic links
+    (/proc/<pid>/exe, fd/*) that must be followed as the kernel does."""
+    if OFFLINE_ROOT and p.startswith("/"):
+        try:
+            return Path(OFFLINE_ROOT + resolve_in_root(p, OFFLINE_ROOT))
+        except OSError as e:
+            log.debug("host_path: cannot resolve %s under --root: %s", p, e)
+            return Path(OFFLINE_ROOT + _LOOP_SINK + os.path.normpath(p))
     if HOST_PREFIX and any(
         p == ns or p.startswith(ns + "/") for ns in _HOST_NAMESPACES
     ):
         return Path(HOST_PREFIX + p)
     return Path(p)
+
+
+def in_tree(p: str | os.PathLike[str]) -> Path:
+    """A path that is already under the --root tree or --host-mount prefix
+    (typically an entry from listing a directory), with its symlinks
+    resolved inside that prefix before it is opened, so an absolute link
+    never reaches the scanning machine's files (#258).  Without a prefix,
+    or for a path outside it, it is returned unchanged.  Not for /proc:
+    its magic links must be followed as the kernel does."""
+    s = os.fspath(p)
+    pre = HOST_PREFIX
+    if not pre or not (s == pre or s.startswith(pre + "/")):
+        return Path(s)
+    rel = s[len(pre) :] or "/"
+    try:
+        return Path(pre + resolve_in_root(rel, pre))
+    except OSError as e:
+        # The path is left out: listed entries include private-key files,
+        # and only the failure matters here.
+        log.debug("in_tree: %s under %s", e.strerror, pre)
+        return Path(pre + _LOOP_SINK + os.path.normpath(rel))
+
+
+def host_glob(pattern: str) -> list[str]:
+    """Host paths matching absolute glob `pattern` (`*`, `?`, `[...]` per
+    component; no `**`), sorted.  Under a prefix every directory on the
+    way is resolved inside it, so a linked directory such as an absolute
+    /etc/openvpn -> /etc/openvpn is listed in the tree, not on the
+    scanning machine (#258).  Results are the logical paths (the names
+    the pattern matched), not their link targets."""
+    pre = HOST_PREFIX
+    if not pre:
+        return sorted(_glob.glob(pattern))
+    found = ["/"]
+    for part in (c for c in pattern.split("/") if c):
+        nxt: list[str] = []
+        for base in found:
+            child = base.rstrip("/") + "/"
+            if not _glob.has_magic(part):
+                nxt.append(child + part)
+                continue
+            try:
+                names = os.listdir(pre + resolve_in_root(base, pre))
+            except OSError:
+                continue
+            nxt.extend(
+                child + n
+                for n in sorted(names)
+                if fnmatch.fnmatchcase(n, part)
+                and (part.startswith(".") or not n.startswith("."))
+            )
+        found = nxt
+    out = []
+    for p in found:
+        try:
+            if os.path.lexists(pre + resolve_in_root(p, pre)):
+                out.append(p)
+        except OSError:
+            continue
+    return out
 
 
 # Path probes that never raise (#229).  On Python 3.9-3.12, Path.is_dir(),
