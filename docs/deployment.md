@@ -42,6 +42,8 @@ release's `container-images.txt` asset lists every image by digest.
 Every image is signed with cosign (keyless, from the release workflow) and
 carries two registry attestations: SLSA build provenance, and a CycloneDX
 package SBOM that this scanner generated from the image's own root filesystem.
+(Exception: the 2.2.0 `pqc-readiness-services` image has the provenance
+attestation but no SBOM attestation; releases after 2.2.0 have both, #230.)
 Verify before rollout:
 
 ```bash

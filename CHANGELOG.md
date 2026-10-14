@@ -25,6 +25,10 @@ changes it.
   `--host-mount`.
 - Live run on OpenShift 4.22 with the Compliance Operator, recorded in
   [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md).
+- **The services image gets its SBOM attestation** (#230). The release
+  workflow now attests a CycloneDX package SBOM for
+  `pqc-readiness-services`, as it already did for the other images. The
+  2.2.0 services image carries only the provenance attestation.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
