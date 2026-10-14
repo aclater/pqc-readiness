@@ -24,8 +24,22 @@ plan needs answered for every machine:
 
 Results come out as a text report, JSON, a CycloneDX CBOM, SPDX, SARIF,
 OCSF events for SIEMs, Prometheus metrics or Ansible facts, and roll up
-across a fleet. The scanner is one Python file with no dependencies. It only
-reads the host; the only file it writes is a report, when you ask it to.
+across a fleet.
+
+What makes it easy to deploy and trust:
+
+- **One file, no dependencies:** a single Python zipapp that runs on Python
+  3.9 or newer.
+- **Read only:** it never changes the host; the only file it writes is a
+  report, when you ask it to.
+- **Runs where your hosts are:** on a live host, in a container against the
+  host's filesystem, as a DaemonSet on OpenShift, Kubernetes, RKE2 or K3s,
+  or against an offline image, including OpenWrt and Yocto.
+- **Reports the host, not the scanner:** in a container, OpenSSL and
+  package facts come from the node, and findings name the pod and
+  namespace.
+- **Verifiable:** release images are signed and carry build provenance and
+  a CycloneDX SBOM attestation.
 
 ## What it finds
 
@@ -43,19 +57,22 @@ ships a hybrid ML-DSA-87+Ed448 key.
 
 ## Latest release
 
-**v2.2.0** (2026-10-13, JSON schema 1.6) added:
+**v2.3.0** (2026-10-14, JSON schema 1.7) added:
 
-- the **deployment-gap verdict** for TLS, SSH, IPsec, each listening service
-  and each outbound client;
-- **findings for software that will fail at PQC** (rules `pqc-011` to
-  `pqc-018`) and for the boot chain, Kerberos, WireGuard, OpenVPN and DNSSEC
-  (`pqc-030` to `pqc-034`);
-- detection of sshd's effective configuration, crypto libraries, every
-  running process and offline images;
-- CBOM certificates, libraries and services, a Dependency-Track
-  compatibility mode, a plain SBOM, and integration recipes.
+- **per-service TLS configuration**: each daemon's own TLS settings decide
+  its verdict, and rule `pqc-021` flags endpoints pinned to classical groups;
+- **embedded and minimal systems**: OpenWrt, Yocto and Buildroot
+  inventories, SBOMs and library versions, even without a package database;
+- **host-accurate container scans**: OpenSSL facts from the node, not the
+  scanner image, and findings named by pod and namespace;
+- **offline sshd analysis** from the image's config and binaries;
+- **Kubernetes, RKE2, K3s and Rancher** manifests, validated on a live
+  cluster, and CBOMs and SBOMs that share canonical package identifiers.
 
-Full release notes and upgrade guidance: [CHANGELOG.md](CHANGELOG.md).
+**Upgrading:** package identifiers now encode `+` as `%2B`, container scans
+can read CNSA 2.0 `partial` where they said `compliant`, and schema 1.7
+reports don't merge with 1.6 ones, so re-scan. Full release notes:
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
@@ -95,14 +112,14 @@ always runs; the `--scan-*` flags add deeper inventories.
 | Area | What it reports | Flag |
 | --- | --- | --- |
 | CPU and accelerators | AVX-512 / ARMv8 / s390x CPACF support for PQC; HSMs, TPMs (including TPM 2.0 v1.85 PQC), DPUs, QAT, Crypto Express, PKCS#11 modules | always |
-| OpenSSL, OpenSSH, NSS, IPsec | PQC algorithms and TLS groups, SSH key exchanges, IKEv2 proposals | always |
-| Configuration | System crypto policy, `openssl.cnf` defaults, effective `sshd` configuration, FIPS mode and its algorithm fence, CNSA 2.0 compliance | always |
+| OpenSSL, OpenSSH, NSS, IPsec | PQC algorithms and TLS groups, SSH key exchanges, IKEv2 proposals; in a container, the host's OpenSSL version from its package or libcrypto | always |
+| Configuration | System crypto policy, `openssl.cnf` defaults, effective `sshd` configuration (parsed from the tree and its binaries in offline scans), FIPS mode and its algorithm fence, CNSA 2.0 compliance; unreadable files are reported as unreadable, not missing | always |
 | Deployment gap | Per-protocol and per-service verdict: deployed, capable but not configured, not capable | always |
-| Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains | `--scan-crypto-libraries` |
-| Services and processes | Which crypto library each listening service and running process actually uses | `--scan-services`, `--scan-processes` |
+| Crypto libraries | GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, Mbed TLS, JDKs and Go toolchains; versions from the library itself in images with no package database | `--scan-crypto-libraries` |
+| Services and processes | Which crypto library each listening service and running process actually uses, including master/worker daemons such as Postfix; containers named by pod and namespace | `--scan-services`, `--scan-processes` |
 | Service TLS settings | Each server daemon's own TLS groups and protocol range (nginx, Apache, HAProxy, stunnel, Squid, Postfix, Dovecot, PostgreSQL, MariaDB/MySQL, Redis/Valkey, OpenLDAP, 389 DS, Tomcat), which override the system policy | `--scan-service-configs` (implied by `--scan-services`) |
 | Certificates and keys | Trust store and service certificates by algorithm OID, private keys (metadata only), Java keystores | `--scan-trust-store`, `--scan-crypto-material` |
-| Packages and signing keys | Installed packages with bundled crypto; package-manager signing keys | `--scan-packages`, `--scan-signing-keys` |
+| Packages and signing keys | Installed packages with bundled crypto (rpm, dpkg, apk, opkg and pacman, read directly, including OpenWrt and Yocto images); package-manager signing keys | `--scan-packages`, `--scan-signing-keys` |
 | Boot chain | Secure Boot certificates, kernel module signing, IMA/EVM, TPM | `--scan-boot-chain` |
 | Kerberos, VPN, DNSSEC | Kerberos encryption types and PKINIT; WireGuard pre-shared keys and OpenVPN groups; DNSSEC signing algorithms | `--scan-kerberos`, `--scan-tunnels`, `--scan-dnssec` |
 | Performance | ML-KEM, ML-DSA, SLH-DSA and classical throughput; loopback TLS 1.3 handshakes | `--bench`, `--bench-tls` |
@@ -148,26 +165,13 @@ full description of each; `pqc-readiness --help` prints them too.
 | Fleet | `--aggregate DIR`, `--aggregate-format {json,csv}`, `--observations FILE`, `--observations-max-age-days DAYS` |
 | Other | `--debug`, `--version`, `-h` / `--help` |
 
-## Exit codes
-
-| Code | Meaning |
-| --- | --- |
-| 0 | Excellent: dedicated PQC silicon, or optimised SIMD and ample RAM |
-| 1 | Good: software PQC fast enough for production |
-| 2 | Marginal: works, but plan for an accelerator at scale |
-| 3 | Poor: software only, and too slow for production |
-| 4 | `--check` or `--fips-strict` threshold not met |
-| 5 | `--output FILE` could not be written after the scan ran |
-
-`--ansible` always exits 0. Usage errors exit 2 before scanning. See
-[docs/cli-reference.md](docs/cli-reference.md#exit-codes).
-
 ## Distribution support
 
 | Tier | Distros | Validation cadence |
 | --- | --- | --- |
 | **1** | RHEL 9, RHEL 10, Ubuntu 24.04 LTS, Debian 12 | Every PR runs the suite on the GitHub-hosted runner under CPython 3.11, 3.12 and 3.13 (`.github/workflows/ci.yml`) and inside the UBI 10 and Debian 12 images (`.github/workflows/ci-containers.yml`). Booted-image validation runs before probe changes merge ([testing](docs/testing.md#booted-vm-matrix)). |
 | **2** | Fedora (latest), Rocky / AlmaLinux 9 and 10, Ubuntu 26.04 LTS, Debian 13, SLES 15 SP6+, RHEL 8, Rocky 8, AlmaLinux 8 | Weekly: `.github/workflows/ci-tier2-weekly.yml` runs the suite in each distro's stock container image every Monday. **EL8 runs on every PR instead:** `.github/workflows/ci-ubi8.yml` runs the suite under AppStream `python3.9` in the UBI 8 image (a container image, not a booted EL8 host). |
+| **Embedded** | OpenWrt 24.10 and 25.12, Yocto (rpm and opkg images), Buildroot | Offline `--root` scans checked against the official OpenWrt 24.10.8 and 25.12.5 and Yocto 6.0.3 images and a Buildroot 2026.08 build: package inventories and SBOMs match each image's own package list, and library versions match the build's. OpenWrt also runs the scan live with the full `python3` package. |
 | **3** | Arch, Alpine, others | Best effort, community supported |
 
 Tiers describe how each distribution is tested, not a support contract.
@@ -206,8 +210,9 @@ apk update && apk add python3         # OpenWrt 25.12 and later
 - **Single file:** copy `pqc-readiness.pyz` to each host, or run it from
   Ansible ([docs/ansible.md](docs/ansible.md),
   [playbooks](deploy/ansible/)).
-- **Containers, OpenShift and Kubernetes:** signed UBI 10, UBI 8 and Debian
-  images published with each release (`ghcr.io/aclater/pqc-readiness`), a
+- **Containers, OpenShift and Kubernetes:** UBI 10, UBI 8 and Debian
+  images (`ghcr.io/aclater/pqc-readiness`) published with each release,
+  signed and carrying build provenance and a CycloneDX SBOM attestation; a
   systemd quadlet for a daily scan, and a least-privilege DaemonSet (non-root,
   no added capabilities, read-only host mounts) for OpenShift and for
   Kubernetes, RKE2, K3s and Rancher-managed clusters, with opt-in overlays for
@@ -223,6 +228,20 @@ Ansible, ACM and the Compliance Operator, SUSE Multi-Linux Manager and SBOM
 graph tools are in [docs/integrations/](docs/integrations/README.md).
 To feed cryptographic posture platforms, see
 [docs/integrations/posture-platforms.md](docs/integrations/posture-platforms.md).
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Excellent: dedicated PQC silicon, or optimised SIMD and ample RAM |
+| 1 | Good: software PQC fast enough for production |
+| 2 | Marginal: works, but plan for an accelerator at scale |
+| 3 | Poor: software only, and too slow for production |
+| 4 | `--check` or `--fips-strict` threshold not met |
+| 5 | `--output FILE` could not be written after the scan ran |
+
+`--ansible` always exits 0. Usage errors exit 2 before scanning. See
+[docs/cli-reference.md](docs/cli-reference.md#exit-codes).
 
 ## How it's tested
 
