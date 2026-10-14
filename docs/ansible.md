@@ -119,6 +119,7 @@ produces. The two phases live in the same playbook:
     - ansible.builtin.script: { cmd: "../../dist/pqc-readiness.pyz --json" }
       register: pqc_raw
       changed_when: false
+      failed_when: pqc_raw.rc not in [0, 1, 2, 3]  # 0-3 are verdicts, not failures
     - ansible.builtin.copy:
         content: "{{ pqc_raw.stdout }}"
         dest: /var/tmp/pqc-readiness.json
@@ -148,6 +149,17 @@ Output:
   models, `replace_required_count` and the fleet `pqc_deployment_gap`
   rollup. Field reference:
   [`--aggregate` rollup](json-output.md#--aggregate-rollup).
+
+## Playbook: CBOM collection
+
+[`deploy/ansible/playbook-cbom-collect.yml`](../deploy/ansible/playbook-cbom-collect.yml)
+writes a CycloneDX 1.7 CBOM on every target with `--cbom --output` and
+fetches it to `<cbom_dir>/<inventory_hostname>.cdx.json` on the controller,
+one file per host, ready for a CBOM importer. It runs with `become` so the
+scan sees every service and key (`-e pqc_become=false` to skip). Verdict exit
+codes 0–3 don't fail the task. See
+[integrations/posture-platforms.md](integrations/posture-platforms.md) for
+what to do with the files.
 
 ## Aligning with the `crypto_policies` system role
 

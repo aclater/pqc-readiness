@@ -210,6 +210,8 @@ All of these are described in [docs/deployment.md](docs/deployment.md).
 Integration recipes for Dependency-Track, DefectDojo, ServiceNow, Event-Driven
 Ansible, ACM and the Compliance Operator, SUSE Multi-Linux Manager and SBOM
 graph tools are in [docs/integrations/](docs/integrations/README.md).
+To feed cryptographic posture platforms, see
+[docs/integrations/posture-platforms.md](docs/integrations/posture-platforms.md).
 
 ## How it's tested
 
@@ -232,6 +234,7 @@ distribution before they merge. Details: [docs/testing.md](docs/testing.md).
 | OpenShift service-scan overlay | [docs/openshift-services-overlay.md](docs/openshift-services-overlay.md) |
 | Ansible | [docs/ansible.md](docs/ansible.md) |
 | Integrations | [docs/integrations/](docs/integrations/README.md) |
+| Posture platforms (CBOM import) | [docs/integrations/posture-platforms.md](docs/integrations/posture-platforms.md) |
 | SIEM (OCSF NDJSON) | [docs/siem-ndjson.md](docs/siem-ndjson.md) |
 | Prometheus and Grafana | [docs/prometheus.md](docs/prometheus.md) |
 | SARIF in code scanning | [docs/sarif-code-scanning.md](docs/sarif-code-scanning.md) |
