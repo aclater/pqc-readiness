@@ -101,8 +101,97 @@ def parse_ssh_version(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
-    if not shutil.which("ssh"):
+_SCANNER_SSH_REASON = (
+    "{mode}: the ssh on PATH, if any, is the scanner's{version}, so `ssh -V` and "
+    "`ssh -Q kex` would describe it, not the host"
+)
+_NO_SSH_REASON = "ssh client not on PATH; read the host's OpenSSH files instead"
+
+
+def _scanner_ssh_version() -> str:
+    _, out = _platform._run(["ssh", "-V"], timeout=3)
+    return parse_ssh_version(out) or "unknown"
+
+
+def ssh_from_files(
+    os_release: dict[str, Any] | None, scanner_cli: str | None
+) -> dict[str, Any]:
+    """The `ssh_pqc` section when the `ssh` CLI can't describe the host:
+    under --host-mount or --root, where it is the scanner's own (#256), or
+    on a host with sshd but no client.  The version comes from the host's
+    OpenSSH package, else its binary; the kex names are read from the
+    binary.  `scanner_cli` names the scan mode when a CLI exists but
+    belongs to the scanner, None when there is no CLI."""
+    # Imported here: openssh_build (via openssh_host) imports this module.
+    from ..detect import openssh_host as _openssh_host
+
+    osr = os_release or {}
+    ev = _openssh_host.openssh_evidence(osr)
+    if scanner_cli:
+        # Offline scans run no binaries at all, not even the scanner's own
+        # `ssh -V`; only --host-mount reports the image's version.
+        scanner_version: str | None = (
+            _scanner_ssh_version() if scanner_cli == "--host-mount" else None
+        )
+        reason = _SCANNER_SSH_REASON.format(
+            mode=scanner_cli,
+            version=f" ({scanner_version})" if scanner_version else "",
+        )
+    else:
+        scanner_version = None
+        reason = _NO_SSH_REASON
+    if not ev["installed"]:
+        out: dict[str, Any] = {
+            "available": False,
+            "reason": "no OpenSSH package or binary found on the host",
+        }
+        if scanner_version:
+            out["scanner_cli_version"] = scanner_version
+        return out
+    kexes = ev["kex"]
+    build = ev["binary"] or {}
+    out = {
+        "available": True,
+        "version": ev["version"],
+        "version_source": ev["version_source"],
+        "package": ev["package"],
+        "binaries": build.get("binaries") or [],
+        "cli_probe": {"available": False, "reason": reason},
+    }
+    if kexes is not None:
+        parsed = parse_ssh_kex("\n".join(kexes))
+        out.update(
+            kex_count=parsed["kex_count"],
+            pqc_kex=parsed["pqc_kex"],
+            kex_groups=parsed["kex_groups"],
+            kex_source="binary",
+            # The shape detect_sshd reads from openssh_build (#247), so the
+            # binary evidence and compiled-in default carry over.
+            source="binary",
+        )
+        if build.get("default_kex"):
+            out["default_kex"] = build["default_kex"]
+    else:
+        # Package found but no readable binary: the version is known, the
+        # kex list isn't.  Null, not empty, so nothing reads it as "none".
+        out.update(kex_count=None, pqc_kex=None, kex_groups=None, kex_source=None)
+    if scanner_version:
+        out["scanner_cli_version"] = scanner_version
+    return out
+
+
+def detect_ssh_pqc(
+    family: str = "unknown", os_release: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    osr = os_release if os_release is not None else dict(family=family)
+    has_cli = bool(shutil.which("ssh"))
+    # Under --host-mount the ssh on PATH is the scanner image's (#256).
+    if _platform.HOST_PREFIX and not _platform.OFFLINE_ROOT:
+        return ssh_from_files(osr, "--host-mount" if has_cli else None)
+    if not has_cli:
+        found = ssh_from_files(osr, None)
+        if found.get("available"):
+            return found
         return {
             "available": False,
             "reason": f"ssh not on PATH ({_osinfo._install_hint('ssh', family)})",
@@ -119,6 +208,8 @@ def detect_ssh_pqc(family: str = "unknown") -> dict[str, Any]:
         }
     parsed = parse_ssh_kex(out)
     parsed["version"] = version
+    parsed["version_source"] = "cli"
+    parsed["kex_source"] = "cli"
     return parsed
 
 

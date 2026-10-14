@@ -80,7 +80,6 @@ NOT_APPLICABLE_FIELDS: tuple[str, ...] = (
     "tpm_pqc",
     "memory_bandwidth_gb_s",
     "memory_bandwidth_method",
-    "ssh_pqc",
     "kernel_info",
     "fips_pqc_conflict",
     "cnsa_2_0",
@@ -208,6 +207,20 @@ def offline_nss() -> dict[str, Any]:
     )
 
 
+def offline_ssh(os_release: dict[str, Any]) -> dict[str, Any]:
+    """OpenSSH from the tree's package database and binaries (#256);
+    `ssh -V` / `ssh -Q kex` would describe the scanning machine."""
+    # No PATH lookup: offline scans never consult the scanning machine,
+    # and its ssh would be the wrong answer whether or not it exists.
+    found = _protocols.ssh_from_files(os_release, "--root")
+    if found.get("available"):
+        return found
+    return not_applicable(
+        _BINARY_REASON.format(tool="`ssh -Q kex`")
+        + "; no OpenSSH package or binary was found in the tree"
+    )
+
+
 def offline_ipsec() -> dict[str, Any]:
     """IPsec: the configured proposals are files in the tree; capability
     comes from running swanctl / ipsec, which is not applicable."""
@@ -232,6 +245,7 @@ def scan_mode_record(root: str) -> dict[str, Any]:
             "openssl": "capability probes not applicable; package version and openssl.cnf read from the tree",
             "ipsec_pqc": "capability not applicable; configured proposals read from the tree",
             "nss": "version from the tree's rpm database when present",
+            "ssh_pqc": "version from the tree's OpenSSH package, kex names from its binary",
         },
         "reason": (
             "Offline scan of a filesystem tree: packages, certificates, keys, "
@@ -320,7 +334,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         fips=dict(host_state),
         openssl=openssl,
         tpm_pqc=dict(host_state),
-        ssh_pqc=not_applicable(_BINARY_REASON.format(tool="`ssh -Q kex`")),
+        ssh_pqc=offline_ssh(os_release),
         ipsec_pqc=offline_ipsec(),
         nss=offline_nss()
         if family in ("rhel", "suse")

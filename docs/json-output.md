@@ -60,7 +60,7 @@ nothing was found.
 | `tpm_pqc` | TPM presence and whether `tpm2_getcap` advertises PQC algorithms. See [`tpm_pqc`](#tpm_pqc). |
 | `memory_bandwidth_gb_s` | Memory bandwidth measurement in GB/s. `null` when `--bench` was not set or the probe could not measure. |
 | `memory_bandwidth_method` | How the bandwidth value was obtained (e.g. `STREAM-triad (numpy)`), or the reason it could not be measured (e.g. `unavailable: numpy not installed`). `null` when `--bench` was not set. |
-| `ssh_pqc` | OpenSSH `ssh -Q kex` availability. `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
+| `ssh_pqc` | OpenSSH key-exchange support, from `ssh -Q kex` or, under `--host-mount` / `--root`, the host's own package and binary (`version_source`, `kex_source`). `kex_groups` splits the detected kex names into `pure_pqc` / `hybrid` / `classical` buckets, mirroring `openssl.tls_groups`. |
 | `ipsec_pqc` | strongSwan / Libreswan presence and PQC (ML-KEM) key-exchange support. See [`ipsec_pqc`](#ipsec_pqc). |
 | `nss` | NSS PQC algorithm exposure: `{available, tool, version, pqc_capable, note?}`. `tool` is `certutil --version`, `rpmdb (sqlite)` / `rpmdb (bdb)` / `rpmdb (ndb)` (package `nss` / `mozilla-nss` read from the rpm database in-process; the suffix is the database format) or `rpm -q` (CLI fallback when the database cannot be read directly). Under `--host-mount` the host rpm database is consulted before `certutil`, because `certutil` belongs to the scanner image. |
 | `crypto_policy` | System-wide crypto policy and what it lets PQC do. `framework` is `crypto-policies` (RHEL family, Fedora, SUSE) or `crypto-config` (Ubuntu's optional package, #170). For crypto-policies: active / configured policy, subpolicies, per-protocol `pqc_enabled`, and the parsed OpenSSL / GnuTLS / NSS / OpenSSH / libreswan back-ends. Read from files, so it works under `--host-mount` and on SUSE releases that ship the policy data without `update-crypto-policies`. For crypto-config: the active profile, its OpenSSL snippet settings and which applications it configures. `{available: false, reason}` where neither `/etc/crypto-policies` nor `/var/lib/crypto-config` exists. See [Nested fields](#crypto_policy). |
@@ -227,9 +227,17 @@ Each list item describes one detected device or HSM client configuration:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `available` | bool | `ssh -Q kex` ran. When false, `reason` (and `version` if `ssh -V` worked) follow. |
-| `version` | string \| null | OpenSSH version from `ssh -V`. |
-| `kex_count` | int | Number of key-exchange methods the client binary supports. |
+| `available` | bool | `ssh -Q kex` ran, or (under `--host-mount`, `--root`, or with no `ssh` client) the host's OpenSSH package or binary was found. When false, `reason` (and `version` if `ssh -V` worked) follow. |
+| `version` | string \| null | OpenSSH version, in `ssh -V`'s form (`9.9p1`): from `ssh -V`, else the host's package or binary (see `version_source`). |
+| `version_source` | string \| null | Where `version` came from: `cli` (`ssh -V`), `binary` (the `OpenSSH_x.ypz` string in the host's binary, which is what `ssh -V` prints there) or `package` (the host's OpenSSH package with the epoch and distribution revision stripped, used only when no binary is readable; it can differ, e.g. Debian 13's `1:10.0p1-7+deb13u4` prints `10.0p2`). Under `--host-mount` and `--root` the `ssh` on PATH is the scanner's own, so it is never `cli` there (#256). |
+| `kex_source` | string \| null | Where the kex lists came from: `cli` (`ssh -Q kex`) or `binary` (the names the kex table in the host's `sshd-session` / `sshd` / `ssh` points at, which equal `ssh -Q kex` on every build checked). Null, with `kex_count`, `pqc_kex` and `kex_groups` null too, when the package was found but no binary was readable. |
+| `package` | object \| null | File-based reads only: the host's OpenSSH package `{name, version}`, as its package database records it. |
+| `binaries` | list[string] | File-based reads only: host paths of the OpenSSH binaries the kex names (and the version) were read from; empty when none was readable. |
+| `source` | string | File-based reads with a kex list only: `binary`, the same marker `sshd.openssh_kex_evidence` carries. |
+| `default_kex` | object | File-based reads only, when the server binary holds exactly one kex list: sshd's compiled-in default `{kex, binary}`, used by `sshd` when nothing sets KexAlgorithms (as offline, #247). |
+| `cli_probe` | object | File-based reads only: `{available: false, reason}`, why `ssh -V` / `ssh -Q kex` weren't used. |
+| `scanner_cli_version` | string | Under `--host-mount` / `--root` when the scanner has an `ssh`: that client's version, for comparison. |
+| `kex_count` | int \| null | Number of key-exchange methods the OpenSSH build supports. |
 | `pqc_kex` | list[string] | Back-compat flat list of PQC / hybrid methods (ML-KEM hybrids, `sntrup761`); prefer `kex_groups`. |
 | `kex_groups` | object | `pure_pqc` / `hybrid` / `classical` lists, mirroring `openssl.tls_groups`. |
 | `kex_references` | object | Present when `ssh -Q kex` ran. One entry per known PQC kex in `kex_groups.pure_pqc` / `hybrid`: `kem`, `classical`, `cnsa_2_0`, `reference` (`RFC 10042` or `RFC 9941`), `status`, `url`, and `alias_of` for the pre-RFC `sntrup761x25519-sha512@openssh.com` name. |
@@ -1083,7 +1091,7 @@ processes or binaries on `PATH`) is reported. `verdict` is
 | `mode` | string | Always `offline_root`. |
 | `root` | string | Absolute path of the scanned tree. |
 | `not_applicable` | list[string] | Report fields that cannot be answered from a tree. Object-valued ones hold the `{available: false, not_applicable: true, reason}` marker; scalar and list ones keep their empty defaults and are listed here so consumers don't read them as "probed, nothing found". |
-| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (configured proposals, no capability) and `nss` (version from the tree's rpm database when present). Values are human-readable explanations. |
+| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (configured proposals, no capability), `nss` (version from the tree's rpm database when present) and `ssh_pqc` (version from the tree's OpenSSH package, kex names from its binary; #256). Values are human-readable explanations. |
 | `reason` | string | One-sentence summary; also used as `verdict_reason`. |
 
 `--root` cannot be combined with `--host-mount`, `--bench`, `--bench-tls`,

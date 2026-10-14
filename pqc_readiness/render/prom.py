@@ -143,7 +143,11 @@ def render_prometheus(r: _report.Report) -> str:
         else []
     )
     ssh = r.ssh_pqc or {}
-    ssh_groups = _group_counts(ssh.get("kex_groups")) if ssh.get("available") else []
+    ssh_groups = (
+        _group_counts(ssh.get("kex_groups"))
+        if ssh.get("available") and isinstance(ssh.get("kex_groups"), dict)
+        else []
+    )
     m.family(
         "key_exchange_groups",
         "Number of key-exchange groups the host's library offers, by protocol and kind.",

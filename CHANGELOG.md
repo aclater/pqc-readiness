@@ -162,6 +162,24 @@ changes it.
   now work offline. Checked against booted Rocky 9, Fedora 44, Ubuntu
   26.04, Leap 16 and Tumbleweed images: the parsed list equals `sshd -T`
   and the binary's PQC methods equal `ssh -Q kex` on all five.
+- **OpenSSH is read from the host under `--host-mount` and `--root`**
+  (#256). `ssh_pqc` came from the scanner's own `ssh -V` / `ssh -Q kex`, so
+  every DaemonSet scan reported the image's OpenSSH 9.9p1 and its ML-KEM
+  kex: a Leap 16 node runs 10.0p2, and an Ubuntu 24.04 node (9.6p1) has
+  only the sntrup761 hybrid. The version and kex list now come from the
+  host's binaries, read the way #247 reads them offline, with the host's
+  OpenSSH package as the version fallback. New `ssh_pqc.version_source`,
+  `kex_source`, `package`, `binaries`, `cli_probe` and
+  `scanner_cli_version`. Offline `--root` scans now answer `ssh_pqc` from
+  the tree (it was not applicable), and a host with sshd but no `ssh`
+  client is no longer reported as having no OpenSSH.
+- **Kex methods read from OpenSSH binaries are exact on more builds**
+  (#256, refines #247). A name now counts only when the binary's kex table
+  points at it: plain string matching missed two methods on Alpine, whose
+  linker stores table names at the end of proposal lists, and Alpine's
+  `/usr/lib/ssh/sshd-session` wasn't searched. The list equals `ssh -Q
+  kex` on Fedora 44, Rocky 9, Leap 16, Ubuntu 24.04, Debian 13 and Alpine
+  3.22 (17 binaries).
 
 ## 2.2.0 - 2026-10-13: deployment-gap verdict and PQC failure findings, schema 1.6
 

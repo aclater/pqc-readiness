@@ -187,11 +187,18 @@ def _render_text_fips(r: _report.Report) -> list[str]:
 def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
     """Section 3c: OpenSSH PQC kex groups, strongSwan IPsec, NSS."""
     L: list[str] = []
-    if r.ssh_pqc.get("available"):
+    if r.ssh_pqc.get("available") and r.ssh_pqc.get("pqc_kex") is None:
+        L.append(
+            f"   OpenSSH kex:   unknown: OpenSSH {r.ssh_pqc.get('version') or ''} "
+            "found, but no readable binary to read its kex names from"
+        )
+    elif r.ssh_pqc.get("available"):
         pqc = r.ssh_pqc.get("pqc_kex") or []
+        src = r.ssh_pqc.get("kex_source")
         L.append(
             f"   OpenSSH kex:   {len(pqc)} PQC algorithm(s)"
             + (f": {', '.join(pqc)}" if pqc else "")
+            + (" (read from the host's binary)" if src == "binary" else "")
         )
         kg = r.ssh_pqc.get("kex_groups") or {}
         hyb = kg.get("hybrid") or []
