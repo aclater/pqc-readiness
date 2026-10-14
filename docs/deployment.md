@@ -22,7 +22,7 @@ Debugging on a target host: `python3 -m zipfile -l pqc-readiness.pyz`
 lists the modules, and `python3 -m zipfile -e pqc-readiness.pyz /tmp/pqc`
 extracts them for reading or `grep`.
 
-## Containers and OpenShift
+## Containers, OpenShift and Kubernetes
 
 Each release publishes signed images to GitHub Container Registry, built from
 the Containerfiles below with the release's own `pqc-readiness.pyz`:
@@ -124,6 +124,48 @@ For per-node summary ConfigMaps that ACM governance policies and Compliance
 Operator CEL rules can evaluate, apply the opt-in overlay with
 `oc apply -k deploy/openshift-summary` ([details](integrations/openshift-node-summaries.md);
 it adds a token and a ConfigMap-only Role, nothing else).
+
+### Kubernetes, RKE2, K3s and Rancher
+
+`deploy/kubernetes` runs the same DaemonSets on plain Kubernetes, RKE2 and
+K3s, including clusters managed by Rancher. It reuses `deploy/openshift`
+through kustomize, so the pod is identical: UID 1001, no capabilities,
+`allowPrivilegeEscalation: false`, seccomp `RuntimeDefault`, a read-only root
+filesystem and read-only host mounts. Two things change:
+
+- **No SCC.** The SecurityContextConstraints object is dropped. The namespace's
+  Pod Security Admission labels admit the pod instead: `enforce: privileged`,
+  because hostPID and hostPath mounts are outside the Baseline profile. That is
+  the PSA level name, not a privileged container, and the labels apply to this
+  namespace only.
+- **`/var/lib` instead of `/var/lib/rpm`.** Kubernetes fleets mix rpm, dpkg,
+  apk and pacman nodes, and a `type: Directory` hostPath that's missing on a
+  node keeps the pod off that node. `/var/lib` exists everywhere and holds
+  every package database the scanner reads. It is mounted read-only with
+  `recursiveReadOnly: Enabled`, which needs Kubernetes 1.33 or newer and a
+  runtime and kernel that support it (containerd 2.0 or CRI-O 1.30 or newer, Linux 5.12 or newer). Remove that
+  one field on older clusters; the mount stays read-only.
+
+```bash
+kubectl apply -k deploy/kubernetes             # base DaemonSet
+kubectl apply -k deploy/kubernetes/services    # or: the --scan-services variant instead
+```
+
+On a Rancher-managed cluster, apply the same kustomization with the
+cluster's kubeconfig from Rancher, or point a Fleet `GitRepo` at
+`deploy/kubernetes`. The services variant's file capabilities work the same
+under containerd as under CRI-O: containerd also leaves the ambient set
+empty, so only the dedicated interpreter gains its two capabilities.
+
+The pods need nothing from the node beyond a working cluster. Two node
+prerequisites of RKE2 itself turned up on minimal cloud images, and both
+break pod networking for every workload, not just this one: the `iptables`
+command (Canal's port-mapping plugin runs it; Rocky Linux 10 and openSUSE
+Leap 16 cloud images ship without it; install `iptables-nft` or `iptables`),
+and on EL10 the `xt_conntrack` and `xt_comment` modules, which are in
+`kernel-modules-extra`. A live run on a Rancher-managed RKE2 cluster with
+Rocky Linux 10 and openSUSE Leap 16 nodes is recorded in
+[examples/rancher-rke2-live.md](examples/rancher-rke2-live.md).
 
 For Ansible-based deployments see [ansible.md](ansible.md)
 and the runnable playbooks under [`deploy/ansible/`](../deploy/ansible/).

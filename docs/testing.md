@@ -135,7 +135,9 @@ pointing at the current release's image tag.
   schema-validated and posture-tested in CI. They were deployed by hand on a
   single-node OpenShift 4.22 cluster with the Compliance Operator
   ([examples/openshift-4.22-live.md](examples/openshift-4.22-live.md)), but
-  CI doesn't deploy them.
+  CI doesn't deploy them. The Kubernetes variants were deployed the same way on
+  a Rancher-managed two-node RKE2 cluster
+  ([examples/rancher-rke2-live.md](examples/rancher-rke2-live.md)).
 - Integration recipes are marked with what was and wasn't run against the real
   product; see each page under [integrations/](integrations/).
 - macOS support is best-effort and is not in CI.

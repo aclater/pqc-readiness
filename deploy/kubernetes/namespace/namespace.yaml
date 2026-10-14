@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Namespace for the opt-in services variant on Kubernetes, RKE2 and K3s
+# (#219).  The base gets its namespace from deploy/openshift/namespace.yaml;
+# this copy exists because kustomize can't load a file from outside the
+# kustomization's own tree.  Keep the two identical:
+# tests/test_kubernetes_manifests.py fails if they differ.
+#
+# Pod Security Admission: the pods need hostPID and read-only hostPath
+# mounts, which only the "privileged" PSA level admits.  That is the level
+# name, not a privileged container: the pods still run as UID 1001, drop
+# ALL capabilities and mount every host path read-only.  The labels confine
+# the exemption to this namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pqc-readiness
+  labels:
+    app.kubernetes.io/name: pqc-readiness
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged

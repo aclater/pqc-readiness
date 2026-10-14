@@ -206,11 +206,12 @@ apk update && apk add python3         # OpenWrt 25.12 and later
 - **Single file:** copy `pqc-readiness.pyz` to each host, or run it from
   Ansible ([docs/ansible.md](docs/ansible.md),
   [playbooks](deploy/ansible/)).
-- **Containers and OpenShift:** signed UBI 10, UBI 8 and Debian images
-  published with each release (`ghcr.io/aclater/pqc-readiness`), a systemd
-  quadlet for a daily scan, and a least-privilege OpenShift DaemonSet (non-root,
-  no added capabilities, read-only host mounts), with opt-in overlays for the
-  service scan and for per-node summaries.
+- **Containers, OpenShift and Kubernetes:** signed UBI 10, UBI 8 and Debian
+  images published with each release (`ghcr.io/aclater/pqc-readiness`), a
+  systemd quadlet for a daily scan, and a least-privilege DaemonSet (non-root,
+  no added capabilities, read-only host mounts) for OpenShift and for
+  Kubernetes, RKE2, K3s and Rancher-managed clusters, with opt-in overlays for
+  the service scan and for per-node summaries.
 - **Offline images:** `--root PATH` scans a container rootfs or mounted disk
   image without running anything from it.
 - **Fleet rollup:** `--aggregate DIR` combines saved JSON reports, and
@@ -241,7 +242,8 @@ distribution before they merge. Details: [docs/testing.md](docs/testing.md).
 | SARIF rules | [docs/rules/](docs/rules/README.md) |
 | Example output across 20 distributions | [docs/examples/os-matrix-2026-10.md](docs/examples/os-matrix-2026-10.md) |
 | Example output from a live OpenShift 4.22 node | [docs/examples/openshift-4.22-live.md](docs/examples/openshift-4.22-live.md) |
-| Deployment: containers, OpenShift, offline images, fleet rollup | [docs/deployment.md](docs/deployment.md) |
+| Example output from a live Rancher-managed RKE2 cluster | [docs/examples/rancher-rke2-live.md](docs/examples/rancher-rke2-live.md) |
+| Deployment: containers, OpenShift, Kubernetes / RKE2 / K3s, offline images, fleet rollup | [docs/deployment.md](docs/deployment.md) |
 | OpenShift service-scan overlay | [docs/openshift-services-overlay.md](docs/openshift-services-overlay.md) |
 | Ansible | [docs/ansible.md](docs/ansible.md) |
 | Integrations | [docs/integrations/](docs/integrations/README.md) |

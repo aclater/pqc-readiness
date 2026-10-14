@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# pqc-readiness on Kubernetes, RKE2 and K3s, including Rancher-managed
+# clusters (#219):  kubectl apply -k deploy/kubernetes
+#
+# The same least-privilege DaemonSet as deploy/openshift (non-root UID
+# 1001, drop ALL, no privilege escalation, RuntimeDefault seccomp,
+# read-only root filesystem, read-only host mounts), admitted by the Pod
+# Security Admission labels on its namespace instead of an SCC.  The
+# namespace comes from the OpenShift base.  Opt-in service scan: services/.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../openshift
+components:
+  - portable
