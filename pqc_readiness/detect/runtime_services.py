@@ -430,7 +430,9 @@ def elf_dynamic(fh: Any) -> dict[str, list[str]] | None:
     else:
         (e_phoff,) = struct.unpack_from(bo + "I", hdr, 28)
         e_phentsize, e_phnum = struct.unpack_from(bo + "HH", hdr, 42)
-    if e_phnum > 4096 or e_phentsize < (56 if is64 else 32):
+    # Real entries are 56 (ELF64) or 32 (ELF32) bytes; bound both fields so
+    # a malformed header can't make one read allocate up to 256 MB.
+    if e_phnum > 4096 or not (56 if is64 else 32) <= e_phentsize <= 256:
         raise ValueError("implausible ELF program header table")
     fh.seek(e_phoff)
     ph = fh.read(e_phentsize * e_phnum)

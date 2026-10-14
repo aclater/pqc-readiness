@@ -1017,3 +1017,14 @@ def test_worker_binary_lookups_stay_inside_the_root(host: FakeHost) -> None:
     host.process(996, comm="worker", exe_path="/opt/evil/worker", ppid=995)
     entry = _by_port(rs.scan_services(), "tcp", 9200)
     assert entry["crypto_libraries"] == [] and "crypto_libraries_from" not in entry
+
+
+def test_elf_dynamic_rejects_oversized_program_header_entries(tmp_path: Path) -> None:
+    # AI review on #250: e_phentsize was unbounded, so e_phnum (<= 4096)
+    # times a forged 65535-byte entry size made one read allocate ~256 MB.
+    blob = bytearray(_elf_dyn(["libssl.so.3"]))
+    struct.pack_into("<HH", blob, 54, 0xFFFF, 4096)  # e_phentsize, e_phnum
+    p = tmp_path / "forged"
+    p.write_bytes(bytes(blob))
+    with p.open("rb") as fh, pytest.raises(ValueError):
+        rs.elf_dynamic(fh)
