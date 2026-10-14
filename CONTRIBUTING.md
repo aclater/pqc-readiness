@@ -108,6 +108,7 @@ touches different files:
 |---|---|
 | `detect/hardware.py` | CPU, memory, ISA tiers, accelerators, TPM, kernel crypto, kTLS |
 | `detect/config.py` | FIPS mode and algorithm fence, OpenSSL capability and TLS groups |
+| `detect/openssl_host.py` | the host's OpenSSL version from its package database or libcrypto file, when the `openssl` CLI can't describe the host (`--host-mount`, `--root`, no CLI) |
 | `detect/config_openssl.py`, `config_policy.py`, `config_sshd.py` | effective OpenSSL configuration, system crypto policy, sshd effective configuration |
 | `detect/config_services.py`, `config_services_parsers.py` | per-service TLS configuration of server daemons (`--scan-service-configs`): discovery, versions and built-in defaults; one text parser per daemon |
 | `detect/osinfo.py` | OS identity, install hints, kernel info |
