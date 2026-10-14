@@ -28,7 +28,9 @@ changes it.
 - **The services image gets its SBOM attestation** (#230). The release
   workflow now attests a CycloneDX package SBOM for
   `pqc-readiness-services`, as it already did for the other images. The
-  2.2.0 services image carries only the provenance attestation.
+  published 2.2.0 services image was backfilled through a new attest-only
+  dispatch mode that attests an existing digest without rebuilding or
+  moving tags (#251).
 - **An unreadable path no longer aborts the scan** (#229). On Python
   3.9-3.12, a directory the scanner can't read (an SELinux or AppArmor
   denial in a confined container, a 0700 directory on bare metal) raised
