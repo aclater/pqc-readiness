@@ -40,6 +40,7 @@ from urllib.parse import quote
 from .. import _platform
 from .. import registry as _registry
 from .. import report as _report
+from ..detect import osinfo as _osinfo
 from ..detect import packages as _packages
 
 SBOM_SPEC_VERSION = "1.6"
@@ -129,24 +130,9 @@ def _probed_packages() -> tuple[list[dict[str, Any]], str | None]:
 
 
 def read_buildinfo() -> dict[str, str]:
-    """DISTRO and DISTRO_VERSION from a Yocto image's /etc/buildinfo
-    (written by the image-buildinfo class), under HOST_PREFIX.  Empty when
-    the file is absent or unreadable."""
-    try:
-        rel = _packages.resolve_under_prefix("/etc/buildinfo", _platform.HOST_PREFIX)
-        with open(
-            _platform.HOST_PREFIX + rel, encoding="utf-8", errors="replace"
-        ) as fh:
-            text = fh.read(64 * 1024)
-    except (OSError, _packages.RpmdbError):
-        return {}
-    out: dict[str, str] = {}
-    for line in text.splitlines():
-        key, sep, value = line.partition("=")
-        key = key.strip()
-        if sep and key in ("DISTRO", "DISTRO_VERSION") and value.strip():
-            out[key] = value.strip()
-    return out
+    """DISTRO and DISTRO_VERSION from a Yocto image's /etc/buildinfo.
+    Shared with OS detection, which uses it when os-release is absent."""
+    return _osinfo.read_buildinfo()
 
 
 def _os_id(os_release: dict[str, Any]) -> str | None:
