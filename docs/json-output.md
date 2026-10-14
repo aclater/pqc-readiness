@@ -36,7 +36,7 @@ nothing was found.
 | --- | --- |
 | `schema_version` | Schema version string, currently `"1.6"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
-| `hostname` | Host's reported hostname. `PQC_HOSTNAME` in the environment overrides it (the OpenShift DaemonSets set it to `spec.nodeName`); under `--host-mount` the host's `/etc/hostname` is used, because the container's own hostname is the pod name. |
+| `hostname` | Host's reported hostname. `--host-name NAME` sets it for any scan mode; otherwise `PQC_HOSTNAME` in the environment overrides it (the OpenShift DaemonSets set it to `spec.nodeName`); under `--host-mount` the host's `/etc/hostname` is used, because the container's own hostname is the pod name. |
 | `os` | Human-readable OS name: `os_release.pretty_name`, or `<system> <kernel release>` (e.g. `Linux 6.12.0`) when `/etc/os-release` gave none. |
 | `arch` | CPU architecture (`x86_64`, `aarch64`, `s390x`, …). |
 | `cpu_model` | CPU model string from `/proc/cpuinfo` or `sysctl`. |
@@ -612,7 +612,7 @@ Keyed by detection: `accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc
 | `source` | string | RPM families: `rpmdb-sqlite`, `rpmdb-bdb` or `rpmdb-ndb` (database read in-process; the suffix is its format) or `rpm-cli` (fallback when it cannot be read directly). Debian / Alpine / Arch under `--host-mount` or `--root`: `dpkg-status`, `apk-installed-db` or `pacman-local-db`, read in-process because their CLIs would read the scanner's own database. `opkg-status` for an opkg `status` file (`/usr/lib/opkg/status` on OpenWrt, `/var/lib/opkg/status` on Yocto), counting the packages `opkg list-installed` lists (state `installed` or `unpacked`). Absent for live scans that ran a family tool. |
 | `db_root` | string \| null | Host-relative database location: the rpm database directory, or the dpkg `status` file, apk `installed` file, opkg `status` file or pacman `local` directory when `source` names one of those. |
 | `total_packages` | int | Installed packages counted (on RPM hosts this includes `gpg-pubkey` entries, as `rpm -qa` does). |
-| `bundled_crypto` | list[object] | Packages that embed their own crypto stack, each `{package, version, note}` where `note` names the stack (e.g. `Go runtime (crypto/tls embedded)`). |
+| `bundled_crypto` | list[object] | Packages that embed their own crypto stack, each `{package, version, note}` where `note` names the stack (e.g. `Go runtime (crypto/tls embedded)`), plus `release`, `epoch` and `arch` when the package database records them (the rpm readers do). With them the CBOM emits the same exact purl as `--sbom` (#222). |
 | `reason` | string | Present when `available` is false, or with `unavailable_in_container`. |
 
 ### `signing_keys`
@@ -666,7 +666,7 @@ Each native library entry (`gnutls`, `libgcrypt`, `libssh`, `wolfssl`, `aws-lc`,
 | `installed` | bool | A package or library file was found. |
 | `version` | string \| null | Package version, else the version the library embeds (`GnuTLS x.y.z`, `Libgcrypt x.y.z`, libssh's banner `SSH-2.0-libssh_x.y.z`, `Mbed TLS x.y.z`, `AWS-LC x.y.z`; wolfSSL embeds no matchable version string), else, for Mbed TLS only, the version in the library's file name (`libmbedtls.so.3.6.6`; Mbed TLS names its libraries after the release, so builds that strip the version string, such as OpenWrt's, are still versioned). Package-less trees such as Buildroot images get their version this way (#217). |
 | `version_source` | string \| null | `package`, `library` (embedded version string) or `library-filename` (Mbed TLS file name). |
-| `packages` | list[object] | Matching installed packages, `{name, version}`, from the rpm database (in-process or `rpm -q`), `/var/lib/dpkg/status`, `/lib/apk/db/installed` or `/var/lib/pacman/local`; for families without a registered package tool (OpenWrt, Yocto, `unknown`), from whichever database the tree has, including opkg (e.g. OpenWrt's `libmbedtls21`, Yocto's `libgnutls30`; #217). |
+| `packages` | list[object] | Matching installed packages, `{name, version}` (plus `release`, `epoch` and `arch` from the rpm database, so the CBOM purl matches `--sbom`; #222), from the rpm database (in-process or `rpm -q`), `/var/lib/dpkg/status`, `/lib/apk/db/installed` or `/var/lib/pacman/local`; for families without a registered package tool (OpenWrt, Yocto, `unknown`), from whichever database the tree has, including opkg (e.g. OpenWrt's `libmbedtls21`, Yocto's `libgnutls30`; #217). |
 | `files` | list[string] | Host paths of the library files read. |
 | `evidence` | string | `binary` (capability read from the library file), `version` (threshold comparison only) or `none`. |
 | `pqc_capable` | bool \| null | Binary evidence: any PQC name found. Version evidence: any threshold met, except `null` for a build-dependent library (GnuTLS, wolfSSL), which may be built without PQC. |
@@ -1054,8 +1054,8 @@ packages, certificates, keys, crypto policies, `openssl.cnf` and package-signing
 keys come from the tree; nothing about the scanning machine (its CPU, kernel,
 processes or binaries on `PATH`) is reported. `verdict` is
 `NOT APPLICABLE - offline filesystem scan`, `isa_tier` is `not_applicable`,
-`exit_code` is 0, and `hostname` comes from the tree's `/etc/hostname` (empty
-when it has none). `arch` is read from the ELF header of the tree's
+`exit_code` is 0, and `hostname` is `--host-name` when given, else the tree's
+`/etc/hostname` (empty when it has none). `arch` is read from the ELF header of the tree's
 `/usr/bin/env`, `/bin/sh` or `/usr/bin/sh`.
 
 | Key | Type | Meaning |

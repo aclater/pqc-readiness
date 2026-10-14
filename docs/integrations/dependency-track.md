@@ -123,11 +123,12 @@ Library components:
 - Stacks the scanner probed get a `pkg:generic` purl with the detected
   version, for example `pkg:generic/openssl@3.5.9` (the loaded library's
   version when it differs from the CLI's) and `pkg:generic/openssh@10.2p1`.
-- Crypto-bearing distribution packages found by `--scan-packages` get a
-  distro purl, for example
-  `pkg:rpm/fedora/python3@3.14.8?distro=fedora-44`.
-- Versions are upstream versions without the distro release, so treat
-  these purls as identification, not as input for exact-build
+- Crypto-bearing distribution packages found by `--scan-packages` get the
+  same exact purl `--sbom` emits for them, for example
+  `pkg:rpm/fedora/python3@3.14.8-1.fc44?arch=x86_64&distro=fedora-44`
+  (#222), so they match the package components of a host SBOM.
+- The `pkg:generic` purls of probed stacks carry the upstream version
+  only, so treat them as identification, not as input for exact-build
   vulnerability matching.
 
 ## Crypto libraries and services (#194)

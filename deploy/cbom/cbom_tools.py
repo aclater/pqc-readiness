@@ -7,9 +7,10 @@ Standard library only.  See docs/integrations/posture-platforms.md.
 Subcommands::
 
     name-host IN OUT NAME
-        Give an offline (--root) CBOM a host identity.  Offline scans have
-        no hostname, so every one is ``host/unknown``; rename it to
-        ``host/NAME`` before importing several images side by side.
+        Give an offline (--root) CBOM a host identity.  A tree without
+        /etc/hostname is ``host/unknown``; rename it to ``host/NAME``
+        before importing several images side by side.  New scans can pass
+        ``--host-name NAME`` instead (#222).
 
     repair-merge IN OUT
         Repair two defects in BOMs written by the CycloneDX CLI 0.33.1
@@ -24,9 +25,11 @@ Subcommands::
 
     join-packages HOST_CBOM SBOM
         Map each library component in a CBOM to the packages in an SBOM
-        (e.g. ``--sbom``).  CBOM library purls carry the upstream version
-        without release, arch or epoch, so the match is on
-        type/namespace/name and upstream version.
+        (e.g. ``--sbom``).  The match is on type/namespace/name and
+        upstream version, so it also covers CBOMs from before #222 (whose
+        library purls lacked release, arch and epoch) and SBOMs from tools
+        that spell qualifiers differently.  Current CBOMs carry the exact
+        ``--sbom`` purl for resolved packages, which also join directly.
 """
 
 from __future__ import annotations

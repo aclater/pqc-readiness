@@ -54,7 +54,8 @@ adds:
   `--cbom-version 1.6` output is unchanged.
 - Crypto `library` components from `--scan-crypto-libraries` (GnuTLS,
   libgcrypt, libssh, wolfSSL, AWS-LC, JDKs, Go), with a distro purl when
-  the package is known. Each library `provides` the PQC algorithms found
+  the package is known: the same exact purl `--sbom` emits for that
+  package (full version-release, arch, epoch), so the two documents join. Each library `provides` the PQC algorithms found
   in its binary; those algorithm assets carry the library as `group`.
   Listening processes from `--scan-services` become `application`
   components that depend on the crypto library they actually map
