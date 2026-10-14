@@ -242,3 +242,43 @@ def test_summary_kustomization_reuses_the_base() -> None:
     k = yaml.safe_load((SUMMARY / "kustomization.yaml").read_text())
     assert k["resources"] == ["../openshift", "rbac.yaml"]
     assert (REPO / "deploy" / "openshift" / "kustomization.yaml").exists()
+
+
+# ---------------------------------------------------- live-cluster fixes (#220)
+
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_scc_admits_the_seccomp_profile_the_pod_requests(path: Path) -> None:
+    # An SCC without seccompProfiles forbids every profile, so admission
+    # rejected the RuntimeDefault pod on a live cluster.
+    docs = _docs(path)
+    pod_sc = docs["DaemonSet"]["spec"]["template"]["spec"]["securityContext"]
+    assert pod_sc["seccompProfile"]["type"] == "RuntimeDefault"
+    assert "runtime/default" in docs["SecurityContextConstraints"]["seccompProfiles"]
+
+
+def test_base_kustomization_creates_the_namespace() -> None:
+    kust = yaml.safe_load((BASE.parent / "kustomization.yaml").read_text())
+    assert kust["resources"][0] == "namespace.yaml"
+    ns = yaml.safe_load((BASE.parent / "namespace.yaml").read_text())
+    assert ns["kind"] == "Namespace" and ns["metadata"]["name"] == "pqc-readiness"
+    assert (
+        ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged"
+    )
+
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_report_output_is_writable_by_the_non_root_pod(path: Path) -> None:
+    # kubelet creates a hostPath output root:root 0755; UID 1001 can't write it.
+    vols = {
+        v["name"]: v
+        for v in _docs(path)["DaemonSet"]["spec"]["template"]["spec"]["volumes"]
+    }
+    assert "emptyDir" in vols["readiness-output"]
+    assert "hostPath" not in vols["readiness-output"]
+
+
+@pytest.mark.parametrize("path", [BASE, OVERLAY], ids=["base", "overlay"])
+def test_daemonset_reports_the_node_name(path: Path) -> None:
+    env = {e["name"]: e for e in _container(_docs(path)["DaemonSet"])["env"]}
+    assert env["PQC_HOSTNAME"]["valueFrom"]["fieldRef"]["fieldPath"] == "spec.nodeName"

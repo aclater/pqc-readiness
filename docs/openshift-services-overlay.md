@@ -78,9 +78,22 @@ it). `services.yaml` references the current release; pin it by digest from the
 release's `container-images.txt` in production.
 
 ```bash
+oc apply -f deploy/openshift/namespace.yaml   # if the base is not deployed
 oc apply -f deploy/openshift/services/services.yaml
-# least-privilege check: only the services ServiceAccount may use the SCC
-oc adm policy who-can use scc pqc-readiness-services-scc
+# optional: run only this variant on each node
+oc -n pqc-readiness delete ds/pqc-readiness --ignore-not-found
+```
+
+The overlay runs fine next to the base DaemonSet; delete the base if one scan
+per node is enough. Least-privilege check: the SCC grants access through its
+`users:` list, which `oc adm policy who-can` and `oc auth can-i` don't see.
+Check the SCC and the pods it admitted directly:
+
+```bash
+oc get scc pqc-readiness-services-scc -o jsonpath='{.users}{"\n"}'
+# ["system:serviceaccount:pqc-readiness:pqc-readiness-services"]
+oc -n pqc-readiness get pods \
+  -o custom-columns=POD:.metadata.name,SCC:.metadata.annotations.openshift\\.io/scc
 ```
 
 To build the image yourself instead:

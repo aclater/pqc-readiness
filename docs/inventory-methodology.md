@@ -107,7 +107,7 @@ observed negotiation.
 |---|---|---|
 | CLI | On demand | stdout, or `--output FILE` |
 | Podman quadlet (`deploy/quadlet/`) | Daily systemd timer (`OnCalendar=daily`, 5-minute randomized delay) | `--save` JSON to the cache directory |
-| OpenShift DaemonSet (`deploy/openshift/`) | Every `PQC_PROBE_INTERVAL` seconds (default 3600) on every node | `--save` JSON to a host path or PVC for aggregation |
+| OpenShift DaemonSet (`deploy/openshift/`) | Every `PQC_PROBE_INTERVAL` seconds (default 3600) on every node | `--save` JSON to an `emptyDir` (or a PVC for aggregation); per-node summary ConfigMaps with the summary overlay |
 | Ansible (`deploy/ansible/`) | Per play run | `--ansible` facts under `ansible_facts.pqc_readiness`, plus a fleet aggregation playbook |
 
 Reports are timestamped (`generated_at`) and versioned

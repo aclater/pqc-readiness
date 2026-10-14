@@ -51,6 +51,11 @@ cosign verify ghcr.io/aclater/pqc-readiness@sha256:<digest> \
 gh attestation verify oci://ghcr.io/aclater/pqc-readiness@sha256:<digest> --repo aclater/pqc-readiness
 ```
 
+Use cosign v3 or newer. The release workflow signs with cosign v3, which
+stores signatures in the new bundle format; cosign v2 reports `no signatures
+found`. `gh attestation verify` checks the SLSA provenance by default; add
+`--predicate-type https://cyclonedx.org/bom` to check the SBOM attestation.
+
 To build your own image instead (for example on a different base), use the
 Containerfiles directly and push to your registry.
 
@@ -97,6 +102,17 @@ Inside the pod
 the host root is mounted at `/host` and the probe is invoked with
 `--host-mount /host` so its reads target the node, not the container
 image.
+
+Deploy it with `oc apply -k deploy/openshift`, which creates the
+`pqc-readiness` namespace, ServiceAccount, SCC and DaemonSet. Reports go to
+an `emptyDir` in the pod, pruned after `PQC_RETENTION_DAYS` (default 7):
+a `hostPath` output directory is created `root:root 0755` by the kubelet and
+the non-root pod can't write to it. Collect reports with the
+[per-node summary overlay](integrations/openshift-node-summaries.md), with
+`oc exec`, or by swapping the volume for a PVC on RWX storage. The DaemonSet
+sets `PQC_HOSTNAME` from `spec.nodeName`, so reports name the node rather
+than the pod. A live run on OpenShift 4.22 is recorded in
+[examples/openshift-4.22-live.md](examples/openshift-4.22-live.md).
 
 For `--scan-services` on OpenShift, deploy the opt-in least-privilege variant in [`deploy/openshift/services/`](openshift-services-overlay.md) instead (adds only `CAP_SYS_PTRACE` + `CAP_DAC_READ_SEARCH`).
 For per-node summary ConfigMaps that ACM governance policies and Compliance

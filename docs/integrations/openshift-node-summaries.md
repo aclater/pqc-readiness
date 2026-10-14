@@ -64,7 +64,8 @@ yet it passes, because `all()` over an empty list is true.
 | kubeconform `-strict` on the ACM and Compliance Operator samples, using schemas from the upstream CRDs (Compliance Operator v1.8.2, ACM policy controllers v0.20.1) | valid, including the ConfigurationPolicy embedded in the Policy; a misspelt field is rejected |
 | CEL expression evaluated with cel-python 0.5.0 against sample ConfigMaps | fails on a gap or failing software, ignores unlabelled ConfigMaps, passes with none |
 | Publisher against a local HTTP server standing in for the ConfigMap API (`tests/test_node_summary.py`) | create, replace and 403 paths |
-| **On a real OpenShift cluster with ACM / Compliance Operator** | **Not tested** |
+| Live on single-node OpenShift 4.22.14 (RHCOS 9.8) with Compliance Operator 1.10.0 | Overlay applied with `oc apply -k`; `pqc-readiness-node-crc` published after the first probe; the `CustomRule` became `Ready` and the suite reported `NON-COMPLIANT` (2 gaps). See [examples/openshift-4.22-live.md](../examples/openshift-4.22-live.md) |
+| **ACM on a real cluster** | **Not tested** (too heavy for a single-node cluster; needs the ACM CRDs even for a server-side dry run) |
 
 CI runs the same kustomize and kubeconform checks
 (`.github/workflows/ci-openshift-manifests.yml`).

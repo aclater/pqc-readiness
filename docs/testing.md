@@ -131,8 +131,11 @@ pointing at the current release's image tag.
 
 - Live HSMs, DPUs, s390x hardware and network HSM appliances (captured output
   only, see above).
-- A live OpenShift cluster: the manifests are schema-validated and
-  posture-tested in CI, not deployed.
+- A live multi-node OpenShift cluster, and ACM. The manifests are
+  schema-validated and posture-tested in CI. They were deployed by hand on a
+  single-node OpenShift 4.22 cluster with the Compliance Operator
+  ([examples/openshift-4.22-live.md](examples/openshift-4.22-live.md)), but
+  CI doesn't deploy them.
 - Integration recipes are marked with what was and wasn't run against the real
   product; see each page under [integrations/](integrations/).
 - macOS support is best-effort and is not in CI.
