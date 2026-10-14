@@ -72,6 +72,7 @@ nothing was found.
 | `crypto_material` | Filesystem discovery of certificates, private keys and Java keystores (#108). Populated only when `--scan-crypto-material` is set (`{}` otherwise); see [`crypto_material`](#crypto_material). Private keys are reported as metadata only — their content is never read into the report. |
 | `runtime_environment` | `{environment, evidence}`: `environment` is `container` or `host`; `evidence` is the marker that decided it. See [`runtime_environment`](#runtime_environment). |
 | `service_crypto_linkage` | Listening sockets mapped to the process that owns each one and the crypto library it actually uses. Populated only when `--scan-services` is set (`{}` otherwise). Pure `/proc` inspection, no network connections. See [`service_crypto_linkage`](#service_crypto_linkage). |
+| `service_tls_config` | Each server daemon's own TLS settings per endpoint (groups, their source, protocol range, whether hybrid ML-KEM is offered). Populated only with `--scan-service-configs` or `--scan-services` (`{}` otherwise); file reads only, also with `--root`. See [`service_tls_config`](#service_tls_config). |
 | `process_crypto_linkage` | Every running process (servers and outbound-only TLS clients) mapped to the crypto library or Go runtime it has loaded, grouped by executable and library version. Populated only when `--scan-processes` is set (`{}` otherwise). Pure `/proc` reads; see [`process_crypto_linkage`](#process_crypto_linkage). |
 | `host_fs_detections_unavailable` | Object keyed by detection (`accelerators`, `kernel_crypto_hw`, `ktls`, `fips`, `tpm_pqc`, `kernel_info`, `os_release`, `pkcs11_modules`, `packages`, `openssl_config`, `crypto_policy`, `sshd`, `nss`). Each value is `{"unavailable_in_container": true, "reason": "<detection> reads <host paths>; …"}`. Populated only when running inside a container without `--host-mount`; `{}` on bare metal or when `--host-mount` is in effect. Detections whose own field is an object also carry the same two keys inline (see [Nested fields](#nested-fields)); list/boolean fields (`accelerators`, `kernel_crypto_hw`, `ktls_supported`, `pkcs11_modules`) are annotated only here so their types stay stable. The aggregator surfaces a `host_fs_detections_unavailable_host_count` rollup. |
 | `packages` | Installed crypto-bearing packages. Populated only when `--scan-packages` is set. Keys: `available`, `package_manager`, `total_packages`, `bundled_crypto`. On RPM families also `source` — `rpmdb-sqlite` (EL9+, Fedora, CentOS Stream, Amazon Linux 2023, Oracle Linux 9+), `rpmdb-bdb` (Berkeley DB: EL8, openSUSE Leap 15 cloud images) or `rpmdb-ndb` (SLES 15, Leap 16, Tumbleweed), each read in-process without the `rpm` binary, or `rpm-cli` (only when the database cannot be read directly: unrecognised or corrupt file, or no `sqlite3` module) — and `db_root`, the host-relative database directory (`/var/lib/rpm`, `/usr/lib/sysimage/rpm` or `/usr/share/rpm`; `null` when rpm located it itself). The backend is identified by file magic. Under `--host-mount` the host database is read (the CLI fallback runs `rpm --root <mount> --dbpath <db_root>`), and the scan reports unavailable rather than inventorying the scanner image when no host database is mounted. |
@@ -101,7 +102,7 @@ nothing was found.
 One subsection per object-valued field. Conventions used throughout:
 
 - A detection that could not run returns `{"available": false, "reason": "<why>"}` in place of its normal keys (e.g. `openssl` when the binary is missing, `ssh_pqc` when `ssh` is absent).
-- Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`, `openssl.config`, `crypto_policy`, `sshd`, and the opt-in scans `signing_keys`, `crypto_libraries`, `service_crypto_linkage`, `process_crypto_linkage`, `boot_chain`, `kerberos`, `tunnels`, `dnssec`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
+- Object-valued detections that read host files (`fips`, `tpm_pqc`, `kernel_info`, `os_release`, `nss`, `packages`, `openssl.config`, `crypto_policy`, `sshd`, and the opt-in scans `signing_keys`, `crypto_libraries`, `service_crypto_linkage`, `service_tls_config`, `process_crypto_linkage`, `boot_chain`, `kerberos`, `tunnels`, `dnssec`) also carry `unavailable_in_container: true` and a `reason` inline when running in a container without `--host-mount`; see [`host_fs_detections_unavailable`](#host_fs_detections_unavailable).
 - In an offline `--root` scan, object-valued sections that need a live host carry `{"available": false, "not_applicable": true, "reason": "<why>"}`; see [`scan_mode`](#scan_mode). `not_applicable` never appears in live scans.
 - Rates are operations per second; sizes are bytes; memory is GiB unless stated.
 
@@ -494,6 +495,65 @@ Listener entries. `protocol`, `address`, `port` and `bind_scope` are the join ke
 | `static_binary` | bool \| null | The executable has no ELF interpreter (statically linked); `null` when it could not be read. |
 | `go` | object \| null | For Go binaries: `go_version` (e.g. `go1.24.4`, from the embedded build info; `null` for pre-1.18 binaries), `main_module`, `cgo_enabled`, `default_hybrid_kex` and `godebug_reverts`. `default_hybrid_kex` is the hybrid key exchange crypto/tls offers when the program leaves `CurvePreferences` unset: `X25519MLKEM768` from Go 1.24 (which also removed the Kyber draft), `X25519Kyber768Draft00` on Go 1.23, else `null`. `godebug_reverts` lists `tlsmlkem` / `tlskyber` / `tlssecpmlkem` set to `0` by the binary's `DefaultGODEBUG` or the process's `GODEBUG` environment variable, which turn those defaults off. Only `GODEBUG` is read from the environment; nothing else is kept. |
 
+### `service_tls_config`
+
+`{}` unless `--scan-service-configs` or `--scan-services` (#216). A server
+daemon's own TLS settings decide its key exchange before the system crypto
+policy does: a group list without ML-KEM keeps a service classical after
+the policy enables PQC, and one with ML-KEM turns it on under a policy that
+doesn't (measured on Rocky Linux 9.8 with nginx). Configuration files are
+read through their includes; nothing is executed. `{available: false,
+reason}` when none of the supported services has a configuration.
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `available` | bool | At least one supported service has configuration on the host. |
+| `services` | list[object] | One entry per service configuration found (several for PostgreSQL clusters or Redis/Valkey instances). |
+| `summary` | object | `services` and `services_with_tls` (names), `endpoints`, `pqc_configured`, `pqc_blocked` and `follow_library_default` (endpoint counts by `pqc_key_exchange`), `unreadable` (paths). |
+
+Each `services[]` entry:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `service` | string | `nginx`, `apache`, `haproxy`, `stunnel`, `squid`, `postfix`, `dovecot`, `postgresql`, `mysql` (MariaDB / MySQL), `redis` (Redis / Valkey), `openldap`, `389-ds` or `tomcat`. |
+| `version` | string \| null | Present for services whose built-in default depends on it: Postfix (package version), PostgreSQL (major version from `PG_VERSION`, the Debian cluster path or the package). |
+| `default_groups_from` | string \| null | stunnel only: the binary its compiled default group list was read from. |
+| `files` | list[string] | Configuration files read, includes expanded. |
+| `unreadable` | list[object] | `{path, reason}` for files or directories that exist but couldn't be read (PostgreSQL data directories and slapd.d are root / service-user only), or required includes that are missing. |
+| `endpoints` | list[object] | TLS endpoints; see below. |
+| `error` | string | Present only if the parser failed on this service. |
+
+Each `endpoints[]` entry is one TLS listener (a server block, virtual host,
+bind line, service section or port), or the whole daemon for services that
+configure TLS once (Dovecot, PostgreSQL, MariaDB, Redis, OpenLDAP):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `file`, `line` | string, int \| null | Where the endpoint is configured. |
+| `context` | string \| null | E.g. `http server`, `VirtualHost *:443`, `frontend web`, `[https]`, `smtpd submission`. |
+| `role` | string | `server`, or `client` for stunnel client sections. |
+| `ports` | list[int] | Ports this endpoint serves (standard ports for Dovecot's enabled protocols). |
+| `groups` | list[string] \| null | The effective key-exchange group list, `null` when the TLS library default applies. |
+| `groups_setting` | string \| null | The directive that set it (`ssl_ecdh_curve`, `SSLOpenSSLConfCmd Groups`, `curves`, `tls_eecdh_auto_curves`, `ssl_groups`, `TLSECName`, ...). |
+| `groups_source` | string | `config`; `service default` (a list compiled into the service: Postfix before 3.11 `X25519 X448 prime256v1 secp384r1 secp521r1`, PostgreSQL before 18 `prime256v1`, PostgreSQL 18+ `X25519:prime256v1`, stunnel's build default read from its binary); or `library default`. |
+| `pqc_groups` | object \| null | `{hybrid, pure_pqc}` ML-KEM groups in `groups`. |
+| `protocols`, `min_protocol`, `max_protocol` | list[string] \| null, string \| null | The configured protocol range. |
+| `tls13_allowed` | bool \| null | False when the range excludes TLS 1.3 (hybrid ML-KEM groups are TLS 1.3 only); null when nothing restricts it. |
+| `ciphers`, `ciphersuites` | string \| null | Cipher settings, recorded as configured. |
+| `certificates` | list[string] | Certificate paths (join keys into `crypto_material`); key files are never read. |
+| `service_supports_pqc_groups` | bool \| null | False for PostgreSQL before 18, which sets one elliptic curve and can never use ML-KEM. |
+| `follows_library_default` | bool | `pqc_key_exchange` is null. |
+| `pqc_key_exchange` | bool \| null | True when the endpoint's own configuration (or built-in default) offers hybrid ML-KEM; false when it keeps it out; null when it follows the TLS library default (crypto policy / `openssl.cnf`). |
+| `reason` | string | Why, in words. |
+| `note` | string | Optional (e.g. NSS-based or JSSE endpoints, PostgreSQL before 18). |
+
+Measured 2026-10-14 on five booted images (Rocky 9.8, CentOS Stream 10,
+Fedora 44, Ubuntu 26.04, Leap 16.0) by probing each configured daemon with
+a client offering `X25519MLKEM768`: every endpoint with `pqc_key_exchange`
+false negotiated a classical group, every true one ML-KEM, and every null
+one followed the host (ML-KEM except under Rocky 9.8's DEFAULT policy).
+The per-distribution results are in `tests/fixtures/service_tls/README.md`.
+
 ### `process_crypto_linkage`
 
 `{}` unless `--scan-processes`. The same `/proc` inspection as [`service_crypto_linkage`](#service_crypto_linkage), applied to **every** process rather than only socket owners, so TLS *clients* (package managers, agents, backup and monitoring daemons that only connect out) are covered: their PQC readiness is client-side readiness, and a process with no listening socket never appears in a service scan. Processes are grouped by executable, the crypto libraries they map (family, version, path, deleted) and, for Go binaries, the toolchain version and TLS default, so output size follows the number of distinct binaries rather than the number of processes. Groups that cannot do PQC sort first.
@@ -674,8 +734,9 @@ Each `services.items[]` entry adds to the verdict keys:
 | `port` | int | Listening port. |
 | `kind` | string | `ssh` for sshd, which takes the host's SSH verdict; otherwise `tls`, meaning the process maps a TLS library (or is a Go binary). The port itself may not speak TLS (for example mDNS on `udp/5353` in a process that links a TLS library). |
 | `crypto_families` | list[string] | Library families the process maps, plus `go`. |
-| `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, or a Go binary using its own default; only those count in `gaps` and `pqc-020`. |
+| `follows_host_default` | bool | The item reached the same state as the host's protocol verdict through the host default, so it adds nothing to it. Measured on Rocky Linux 9.8 and Fedora 44: `httpd` on port 80, `rpcbind` and `systemd-resolved` map a TLS library without speaking TLS on those ports. False for a service whose library differs from the system one, a Go binary using its own default, or a service whose own TLS configuration decides (`service_config`); only those count in `gaps` and `pqc-020`. |
 | `listeners` | list[string] | JSON paths of the `service_crypto_linkage.listeners[]` entries behind this item. |
+| `service_config` | string | Present when the service's own TLS configuration (`service_tls_config`, #216) has an endpoint on this port: its JSON path. When that endpoint's `pqc_key_exchange` is true or false it decides `configured` (and `follows_host_default` is false); PostgreSQL before 18 is also not `capable`. When it is null, the host default decides and the path is added to `evidence.configured`. |
 
 `clients` (#202): one verdict per `process_crypto_linkage.groups[]` entry
 with at least one process in the `client` role (outbound-only TLS clients a

@@ -109,6 +109,7 @@ touches different files:
 | `detect/hardware.py` | CPU, memory, ISA tiers, accelerators, TPM, kernel crypto, kTLS |
 | `detect/config.py` | FIPS mode and algorithm fence, OpenSSL capability and TLS groups |
 | `detect/config_openssl.py`, `config_policy.py`, `config_sshd.py` | effective OpenSSL configuration, system crypto policy, sshd effective configuration |
+| `detect/config_services.py`, `config_services_parsers.py` | per-service TLS configuration of server daemons (`--scan-service-configs`): discovery, versions and built-in defaults; one text parser per daemon |
 | `detect/osinfo.py` | OS identity, install hints, kernel info |
 | `detect/protocols.py` | OpenSSH, IPsec, NSS |
 | `detect/protocols_ike.py`, `protocols_kerberos.py`, `protocols_tunnels.py`, `protocols_dnssec.py`, `protocols_boot.py` | IKEv2 proposals, Kerberos, WireGuard / OpenVPN, DNSSEC, boot chain |

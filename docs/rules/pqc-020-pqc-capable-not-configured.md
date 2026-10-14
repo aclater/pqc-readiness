@@ -76,16 +76,22 @@ service.
   `ipsec_pqc.configured.proposals` afterwards.
 - **Services:** a service that sets its own TLS groups (web server,
   database, application config) needs the hybrid group added there; the
-  system default does not reach it.
+  system default does not reach it. With `--scan-services` the daemon's own
+  configuration is read (#216) and [pqc-021](pqc-021-service-config-blocks-pqc.md)
+  names the setting.
 
 Re-run the scan; the item moves to `deployed`.
 
 ## False positives and limitations
 
 - `configured` is the host default (crypto policy, OpenSSL default
-  groups, sshd's effective config). An application that sets its own TLS
-  groups may differ; supply endpoint observations to the aggregator
-  (`--observations`) to see what clients actually negotiate.
+  groups, sshd's effective config), except for services whose own TLS
+  configuration was read (`service_tls_config`, #216: nginx, Apache,
+  HAProxy, stunnel, Squid, Postfix, Dovecot, PostgreSQL, MariaDB/MySQL,
+  Redis/Valkey, OpenLDAP); their entries carry `service_config`. Other
+  applications that set their own TLS groups may differ; supply endpoint
+  observations to the aggregator (`--observations`) to see what clients
+  actually negotiate.
 - A service's `kind: tls` means the process maps a TLS library, not that
   the port speaks TLS (e.g. mDNS on `udp/5353` in a process that links
   one).

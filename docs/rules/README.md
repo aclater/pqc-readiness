@@ -30,6 +30,7 @@ host can carry several results for the same rule.
 | [pqc-017-bundled-crypto-without-pqc](pqc-017-bundled-crypto-without-pqc.md) | warning | A package bundling its own crypto (OpenJDK, Go) cannot do PQC |
 | [pqc-018-pqc-capability-undetermined](pqc-018-pqc-capability-undetermined.md) | note | PQC capability could not be determined; verify by hand |
 | [pqc-020-pqc-capable-not-configured](pqc-020-pqc-capable-not-configured.md) | warning | PQC-capable software (TLS, SSH, IPsec, a service or an outbound client) is configured to stay classical (note: only restates pqc-008 / pqc-010) |
+| [pqc-021-service-config-blocks-pqc](pqc-021-service-config-blocks-pqc.md) | warning | A service's own TLS configuration (group list, built-in default, TLS 1.3 disabled) keeps ML-KEM out although the TLS library can do it |
 | [pqc-030-classical-boot-chain](pqc-030-classical-boot-chain.md) | note | Boot chain signing keys (Secure Boot, module signing, IMA) are all classical; TPM has no PQC |
 | [pqc-031-kerberos-weak-enctypes](pqc-031-kerberos-weak-enctypes.md) | warning | Kerberos allows deprecated enctypes (note: only 128-bit enctypes, or classical PKINIT) |
 | [pqc-032-wireguard-peer-without-psk](pqc-032-wireguard-peer-without-psk.md) | warning | WireGuard peers have no pre-shared key |
