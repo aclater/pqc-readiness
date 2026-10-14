@@ -230,6 +230,17 @@ jobs:
           base=$(skopeo inspect --format '{{.Digest}}' "docker://$REPO_IMAGE:$VERSION")
           echo "BASE_REF=$REPO_IMAGE@$base" >> "$GITHUB_ENV"
 
+      - name: Download and verify the release zipapp
+        # Generates the SBOM below; same check as the image job (#230).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'pqc-readiness.pyz' --pattern 'pqc-readiness.pyz.sha256' --dir dist
+          (cd dist && sha256sum -c pqc-readiness.pyz.sha256)
+          python3 dist/pqc-readiness.pyz --version | grep -qx "pqc-readiness $VERSION (schema .*)"
+
       - name: Build on the published UBI 10 image (by digest)
         run: |
           podman build --format=docker \
@@ -267,6 +278,26 @@ jobs:
 
       - name: Sign
         run: cosign sign --yes "$SERVICES_IMAGE@$DIGEST"
+
+      - name: Generate the package SBOM with pqc-readiness
+        # Attestations bind to a digest, so the services image needs its own
+        # even though its package set matches the UBI 10 image it builds on
+        # (it adds only a capability-bearing interpreter copy) (#230).
+        run: |
+          mkdir rootfs
+          cid=$(podman create localhost/pqc-readiness:services)
+          podman export "$cid" | tar -x -C rootfs
+          podman rm "$cid" >/dev/null
+          python3 dist/pqc-readiness.pyz --root rootfs --sbom --output sbom.cdx.json
+          python3 -c "import json; d = json.load(open('sbom.cdx.json')); assert d['components'], 'empty SBOM'"
+
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
+        with:
+          subject-name: ${{ env.SERVICES_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
 
       - name: Attest build provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4.2.2
