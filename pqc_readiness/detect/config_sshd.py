@@ -414,8 +414,8 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
     result["host_keys_pqc"] = any(k.get("pqc") for k in result["host_keys"])
 
     client = ssh_client or {}
-    if client.get("available"):
-        cg = client.get("kex_groups") or {}
+    cg = client.get("kex_groups")
+    if client.get("available") and isinstance(cg, dict):
         result["openssh_supports_pqc_kex"] = bool(
             cg.get("hybrid") or cg.get("pure_pqc")
         )
@@ -429,6 +429,7 @@ def detect_sshd(ssh_client: dict[str, Any] | None = None) -> dict[str, Any]:
                 ),
             }
     else:
+        # No client probe, or a kex list that couldn't be read (#256).
         result["openssh_supports_pqc_kex"] = None
 
     note = _runtime._host_fs_note_for("sshd")
