@@ -7,11 +7,12 @@ from __future__ import annotations
 import argparse
 import functools
 import logging
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .detect import runtime as _runtime
 from . import registry as _registry
@@ -89,6 +90,78 @@ def host_path(p: str) -> Path:
     ):
         return Path(HOST_PREFIX + p)
     return Path(p)
+
+
+# Path probes that never raise (#229).  On Python 3.9-3.12, Path.is_dir(),
+# is_file(), exists() and is_symlink() swallow only ENOENT/ENOTDIR/EBADF/
+# ELOOP and raise on EACCES, so a single unreadable host directory (SELinux
+# or AppArmor denial in a confined container, a 0700 dir on bare metal)
+# would abort the whole scan.  Detectors probe host paths through these
+# instead, and an unreadable path reads as absent for that detection only.
+# tests/test_unreadable_paths.py enforces their use under pqc_readiness/detect.
+
+
+def _probe(p: str | os.PathLike[str], test: Callable[[Path], bool]) -> bool:
+    try:
+        return test(Path(p))
+    except (OSError, ValueError) as e:  # ValueError: embedded NUL in a path
+        log.debug("path probe failed for %s: %s", p, e)
+        return False
+
+
+def safe_is_dir(p: str | os.PathLike[str]) -> bool:
+    """Path(p).is_dir(), but False instead of raising (e.g. EACCES)."""
+    return _probe(p, Path.is_dir)
+
+
+def safe_is_file(p: str | os.PathLike[str]) -> bool:
+    """Path(p).is_file(), but False instead of raising (e.g. EACCES)."""
+    return _probe(p, Path.is_file)
+
+
+def safe_exists(p: str | os.PathLike[str]) -> bool:
+    """Path(p).exists(), but False instead of raising (e.g. EACCES)."""
+    return _probe(p, Path.exists)
+
+
+def safe_is_symlink(p: str | os.PathLike[str]) -> bool:
+    """Path(p).is_symlink(), but False instead of raising (e.g. EACCES)."""
+    return _probe(p, Path.is_symlink)
+
+
+def safe_iterdir(p: str | os.PathLike[str]) -> list[Path]:
+    """Path(p).iterdir() as a list, or [] when the directory can't be
+    listed (missing, not a directory, or unreadable)."""
+    try:
+        return list(Path(p).iterdir())
+    except OSError as e:
+        log.debug("cannot list %s: %s", p, e)
+        return []
+
+
+def safe_listdir(p: str | os.PathLike[str]) -> list[str]:
+    """os.listdir(p), or [] when the directory can't be listed."""
+    try:
+        return os.listdir(p)
+    except OSError as e:
+        log.debug("cannot list %s: %s", p, e)
+        return []
+
+
+def guarded_scan(
+    name: str, fn: Callable[..., dict[str, Any]], *a: Any, **kw: Any
+) -> dict[str, Any]:
+    """Run an opt-in scanner so that an OSError it didn't handle (an
+    unreadable host path: SELinux/AppArmor denial, a 0700 directory)
+    marks that section unavailable instead of aborting the scan (#229).
+    Other exceptions still propagate: they're bugs, not host state."""
+    try:
+        return fn(*a, **kw)
+    except OSError as e:
+        where = f": {e.filename}" if e.filename else ""
+        reason = f"unreadable{where}: {e.strerror or e}"
+        log.warning("%s: skipped, %s", name, reason)
+        return {"available": False, "reason": reason}
 
 
 def host_fs_unavailable_note(

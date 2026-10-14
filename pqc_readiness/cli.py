@@ -97,9 +97,9 @@ def _validate_output_path(
         return None
     path = Path(output)
     parent = path.parent
-    if not parent.is_dir():
+    if not _platform.safe_is_dir(parent):
         ap.error(f"--output: parent directory {str(parent)!r} does not exist")
-    if path.is_dir():
+    if _platform.safe_is_dir(path):
         ap.error(f"--output: {output!r} is a directory")
     if not os.access(parent, os.W_OK):
         ap.error(f"--output: parent directory {str(parent)!r} is not writable")
@@ -241,47 +241,65 @@ def collect_report(args: argparse.Namespace) -> _report.Report:
     cnsa_2_0 = _verdict.evaluate_cnsa_2_0(osinfo, proc_crypto_text)
     trust_store_info: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
-        trust_store_info = _certs.scan_trust_store(max_certs=args.trust_store_max_certs)
+        trust_store_info = _platform.guarded_scan(
+            "trust store", _certs.scan_trust_store, max_certs=args.trust_store_max_certs
+        )
     crypto_material_info: dict[str, Any] = {}
     if getattr(args, "scan_crypto_material", False):
-        crypto_material_info = _certs_discovery.scan_crypto_material(
+        crypto_material_info = _platform.guarded_scan(
+            "crypto material",
+            _certs_discovery.scan_crypto_material,
             paths=args.crypto_material_path,
             max_files=args.crypto_material_max_files,
         )
     packages_info: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
-        packages_info = _packages.scan_packages(os_release)
+        packages_info = _platform.guarded_scan(
+            "packages", _packages.scan_packages, os_release
+        )
     signing_keys_info: dict[str, Any] = {}
     if getattr(args, "scan_signing_keys", False):
-        signing_keys_info = _signing.scan_signing_keys(os_release)
+        signing_keys_info = _platform.guarded_scan(
+            "signing keys", _signing.scan_signing_keys, os_release
+        )
     crypto_libraries_info: dict[str, Any] = {}
     if getattr(args, "scan_crypto_libraries", False):
-        crypto_libraries_info = _libraries.scan_crypto_libraries(os_release)
+        crypto_libraries_info = _platform.guarded_scan(
+            "crypto libraries", _libraries.scan_crypto_libraries, os_release
+        )
     boot_chain_info: dict[str, Any] = {}
     if getattr(args, "scan_boot_chain", False):
-        boot_chain_info = _boot.scan_boot_chain()
+        boot_chain_info = _platform.guarded_scan("boot chain", _boot.scan_boot_chain)
     kerberos_info: dict[str, Any] = {}
     if getattr(args, "scan_kerberos", False):
-        kerberos_info = _kerberos.scan_kerberos()
+        kerberos_info = _platform.guarded_scan("kerberos", _kerberos.scan_kerberos)
     tunnels_info: dict[str, Any] = {}
     if getattr(args, "scan_tunnels", False):
-        tunnels_info = _tunnels.scan_tunnels()
+        tunnels_info = _platform.guarded_scan("tunnels", _tunnels.scan_tunnels)
     dnssec_info: dict[str, Any] = {}
     if getattr(args, "scan_dnssec", False):
-        dnssec_info = _dnssec.scan_dnssec()
+        dnssec_info = _platform.guarded_scan("dnssec", _dnssec.scan_dnssec)
     services_info: dict[str, Any] = {}
     if getattr(args, "scan_services", False):
-        services_info = _runtime_services.scan_services()
+        services_info = _platform.guarded_scan(
+            "services", _runtime_services.scan_services
+        )
     service_tls_info: dict[str, Any] = {}
     if getattr(args, "scan_service_configs", False) or getattr(
         args, "scan_services", False
     ):
-        service_tls_info = _config_services.scan_service_configs(
-            os_release, osinfo, services_info
+        service_tls_info = _platform.guarded_scan(
+            "service configs",
+            _config_services.scan_service_configs,
+            os_release,
+            osinfo,
+            services_info,
         )
     processes_info: dict[str, Any] = {}
     if getattr(args, "scan_processes", False):
-        processes_info = _runtime_processes.scan_processes()
+        processes_info = _platform.guarded_scan(
+            "processes", _runtime_processes.scan_processes
+        )
     dedicated = _hardware.has_dedicated_pqc_silicon(arch, flags, accels)
     hsm_present = any(a.get("kind") in ("hsm", "network_hsm") for a in accels)
     hsm_pqc_capable = any(
@@ -494,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.aggregate:
         d = Path(args.aggregate)
-        if not d.is_dir():
+        if not _platform.safe_is_dir(d):
             print(f"--aggregate: {d} is not a directory", file=sys.stderr)
             return 2
         try:

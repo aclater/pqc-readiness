@@ -345,12 +345,12 @@ def scan_ike_proposals() -> dict[str, Any]:
     proposals: list[dict[str, Any]] = []
     for f in _SWANCTL_FILES:
         p = _platform.host_path(f)
-        if p.is_file():
+        if _platform.safe_is_file(p):
             files.append(f)
             proposals.extend(parse_swanctl_conf(p))
     for f in _IPSEC_CONF_FILES:
         p = _platform.host_path(f)
-        if p.is_file():
+        if _platform.safe_is_file(p):
             files.append(f)
             proposals.extend(parse_ipsec_conf(p))
     ike = [p for p in proposals if p["kind"] == "ike"]

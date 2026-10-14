@@ -363,7 +363,7 @@ def _find_files(patterns: tuple[str, ...]) -> list[Path]:
     out: list[Path] = []
     for d in _LIB_DIRS:
         base = _host(d)
-        if not base.is_dir():
+        if not _platform.safe_is_dir(base):
             continue
         for pat in patterns:
             for hit in sorted(base.glob(pat)):
@@ -371,14 +371,14 @@ def _find_files(patterns: tuple[str, ...]) -> list[Path]:
                     real = hit.resolve()
                 except OSError:
                     continue
-                if not real.is_file() or str(real) in seen:
+                if not _platform.safe_is_file(real) or str(real) in seen:
                     continue
                 if _platform.HOST_PREFIX and not str(real).startswith(
                     _platform.HOST_PREFIX
                 ):
                     # An absolute symlink resolved into the scanner image.
                     real = Path(_platform.HOST_PREFIX + str(real))
-                    if not real.is_file() or str(real) in seen:
+                    if not _platform.safe_is_file(real) or str(real) in seen:
                         continue
                 seen.add(str(real))
                 out.append(real)
@@ -444,9 +444,9 @@ def _pacman_versions(names: tuple[str, ...]) -> list[dict[str, str]]:
     """Installed packages from pacman's local database directories."""
     base = _host("/var/lib/pacman/local")
     out: list[dict[str, str]] = []
-    if not base.is_dir():
+    if not _platform.safe_is_dir(base):
         return out
-    for d in base.iterdir():
+    for d in _platform.safe_iterdir(base):
         name, _, rest = d.name.rpartition("-")  # strip pkgrel
         name, _, ver = name.rpartition("-")
         if name in names:
@@ -533,7 +533,11 @@ def _probe_library(name: str, spec: dict[str, Any], family: str) -> dict[str, An
         # in the same directory and must not be credited to AWS-LC.
         for f in list(files):
             sibling = f.with_name(f.name.replace("libcrypto", "libssl", 1))
-            if sibling != f and sibling.is_file() and sibling not in files:
+            if (
+                sibling != f
+                and _platform.safe_is_file(sibling)
+                and sibling not in files
+            ):
                 files.append(sibling)
     else:
         files = _find_files(spec["files"])
@@ -608,9 +612,9 @@ def _probe_jdks() -> dict[str, Any]:
     seen: set[str] = set()
     for d in _JVM_DIRS:
         base = _host(d)
-        if not base.is_dir():
+        if not _platform.safe_is_dir(base):
             continue
-        for entry in sorted(base.iterdir()):
+        for entry in sorted(_platform.safe_iterdir(base)):
             rel = entry / "release"
             try:
                 real = str(entry.resolve())

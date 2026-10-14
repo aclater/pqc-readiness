@@ -350,40 +350,55 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
 
     trust_store: dict[str, Any] = {}
     if getattr(args, "scan_trust_store", False):
-        trust_store = _certs.scan_trust_store(max_certs=args.trust_store_max_certs)
+        trust_store = _platform.guarded_scan(
+            "trust store", _certs.scan_trust_store, max_certs=args.trust_store_max_certs
+        )
     crypto_material: dict[str, Any] = {}
     if getattr(args, "scan_crypto_material", False):
-        crypto_material = _certs_discovery.scan_crypto_material(
+        crypto_material = _platform.guarded_scan(
+            "crypto material",
+            _certs_discovery.scan_crypto_material,
             paths=args.crypto_material_path,
             max_files=args.crypto_material_max_files,
         )
     packages: dict[str, Any] = {}
     if getattr(args, "scan_packages", False):
-        packages = _packages.scan_packages(os_release)
+        packages = _platform.guarded_scan(
+            "packages", _packages.scan_packages, os_release
+        )
     signing_keys: dict[str, Any] = {}
     if getattr(args, "scan_signing_keys", False):
-        signing_keys = _signing.scan_signing_keys(os_release)
+        signing_keys = _platform.guarded_scan(
+            "signing keys", _signing.scan_signing_keys, os_release
+        )
     # Library probes read files and package databases only, so they work
     # on a tree; the flag was accepted but silently ignored before (#193).
     crypto_libraries: dict[str, Any] = {}
     if getattr(args, "scan_crypto_libraries", False):
-        crypto_libraries = _libraries.scan_crypto_libraries(os_release)
+        crypto_libraries = _platform.guarded_scan(
+            "crypto libraries", _libraries.scan_crypto_libraries, os_release
+        )
     # krb5.conf / kdc.conf / keytabs are files, so the tree answers (#109).
     kerberos: dict[str, Any] = {}
     if getattr(args, "scan_kerberos", False):
-        kerberos = _kerberos.scan_kerberos()
+        kerberos = _platform.guarded_scan("kerberos", _kerberos.scan_kerberos)
     # Tunnel and DNS configs are files; the live `wg show` is skipped (#113).
     tunnels: dict[str, Any] = {}
     if getattr(args, "scan_tunnels", False):
-        tunnels = _tunnels.scan_tunnels()
+        tunnels = _platform.guarded_scan("tunnels", _tunnels.scan_tunnels)
     dnssec: dict[str, Any] = {}
     if getattr(args, "scan_dnssec", False):
-        dnssec = _dnssec.scan_dnssec()
+        dnssec = _platform.guarded_scan("dnssec", _dnssec.scan_dnssec)
     # Service TLS settings are config files (#216).
     openssl = offline_openssl(os_release)
     service_tls_config: dict[str, Any] = {}
     if getattr(args, "scan_service_configs", False):
-        service_tls_config = _config_services.scan_service_configs(os_release, openssl)
+        service_tls_config = _platform.guarded_scan(
+            "service configs",
+            _config_services.scan_service_configs,
+            os_release,
+            openssl,
+        )
 
     return _report.Report(
         generated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -440,8 +455,8 @@ def apply_root(ap: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             f"--root scans a filesystem tree offline and cannot be combined with "
             f"{', '.join(bad)} (they need a live host)"
         )
-    if not Path(args.root).is_dir():
-        ap.error(f"--root: {args.root!r} is not a directory")
+    if not _platform.safe_is_dir(Path(args.root)):
+        ap.error(f"--root: {args.root!r} is not a directory (or is not readable)")
     _platform.set_offline_root(str(Path(args.root).resolve()))
 
 

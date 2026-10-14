@@ -454,7 +454,7 @@ def _trust_store_candidates(target_dirs: list[str]) -> list[Path]:
     out: list[Path] = []
     for d in target_dirs:
         p = Path(d)
-        if not p.is_dir():
+        if not _platform.safe_is_dir(p):
             continue
         for cert in sorted(list(p.rglob("*.pem")) + list(p.rglob("*.crt"))):
             try:
@@ -557,7 +557,9 @@ def scan_trust_store(
     return {
         "available": True,
         "scanned_dirs": [
-            d for d, ld in zip(target_dirs, local_dirs) if Path(ld).is_dir()
+            d
+            for d, ld in zip(target_dirs, local_dirs)
+            if _platform.safe_is_dir(Path(ld))
         ],
         "total_certs": total,
         "pqc_certs": pqc_certs,

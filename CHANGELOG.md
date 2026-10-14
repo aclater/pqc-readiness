@@ -29,6 +29,13 @@ changes it.
   workflow now attests a CycloneDX package SBOM for
   `pqc-readiness-services`, as it already did for the other images. The
   2.2.0 services image carries only the provenance attestation.
+- **An unreadable path no longer aborts the scan** (#229). On Python
+  3.9-3.12, a directory the scanner can't read (an SELinux or AppArmor
+  denial in a confined container, a 0700 directory on bare metal) raised
+  `PermissionError` and the run ended with a traceback. Now that path reads
+  as absent for the one detection that needed it, and an opt-in scan that
+  still hits an unreadable path reports `available: false` with the path
+  in `reason` while every other section completes.
 
 | Version | Date | JSON schema |
 | --- | --- | --- |
