@@ -217,7 +217,10 @@ def _render_text_ssh_ipsec_nss(r: _report.Report) -> list[str]:
             )
         else:
             offered = "no PQC key exchange offered"
-        L.append(f"   sshd kex:      {offered}  (via {sshd.get('source')})")
+        via = sshd.get("source")
+        if sshd.get("kex_default_source"):
+            via = f"{via}; compiled-in default read from the OpenSSH binary"
+        L.append(f"   sshd kex:      {offered}  (via {via})")
         keys = [k for k in sshd.get("host_keys") or [] if k.get("readable")]
         if keys:
             L.append(
