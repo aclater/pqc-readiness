@@ -24,10 +24,35 @@ extracts them for reading or `grep`.
 
 ## Containers and OpenShift
 
-This repository does not publish container images. Build one from the
-Containerfile for your fleet, push it to your own registry, and set the image
-reference in the quadlet or DaemonSet to it, pinned by digest. The manifests'
-default `ghcr.io/aclater/pqc-readiness:v2` reference is a placeholder.
+Each release publishes signed images to GitHub Container Registry, built from
+the Containerfiles below with the release's own `pqc-readiness.pyz`:
+
+| Image | Base |
+| --- | --- |
+| `ghcr.io/aclater/pqc-readiness:<version>` (also `<version>-ubi10`) | UBI 10, the default |
+| `ghcr.io/aclater/pqc-readiness:<version>-ubi8` | UBI 8, Python 3.9 |
+| `ghcr.io/aclater/pqc-readiness:<version>-debian` | Debian 12 |
+| `ghcr.io/aclater/pqc-readiness-services:<version>` | UBI 10 plus the `--scan-services` file capabilities ([overlay](openshift-services-overlay.md)) |
+
+`<version>` is the release version without the `v` (for example `2.2.0`). The
+quadlet and DaemonSet reference the current release by tag. Version tags are
+never moved and there is no floating tag. In production, pin by digest: each
+release's `container-images.txt` asset lists every image by digest.
+
+Every image is signed with cosign (keyless, from the release workflow) and
+carries two registry attestations: SLSA build provenance, and a CycloneDX
+package SBOM that this scanner generated from the image's own root filesystem.
+Verify before rollout:
+
+```bash
+cosign verify ghcr.io/aclater/pqc-readiness@sha256:<digest> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github.com/aclater/pqc-readiness/\.github/workflows/release-images\.yml@'
+gh attestation verify oci://ghcr.io/aclater/pqc-readiness@sha256:<digest> --repo aclater/pqc-readiness
+```
+
+To build your own image instead (for example on a different base), use the
+Containerfiles directly and push to your registry.
 
 The shipped quadlet and DaemonSet run the basic scan with `--bench`; the
 services overlay adds `--scan-services`. None of them runs the other

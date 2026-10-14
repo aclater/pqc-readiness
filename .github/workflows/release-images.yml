@@ -1,0 +1,313 @@
+# SPDX-License-Identifier: Apache-2.0
+# Release: build, test, publish and sign the container images (#212).
+#
+# Runs when a GitHub release is published (the release already carries
+# pqc-readiness.pyz and its .sha256), or by hand for an existing release
+# tag (workflow_dispatch).  Every image ships the release's own zipapp,
+# downloaded and checksum-verified, so the image and the release asset
+# are the same bytes.
+#
+# Images (VERSION is the tag without its leading "v", e.g. 2.2.0):
+#   ghcr.io/aclater/pqc-readiness:VERSION           UBI 10 (default)
+#   ghcr.io/aclater/pqc-readiness:VERSION-ubi10     same digest, explicit
+#   ghcr.io/aclater/pqc-readiness:VERSION-ubi8      UBI 8 / python3.9
+#   ghcr.io/aclater/pqc-readiness:VERSION-debian    Debian 12
+#   ghcr.io/aclater/pqc-readiness-services:VERSION  --scan-services overlay
+# Version tags are never moved: a tag that already exists is refused
+# unless the dispatch sets overwrite=true.  There is no floating tag.
+#
+# Each image is signed with cosign (keyless, GitHub OIDC) and gets two
+# attestations pushed to the registry: SLSA build provenance and a
+# CycloneDX package SBOM, produced by this project's own scanner from the
+# image's exported root filesystem (`--root rootfs --sbom`).  The release
+# gains a container-images.txt asset listing every reference by digest.
+#
+# Action versions verified against upstream releases at the time of
+# writing (per CLAUDE.md "Verify every version from a primary source"):
+#   actions/checkout@v6.0.2            (matches the repo's other workflows)
+#   sigstore/cosign-installer@v4.1.2   (gh api repos/sigstore/cosign-installer/releases/latest)
+#   cosign v3.1.3                      (gh api repos/sigstore/cosign/releases/latest)
+#   actions/attest@v4.2.2              (gh api repos/actions/attest/releases/latest)
+
+name: release-images
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish images for (e.g. v2.2.0)"
+        required: true
+      overwrite:
+        description: "Replace image tags that already exist for this version"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-images-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  OVERWRITE: ${{ inputs.overwrite || 'false' }}
+  REPO_IMAGE: ghcr.io/aclater/pqc-readiness
+  SERVICES_IMAGE: ghcr.io/aclater/pqc-readiness-services
+
+jobs:
+  image:
+    name: image (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - variant: ubi10
+            containerfile: Containerfile.ubi10
+            suffixes: " -ubi10"
+            python: python3
+            test-setup: |
+              RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 python3-pip git && microdnf clean all
+              RUN python3 -m pip install --no-cache-dir pytest jsonschema referencing
+          - variant: ubi8
+            containerfile: Containerfile.ubi8
+            suffixes: "-ubi8"
+            python: python3.9
+            test-setup: |
+              RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 python39-pip git && microdnf clean all
+              RUN python3.9 -m pip install --no-cache-dir pytest jsonschema referencing
+          - variant: debian
+            containerfile: Containerfile.debian
+            suffixes: "-debian"
+            python: python3
+            test-setup: |
+              RUN apt-get update && apt-get install -y --no-install-recommends python3-pytest python3-jsonschema git && apt-get clean && rm -rf /var/lib/apt/lists/*
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Resolve the version
+        run: |
+          case "$TAG" in v[0-9]*) ;; *) echo "tag must look like vX.Y.Z, got '$TAG'"; exit 1 ;; esac
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Download and verify the release zipapp
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern 'pqc-readiness.pyz' --pattern 'pqc-readiness.pyz.sha256' --dir dist
+          (cd dist && sha256sum -c pqc-readiness.pyz.sha256)
+          python3 dist/pqc-readiness.pyz --version | grep -qx "pqc-readiness $VERSION (schema .*)"
+
+      - name: Build the runtime image
+        run: |
+          podman build --format=docker \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+            -t "localhost/pqc-readiness:${{ matrix.variant }}" \
+            -f "${{ matrix.containerfile }}" .
+
+      - name: Smoke-test the image
+        run: |
+          podman run --rm "localhost/pqc-readiness:${{ matrix.variant }}" --version \
+            | grep -qx "pqc-readiness $VERSION (schema .*)"
+          test "$(podman image inspect --format '{{.Config.User}}' "localhost/pqc-readiness:${{ matrix.variant }}")" = 1001
+          test -n "$(podman image inspect --format '{{.Config.Healthcheck}}' "localhost/pqc-readiness:${{ matrix.variant }}")"
+
+      - name: Run the test suite inside the image
+        # Same pattern as ci-containers.yml / ci-ubi8.yml: a CI-only
+        # extension image adds pytest and the tests; it is never pushed.
+        run: |
+          cat <<CONTAINERFILE | podman build --format=docker -t "localhost/pqc-readiness:${{ matrix.variant }}-test" -f - .
+          FROM localhost/pqc-readiness:${{ matrix.variant }}
+          USER 0
+          WORKDIR /tmp/build
+          ${{ matrix.test-setup }}
+          COPY tests/                   /tmp/build/tests/
+          COPY pqc_readiness/           /tmp/build/pqc_readiness/
+          COPY pqc-readiness            /tmp/build/pqc-readiness
+          COPY dist/pqc-readiness.pyz   /tmp/build/dist/pqc-readiness.pyz
+          RUN chmod 0755 /tmp/build/pqc-readiness /tmp/build/dist/pqc-readiness.pyz
+          CONTAINERFILE
+          podman run --rm --user 0 --entrypoint /bin/sh \
+            "localhost/pqc-readiness:${{ matrix.variant }}-test" \
+            -c 'cd /tmp/build && PQC_READINESS_PYZ=dist/pqc-readiness.pyz ${{ matrix.python }} -m pytest tests/ -q'
+
+      - name: Log in to ghcr.io
+        run: |
+          mkdir -p "$HOME/.docker"
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          echo "${{ github.token }}" | podman login ghcr.io -u "${{ github.actor }}" \
+            --password-stdin --authfile "$HOME/.docker/config.json"
+
+      - name: Push
+        run: |
+          ref="$REPO_IMAGE:$VERSION"
+          tags=""
+          for s in ${{ matrix.suffixes }}; do tags="$tags $VERSION$s"; done
+          [ "${{ matrix.variant }}" = ubi10 ] && tags="$VERSION $tags"
+          for t in $tags; do
+            if skopeo inspect --raw "docker://$REPO_IMAGE:$t" >/dev/null 2>&1 && [ "$OVERWRITE" != true ]; then
+              echo "$REPO_IMAGE:$t already exists; refusing to move a version tag (dispatch with overwrite=true to replace)"; exit 1
+            fi
+          done
+          first=""
+          for t in $tags; do
+            podman push --digestfile digest "localhost/pqc-readiness:${{ matrix.variant }}" "docker://$REPO_IMAGE:$t"
+            d=$(cat digest); [ -z "$first" ] && first=$d
+            [ "$d" = "$first" ] || { echo "tag $t pushed a different digest ($d vs $first)"; exit 1; }
+          done
+          echo "DIGEST=$first" >> "$GITHUB_ENV"
+          echo "pushed $REPO_IMAGE@$first as:$tags" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign
+        run: cosign sign --yes "$REPO_IMAGE@$DIGEST"
+
+      - name: Generate the package SBOM with pqc-readiness
+        run: |
+          mkdir rootfs
+          cid=$(podman create "localhost/pqc-readiness:${{ matrix.variant }}")
+          podman export "$cid" | tar -x -C rootfs
+          podman rm "$cid" >/dev/null
+          python3 dist/pqc-readiness.pyz --root rootfs --sbom --output sbom.cdx.json
+          python3 -c "import json; d = json.load(open('sbom.cdx.json')); assert d['components'], 'empty SBOM'"
+
+      - name: Attest the SBOM
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ env.REPO_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          sbom-path: sbom.cdx.json
+          push-to-registry: true
+
+      - name: Attest build provenance
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ env.REPO_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+
+  services:
+    name: image (services)
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Log in to ghcr.io
+        run: |
+          mkdir -p "$HOME/.docker"
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          echo "${{ github.token }}" | podman login ghcr.io -u "${{ github.actor }}" \
+            --password-stdin --authfile "$HOME/.docker/config.json"
+
+      - name: Resolve the version and base digest
+        run: |
+          VERSION="${TAG#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          base=$(skopeo inspect --format '{{.Digest}}' "docker://$REPO_IMAGE:$VERSION")
+          echo "BASE_REF=$REPO_IMAGE@$base" >> "$GITHUB_ENV"
+
+      - name: Build on the published UBI 10 image (by digest)
+        run: |
+          podman build --format=docker \
+            --label org.opencontainers.image.version="$VERSION" \
+            --label org.opencontainers.image.revision="$(git rev-parse HEAD)" \
+            --build-arg BASE="$BASE_REF" \
+            -t localhost/pqc-readiness:services \
+            -f deploy/openshift/services/Containerfile .
+
+      - name: Verify file capabilities at runtime
+        # Same checks as ci-openshift-manifests.yml's services-image job.
+        run: |
+          podman run --rm --user 0 --cap-drop ALL \
+            --cap-add SETUID,SETGID,KILL,SYS_PTRACE,DAC_READ_SEARCH \
+            -v "$PWD/deploy/openshift/services:/t:ro" \
+            --entrypoint /usr/bin/python3 \
+            localhost/pqc-readiness:services /t/verify-file-caps.py
+          if podman run --rm --cap-drop ALL localhost/pqc-readiness:services --help; then
+            echo "expected EPERM without SYS_PTRACE/DAC_READ_SEARCH in the bounding set"; exit 1
+          fi
+          test "$(podman image inspect --format '{{.Config.User}}' localhost/pqc-readiness:services)" = 1001
+
+      - name: Push
+        run: |
+          if skopeo inspect --raw "docker://$SERVICES_IMAGE:$VERSION" >/dev/null 2>&1 && [ "$OVERWRITE" != true ]; then
+            echo "$SERVICES_IMAGE:$VERSION already exists; refusing to move a version tag"; exit 1
+          fi
+          podman push --digestfile digest localhost/pqc-readiness:services "docker://$SERVICES_IMAGE:$VERSION"
+          echo "DIGEST=$(cat digest)" >> "$GITHUB_ENV"
+          echo "pushed $SERVICES_IMAGE@$(cat digest) as: $VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        with:
+          cosign-release: v3.1.3
+
+      - name: Sign
+        run: cosign sign --yes "$SERVICES_IMAGE@$DIGEST"
+
+      - name: Attest build provenance
+        uses: actions/attest@v4.2.2
+        with:
+          subject-name: ${{ env.SERVICES_IMAGE }}
+          subject-digest: ${{ env.DIGEST }}
+          push-to-registry: true
+
+  digests:
+    name: record digests on the release
+    needs: services
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+    steps:
+      - name: Log in to ghcr.io
+        run: |
+          mkdir -p "$HOME/.docker"
+          echo "REGISTRY_AUTH_FILE=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          echo "${{ github.token }}" | podman login ghcr.io -u "${{ github.actor }}" \
+            --password-stdin --authfile "$HOME/.docker/config.json"
+
+      - name: Write container-images.txt
+        run: |
+          VERSION="${TAG#v}"
+          {
+            echo "# pqc-readiness $VERSION container images (pin by digest)"
+            for t in "$VERSION" "$VERSION-ubi8" "$VERSION-debian"; do
+              echo "$REPO_IMAGE:$t $REPO_IMAGE@$(skopeo inspect --format '{{.Digest}}' "docker://$REPO_IMAGE:$t")"
+            done
+            echo "$SERVICES_IMAGE:$VERSION $SERVICES_IMAGE@$(skopeo inspect --format '{{.Digest}}' "docker://$SERVICES_IMAGE:$VERSION")"
+            echo "#"
+            echo "# Verify a signature:"
+            echo "#   cosign verify <image>@<digest> \\"
+            echo "#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "#     --certificate-identity-regexp '^https://github.com/aclater/pqc-readiness/\\.github/workflows/release-images\\.yml@'"
+          } > container-images.txt
+          cat container-images.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" container-images.txt --clobber --repo "$GITHUB_REPOSITORY"

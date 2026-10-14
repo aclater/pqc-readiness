@@ -109,10 +109,11 @@ spec:
           type: RuntimeDefault
       containers:
         - name: probe
-          # Built from Containerfile.ubi10 (or Containerfile.ubi8 /
-          # Containerfile.debian).  Not published by this repo: build,
-          # push to your registry, and pin by digest in production.
-          image: ghcr.io/aclater/pqc-readiness:v2
+          # Published release image built from Containerfile.ubi10 (tags
+          # 2.2.0-ubi8 / 2.2.0-debian for the other bases), signed with
+          # cosign.  Pin by digest in production: the release's
+          # container-images.txt asset lists every digest.
+          image: ghcr.io/aclater/pqc-readiness:2.2.0
           imagePullPolicy: IfNotPresent
           # Re-runs the probe every PQC_PROBE_INTERVAL seconds; default
           # 1 hour.  Each iteration writes a timestamped JSON to the

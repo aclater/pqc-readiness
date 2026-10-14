@@ -196,8 +196,8 @@ sudo zypper -n in python311
 - **Single file:** copy `pqc-readiness.pyz` to each host, or run it from
   Ansible ([docs/ansible.md](docs/ansible.md),
   [playbooks](deploy/ansible/)).
-- **Containers and OpenShift:** Containerfiles for UBI 8, UBI 10 and Debian
-  images (build and push your own; none are published), a systemd
+- **Containers and OpenShift:** signed UBI 10, UBI 8 and Debian images
+  published with each release (`ghcr.io/aclater/pqc-readiness`), a systemd
   quadlet for a daily scan, and a least-privilege OpenShift DaemonSet (non-root,
   no added capabilities, read-only host mounts), with opt-in overlays for the
   service scan and for per-node summaries.

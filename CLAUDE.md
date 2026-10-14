@@ -41,7 +41,7 @@ OCSF NDJSON, Prometheus, Ansible facts.
 | `tests/`, `tests/fixtures/` | pytest suite; fixtures captured from real hosts, each directory's README records provenance |
 | `docs/` | Reference docs; `docs/rules/` has one page per SARIF rule |
 | `deploy/` | Quadlet, OpenShift DaemonSet and overlays, Ansible playbooks, integration samples |
-| `Containerfile.{ubi10,ubi8,debian}` | Container images (not published; see #212) |
+| `Containerfile.{ubi10,ubi8,debian}` | Container images; `.github/workflows/release-images.yml` publishes and signs them on each release |
 
 ## Checks to run before every PR
 

@@ -69,7 +69,21 @@ The SCC follows the pattern of OpenShift's own `restricted-v2`:
 `requiredDropCapabilities: [ALL]`, with named capabilities allowed to be
 added explicitly.
 
-## Build and deploy
+## Deploy
+
+Each release publishes `ghcr.io/aclater/pqc-readiness-services:<version>`,
+built on the release's UBI 10 image and signed with cosign
+([deployment.md](deployment.md#containers-and-openshift) shows how to verify
+it). `services.yaml` references the current release; pin it by digest from the
+release's `container-images.txt` in production.
+
+```bash
+oc apply -f deploy/openshift/services/services.yaml
+# least-privilege check: only the services ServiceAccount may use the SCC
+oc adm policy who-can use scc pqc-readiness-services-scc
+```
+
+To build the image yourself instead:
 
 ```bash
 python3 scripts/build_zipapp.py
@@ -77,10 +91,7 @@ podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
 podman build --format=docker -t pqc-readiness:ubi10-services \
   --build-arg BASE=localhost/pqc-readiness:ubi10 \
   -f deploy/openshift/services/Containerfile .
-# push to your registry, set the DaemonSet image (pin by digest), then:
-oc apply -f deploy/openshift/services/services.yaml
-# least-privilege check: only the services ServiceAccount may use the SCC
-oc adm policy who-can use scc pqc-readiness-services-scc
+# push to your registry and set the DaemonSet image to it (pin by digest)
 ```
 
 If the SCC does not admit the two capabilities, the pod fails to start

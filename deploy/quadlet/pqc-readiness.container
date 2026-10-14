@@ -13,23 +13,23 @@
 # /etc — host-mounted read-only — to give an accurate report, so it is
 # typically deployed as a system-mode quadlet.
 #
-# Pinning: set Image= to the image you built and pushed, by digest in
-# production for supply-chain reproducibility:
-#   Image=<your-registry>/pqc-readiness@sha256:<digest>
+# Pinning: in production pin Image= by digest for supply-chain
+# reproducibility.  Each release's container-images.txt asset lists the
+# digests; verify the cosign signature before rolling a new one out:
+#   Image=ghcr.io/aclater/pqc-readiness@sha256:<digest>
 
 [Unit]
 Description=PQC readiness probe (one-shot)
 Documentation=https://github.com/aclater/pqc-readiness
 
 [Container]
-# Default image is the Red Hat UBI 10 build (Containerfile.ubi10).  The
-# image is not published by this repo: build it (`make container-ubi10`),
-# push it to your registry and set Image= to that reference, pinned by
-# tag or digest.  For Debian/Ubuntu fleets build Containerfile.debian
-# instead — the runtime semantics are identical: same script, same
+# Default image is the published Red Hat UBI 10 release image
+# (Containerfile.ubi10).  For Debian/Ubuntu fleets use the
+# 2.2.0-debian tag (Containerfile.debian) instead, or 2.2.0-ubi8 for
+# EL8 — the runtime semantics are identical: same script, same
 # flags, same JSON schema, same UID 1001, same /var/lib/pqc-readiness
 # output volume layout.
-Image=ghcr.io/aclater/pqc-readiness:v2
+Image=ghcr.io/aclater/pqc-readiness:2.2.0
 ContainerName=pqc-readiness
 PodmanArgs=--pid=host
 

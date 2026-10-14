@@ -25,14 +25,14 @@
 # CAP_CHECKPOINT_RESTORE (proc_pid_map_files(5)); libraries deleted by an
 # upgrade stay counted as unreadable rather than widening the grant.
 #
-# Build (base image first; this repo publishes no image, so pass your own
-# base build as BASE):
+# Release images are built by .github/workflows/release-images.yml on the
+# published UBI 10 image (by digest).  To build locally, base image first:
 #   podman build --format=docker -t pqc-readiness:ubi10 -f Containerfile.ubi10 .
 #   podman build --format=docker -t pqc-readiness:ubi10-services \
 #     --build-arg BASE=localhost/pqc-readiness:ubi10 \
 #     -f deploy/openshift/services/Containerfile .
 
-ARG BASE=ghcr.io/aclater/pqc-readiness:v2
+ARG BASE=ghcr.io/aclater/pqc-readiness:2.2.0
 FROM ${BASE}
 
 LABEL org.opencontainers.image.title="pqc-readiness-services"
