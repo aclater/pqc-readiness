@@ -281,7 +281,11 @@ def _bind_key_files(directory: str) -> list[dict[str, Any]]:
             continue
         for f in files:
             m = _KEYFILE.match(f.name)
-            key = str(f.resolve())
+            try:
+                key = str(f.resolve())
+            except (OSError, RuntimeError) as e:  # RuntimeError: symlink loop, <3.13
+                log.debug("dnssec: cannot resolve %s: %s", f, e)
+                continue
             if not m or key in seen:
                 continue
             seen.add(key)

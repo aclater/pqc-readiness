@@ -510,7 +510,7 @@ def detect_accelerators() -> list[dict[str, Any]]:
                             {"kind": kind, "name": label, "detail": line.strip()}
                         )
     for path, label, kind in DEVICE_HINTS:
-        if _platform.host_path(path).exists():
+        if _platform.safe_exists(_platform.host_path(path)):
             out.append({"kind": kind, "name": label, "detail": path})
     # IBM z: enumerate Crypto Express adapters via lszcrypt.  Only CEX8 in
     # EP11 mode is flagged pqc_capable; CEX5/6/7 surface but do not count
@@ -545,7 +545,7 @@ def detect_pkcs11_modules(family: str = "unknown") -> list[str]:
     found: set[str] = set()
     for d in _pkcs11_search_paths(family):
         p = _platform.host_path(d)
-        if not p.is_dir():
+        if not _platform.safe_is_dir(p):
             continue
         for sub in p.rglob("*.so"):
             found.add(str(sub))
@@ -560,8 +560,8 @@ def detect_tpm_pqc() -> dict[str, Any]:
     )
     if not shutil.which("tpm2_getcap"):
         out: dict[str, Any] = {
-            "present": _platform.host_path("/dev/tpmrm0").exists()
-            or _platform.host_path("/dev/tpm0").exists(),
+            "present": _platform.safe_exists(_platform.host_path("/dev/tpmrm0"))
+            or _platform.safe_exists(_platform.host_path("/dev/tpm0")),
             "tools": False,
             "note": "tpm2-tools not installed; TPM 2.0 chips today do not implement NIST PQC",
         }
@@ -637,7 +637,7 @@ def detect_ktls() -> bool | None:
             return True
     except OSError as e:
         log.debug("detect_ktls: cannot read /proc/modules: %s", e)
-    if _platform.host_path("/sys/module/tls").exists():
+    if _platform.safe_exists(_platform.host_path("/sys/module/tls")):
         return True
     rc, out = _platform._run(["modinfo", "tls"], timeout=3)
     return rc == 0 and "filename" in out
@@ -819,7 +819,7 @@ def detect_network_hsms() -> list[dict[str, Any]]:
     seen_labels: set[str] = set()
     for path, label in NETWORK_HSM_HINTS:
         p = _platform.host_path(path)
-        if not p.exists():
+        if not _platform.safe_exists(p):
             continue
         if label in seen_labels:
             continue

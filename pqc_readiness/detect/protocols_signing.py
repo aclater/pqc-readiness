@@ -496,7 +496,7 @@ def _repo_key_files(os_release: dict[str, Any]) -> list[str]:
     found: list[str] = []
     for d in _REPO_DIRS:
         root = _host(d)
-        if not root.is_dir():
+        if not _platform.safe_is_dir(root):
             continue
         for repo in sorted(root.glob("*.repo")):
             try:
@@ -570,9 +570,9 @@ def _apt_signed_by() -> tuple[list[str], list[str]]:
     files: list[Path] = []
     for d in _APT_SOURCE_DIRS:
         p = _host(d)
-        if p.is_file():
+        if _platform.safe_is_file(p):
             files.append(p)
-        elif p.is_dir():
+        elif _platform.safe_is_dir(p):
             files.extend(sorted(p.glob("*.list")) + sorted(p.glob("*.sources")))
     for f in files:
         try:
@@ -622,11 +622,13 @@ def _strip_prefix(p: Path) -> str:
 def _apt_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Exception]]:
     trusted: list[Path] = []
     main = _host("/etc/apt/trusted.gpg")
-    if main.is_file():
+    if _platform.safe_is_file(main):
         trusted.append(main)
     d = _host("/etc/apt/trusted.gpg.d")
-    if d.is_dir():
-        trusted.extend(sorted(p for p in d.iterdir() if p.suffix in (".gpg", ".asc")))
+    if _platform.safe_is_dir(d):
+        trusted.extend(
+            sorted(p for p in _platform.safe_iterdir(d) if p.suffix in (".gpg", ".asc"))
+        )
     yield from _file_sources("apt-trusted", trusted)
     paths, inline = _apt_signed_by()
     yield from _file_sources("apt-signed-by", [_host(p) for p in paths])
@@ -639,7 +641,7 @@ def _apt_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Exception]
 
 def _pacman_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Exception]]:
     root = _host("/usr/share/pacman/keyrings")
-    if not root.is_dir():
+    if not _platform.safe_is_dir(root):
         return
     trusted: set[str] = set()
     for t in root.glob("*-trusted"):
@@ -659,7 +661,7 @@ def _pacman_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Excepti
 
 def _apk_sources() -> Iterator[tuple[str, str, list[dict[str, Any]] | Exception]]:
     root = _host("/etc/apk/keys")
-    if not root.is_dir():
+    if not _platform.safe_is_dir(root):
         return
     for f in sorted(root.glob("*.pub")):
         try:
@@ -695,7 +697,7 @@ def scan_signing_keys(os_release: dict[str, Any] | None = None) -> dict[str, Any
                 expanded.extend(
                     sorted(Path(f.anchor).glob(str(f.relative_to(f.anchor))))
                 )
-            elif f.is_file():
+            elif _platform.safe_is_file(f):
                 expanded.append(f)
             else:
                 # An enabled repo trusting a key file that is not there is

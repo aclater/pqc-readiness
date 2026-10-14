@@ -343,7 +343,7 @@ def locate_rpmdb() -> tuple[str, Path, str] | None:
         local_dir = Path(_platform.HOST_PREFIX + host_dir)
         for fname in _RPMDB_FILES:
             f = local_dir / fname
-            if not f.is_file():
+            if not _platform.safe_is_file(f):
                 continue
             backend = rpmdb_backend_by_magic(f)
             if backend is not None:
@@ -980,7 +980,7 @@ def read_opkg_db() -> tuple[list[dict[str, str]], str]:
             log.debug("packages: %s", e)
             continue
         local = Path(_platform.HOST_PREFIX + host_rel)
-        if local.is_file():
+        if _platform.safe_is_file(local):
             return parse_opkg_status(local.read_text(errors="replace")), host_rel
     raise FileNotFoundError(" or ".join(OPKG_STATUS_PATHS))
 
@@ -998,7 +998,7 @@ def read_prefixed_package_db(family: str) -> tuple[list[dict[str, str]], str]:
         raise OSError(str(e)) from e
     local = Path(_platform.HOST_PREFIX + host_rel)
     if family == "arch":
-        if not local.is_dir():
+        if not _platform.safe_is_dir(local):
             raise FileNotFoundError(str(local))
         pkgs = []
         for desc in sorted(local.glob("*/desc")):

@@ -174,10 +174,14 @@ def _detect_os_impl() -> dict[str, Any]:
         out["package_manager"] = _resolve_package_manager(out["family"])
         return out
     # Legacy fallbacks — only triggered when /etc/os-release is missing.
-    if _platform.host_path("/etc/redhat-release").exists():
-        rh = parse_redhat_release(
-            _platform.host_path("/etc/redhat-release").read_text()
-        )
+    rh_text: str | None = None
+    if _platform.safe_exists(_platform.host_path("/etc/redhat-release")):
+        try:
+            rh_text = _platform.host_path("/etc/redhat-release").read_text()
+        except OSError as e:
+            log.debug("detect_os: cannot read /etc/redhat-release: %s", e)
+    if rh_text is not None:
+        rh = parse_redhat_release(rh_text)
         return {
             "family": "rhel",
             "id": rh.get("distro", "").lower().split()[0] or "rhel",
@@ -186,7 +190,7 @@ def _detect_os_impl() -> dict[str, Any]:
             "pretty_name": rh.get("raw"),
             "package_manager": _resolve_package_manager("rhel"),
         }
-    if _platform.host_path("/etc/debian_version").exists():
+    if _platform.safe_exists(_platform.host_path("/etc/debian_version")):
         try:
             deb_ver: str | None = (
                 _platform.host_path("/etc/debian_version").read_text().strip()
@@ -202,7 +206,7 @@ def _detect_os_impl() -> dict[str, Any]:
             "pretty_name": f"Debian {deb_ver}" if deb_ver else "Debian",
             "package_manager": _resolve_package_manager("debian"),
         }
-    if _platform.host_path("/etc/SuSE-release").exists():
+    if _platform.safe_exists(_platform.host_path("/etc/SuSE-release")):
         return {
             "family": "suse",
             "id": "suse",
@@ -356,7 +360,7 @@ def detect_kernel_info(os_release: dict[str, Any] | None = None) -> dict[str, An
     # /etc/redhat-release is retained as a legacy hint — modern distros
     # are sourced via os_release above.
     rh = _platform.host_path("/etc/redhat-release")
-    if rh.exists():
+    if _platform.safe_exists(rh):
         try:
             info["redhat_release"] = parse_redhat_release(rh.read_text())
         except OSError as e:

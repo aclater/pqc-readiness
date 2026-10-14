@@ -123,7 +123,7 @@ touches different files:
 | `inventory_metadata.py` | operator-supplied `--inventory-metadata` |
 | `render/` | one module per output format (`text`, `json_report`, `cbom` + `cbom_profiles`, `sbom`, `spdx`, `sarif`, `ndjson`, `prom`) |
 | `report.py`, `algorithms.py` | the `Report` dataclass, schema version, algorithm tables |
-| `_platform.py` | `_run`, `host_path`, `HOST_PREFIX`: shared runtime primitives |
+| `_platform.py` | `_run`, `host_path`, `HOST_PREFIX`, the `safe_*` path probes, `guarded_scan`: shared runtime primitives |
 | `registry.py`, `cli.py` | flag / output-format registries, CLI entry point |
 
 Rules that keep PRs from colliding:
@@ -140,6 +140,12 @@ Rules that keep PRs from colliding:
 - **Patching in tests:** patch the module that defines the name
   (`monkeypatch.setattr(pr.detect.certs, "TRUST_STORE_DIRS", ...)`). The
   package root only re-exports; `tests/conftest.py` rejects patches on it.
+- **Probing host paths:** in `detect/`, use `_platform.safe_is_dir`,
+  `safe_is_file`, `safe_exists`, `safe_is_symlink`, `safe_iterdir` and
+  `safe_listdir`, or put the raw call inside a `try` that handles
+  `OSError` and reports why. On Python 3.9-3.12 the raw `Path` probes
+  raise on EACCES, and one unreadable directory would abort the scan
+  (#229). `tests/test_unreadable_paths.py` fails on any other use.
 - **Golden fixture:** after an intended JSON change run `make golden`;
   resolve fixture conflicts by re-running it, not by hand-merging.
 - **Schema version:** feature PRs add fields and their

@@ -120,9 +120,9 @@ def detect_runtime_environment() -> dict[str, Any]:
     every detection function that may need a `unavailable_in_container`
     note appended to its result.  Detection is heuristic; combined with
     --host-mount /host the report still produces accurate host data."""
-    if _platform.host_path("/.dockerenv").exists():
+    if _platform.safe_exists(_platform.host_path("/.dockerenv")):
         return {"environment": "container", "evidence": "/.dockerenv present"}
-    if _platform.host_path("/run/.containerenv").exists():
+    if _platform.safe_exists(_platform.host_path("/run/.containerenv")):
         return {"environment": "container", "evidence": "/run/.containerenv present"}
     try:
         cg = Path("/proc/1/cgroup").read_text()

@@ -149,7 +149,7 @@ def _walk(
     truncated = False
     for root in roots:
         local = _host_root(root)
-        if not local.is_dir():
+        if not _platform.safe_is_dir(local):
             continue
         scanned.append(root)
         for dirpath, dirnames, filenames in os.walk(local, followlinks=False):

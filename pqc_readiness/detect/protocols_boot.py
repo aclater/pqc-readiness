@@ -209,14 +209,14 @@ def _cert_summary(cert: dict[str, Any]) -> dict[str, Any]:
 
 def detect_secure_boot() -> dict[str, Any]:
     """Secure Boot state and the algorithms of every signature database."""
-    if not _platform.host_path("/sys/firmware/efi").is_dir():
+    if not _platform.safe_is_dir(_platform.host_path("/sys/firmware/efi")):
         return {
             "available": False,
             "firmware": "bios",
             "reason": "no /sys/firmware/efi: legacy BIOS boot (no UEFI Secure Boot)",
         }
     efivars = _platform.host_path(EFIVARS_DIR)
-    if not efivars.is_dir():
+    if not _platform.safe_is_dir(efivars):
         return {
             "available": False,
             "firmware": "uefi",
@@ -459,7 +459,7 @@ def _module_candidates(release: str) -> list[Path]:
     in sorted order instead."""
     for base in _kernel_dirs(release):
         root = _platform.host_path(base)
-        if not root.is_dir():
+        if not _platform.safe_is_dir(root):
             continue
         out: list[Path] = []
         try:
@@ -586,9 +586,9 @@ def detect_ima_evm() -> dict[str, Any]:
     certificates: list[dict[str, Any]] = []
     for d in IMA_CERT_DIRS:
         base = _platform.host_path(d)
-        if not base.is_dir():
+        if not _platform.safe_is_dir(base):
             continue
-        for f in sorted(base.iterdir()):
+        for f in sorted(_platform.safe_iterdir(base)):
             try:
                 if f.stat().st_size > 1024 * 1024:
                     continue
@@ -602,7 +602,7 @@ def detect_ima_evm() -> dict[str, Any]:
             except OSError as e:
                 log.debug("boot_chain: cannot read %s: %s", f, e)
     return {
-        "ima_securityfs": ima_dir.is_dir(),
+        "ima_securityfs": _platform.safe_is_dir(ima_dir),
         "cmdline": cmdline,
         "policy": policy,
         "evm_mode": evm_mode,
@@ -707,7 +707,10 @@ def _ascii_u32(value: int) -> str:
 def detect_tpm_capabilities() -> dict[str, Any]:
     """Spec revision and v1.85 PQC algorithm support of the host TPM."""
     tpm_class = _platform.host_path("/sys/class/tpm/tpm0")
-    out: dict[str, Any] = {"present": tpm_class.exists(), "spec_note": TPM_SPEC_NOTE}
+    out: dict[str, Any] = {
+        "present": _platform.safe_exists(tpm_class),
+        "spec_note": TPM_SPEC_NOTE,
+    }
     try:
         out["version_major"] = int((tpm_class / "tpm_version_major").read_text())
     except (OSError, ValueError):
