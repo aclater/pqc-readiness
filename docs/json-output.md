@@ -1,7 +1,7 @@
 # JSON output reference
 
 `pqc-readiness --json` emits a stable, schema-versioned document.
-The current `schema_version` is `"1.6"`. It follows the bump rules in
+The current `schema_version` is `"1.7"`. It follows the bump rules in
 [docs/schema-alignment.md](schema-alignment.md#versioning-recommendation):
 a rename, removal, or re-type is a major bump; an additive change
 (including normalising an "absent" value to `null`) is a minor bump.
@@ -17,6 +17,7 @@ does not match, so mixed-version fleets show up under `skipped`.
 | `1.4` | `packages.source` (`rpmdb-sqlite` \| `rpm-cli`) and `packages.db_root` on RPM hosts; the rpm database is read in-process and, under `--host-mount`, from the **host** (earlier releases inventoried the scanner image). `nss.tool` may be `rpmdb (sqlite)` or `rpm -qa`. `host_fs_detections_unavailable` gained `packages` and `nss` keys (#125). |
 | `1.5` | Additive only. New top-level objects: `crypto_policy` (system crypto policy and whether it lets PQC through, #104), `crypto_material` (`--scan-crypto-material` filesystem certificate / key / keystore discovery, #108), `service_crypto_linkage` (`--scan-services` listening service → crypto library, #111), `signing_keys` (`--scan-signing-keys` package-manager signing trust anchors, #153) and `inventory_metadata` (`--inventory-metadata FILE`, #144). New nested fields: `openssl.config` (effective OpenSSL configuration and providers, #106), `openssl.tls_group_references` and `ssh_pqc.kex_references` (RFC codepoints and status, #139), `cnsa_2_0.tls_key_exchange` (#139), `trust_store.certificates` (per-certificate CycloneDX 1.7 fields, #108), and `ipsec_pqc.configured` / `ipsec_pqc.note` (configured IKEv2 proposals classified for ML-KEM and RFC 9370, #154). `packages.source` also takes `rpmdb-bdb` / `rpmdb-ndb` (#134). The `--recommend` document gained `policy_sources` and per-record `timeline` (#141). |
 | `1.6` | Additive only. New top-level objects: `sshd` (effective sshd key exchange and host keys, #105), `crypto_libraries` (`--scan-crypto-libraries`: GnuTLS, libgcrypt, libssh, wolfSSL, AWS-LC, JDK and Go PQC capability, #110), `process_crypto_linkage` (`--scan-processes`: every process, including outbound-only TLS clients, attributed to its crypto library, #155), `scan_mode` (live host vs offline `--root PATH` tree, #152), `boot_chain` (`--scan-boot-chain`: Secure Boot, module signing, IMA/EVM, TPM 2.0 v1.85 PQC, #112), `kerberos` (`--scan-kerberos`: enctypes, keytabs, PKINIT, #109), `tunnels` and `dnssec` (WireGuard pre-shared keys, OpenVPN key exchange, DNSSEC algorithms, #113), and `pqc_deployment_gap` (capable / configured / observed verdict per protocol, listening service and outbound client group, #107, #202). `crypto_policy` gained `framework` (`crypto-policies` or Ubuntu's `crypto-config`, with that framework's keys, #170). Nothing was renamed, removed or re-typed. |
+| `1.7` | Additive only. New top-level object: `service_tls_config` (`--scan-service-configs`, implied by `--scan-services`: each server daemon's own TLS groups, protocol range and ciphers, #216). New nested fields: `openssl.version_source` and `openssl.cli_probe` (the host's OpenSSL version from its package or libcrypto when the `openssl` CLI is the scanner's own or missing; the CLI-only lists are then `null`, #228, #225); `crypto_libraries.libraries.mbedtls` and versions of package-less libraries read from their embedded strings (#217); `release`, `epoch` and `arch` on `packages.bundled_crypto` and `crypto_libraries.libraries.<lib>.packages` entries (#222); `unreadable` and `missing` lists with a `reason` on sshd, crypto-policies, `openssl.cnf` and service-config results, telling unreadable files from absent ones (#232); `service_crypto_linkage.listeners[].crypto_libraries_from` (master/worker daemons, #240) and `.container` (runtime, container ID, pod UID, pod, namespace and container names, #233); `sshd.openssh_kex_evidence` and `sshd.kex_default_source` (offline sshd capability from the tree's OpenSSH binaries, #247). Package databases are probed on families without a package tool (OpenWrt opkg/apk, Yocto, Buildroot, #217), and `os` recognises OpenWrt. Values that changed meaning: under `--host-mount`, OpenSSL facts describe the host, not the scanner image (#228). Nothing was renamed, removed or re-typed. |
 
 This document is the field-by-field reference for the schema. For the
 narrative description of when to use `--json` vs. the other output
@@ -34,7 +35,7 @@ nothing was found.
 
 | Top-level key | Description |
 | --- | --- |
-| `schema_version` | Schema version string, currently `"1.6"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
+| `schema_version` | Schema version string, currently `"1.7"`. Major bump on rename/remove/re-type, minor bump on additive changes. |
 | `generated_at` | ISO 8601 UTC timestamp of the probe run. |
 | `hostname` | Host's reported hostname. `--host-name NAME` sets it for any scan mode; otherwise `PQC_HOSTNAME` in the environment overrides it (the OpenShift DaemonSets set it to `spec.nodeName`); under `--host-mount` the host's `/etc/hostname` is used, because the container's own hostname is the pod name. |
 | `os` | Human-readable OS name: `os_release.pretty_name`, or `<system> <kernel release>` (e.g. `Linux 6.12.0`) when `/etc/os-release` gave none. |
@@ -1305,4 +1306,4 @@ CycloneDX 1.6's `cryptoProperties` schema. The mapping concludes that
 asset-level schema — the asset-level projection is already provided by
 `--cbom`. No `--json` field renames are recommended at this time, so
 no major (`2.0`) bump is planned; the current `SCHEMA_VERSION` is
-`"1.6"` from additive changes only.
+`"1.7"` from additive changes only.

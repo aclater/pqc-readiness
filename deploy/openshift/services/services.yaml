@@ -132,7 +132,7 @@ spec:
           # deploy/openshift/services/Containerfile on top of the UBI 10
           # release image, signed with cosign.  Pin by digest in
           # production: the release's container-images.txt lists it.
-          image: ghcr.io/aclater/pqc-readiness-services:2.2.0
+          image: ghcr.io/aclater/pqc-readiness-services:2.3.0
           imagePullPolicy: IfNotPresent
           # Same loop as the base DaemonSet plus --scan-services.  The
           # capability-bearing interpreter is invoked explicitly, in
