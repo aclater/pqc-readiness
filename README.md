@@ -218,7 +218,8 @@ apk update && apk add python3         # OpenWrt 25.12 and later
   Kubernetes, RKE2, K3s and Rancher-managed clusters, with opt-in overlays for
   the service scan and for per-node summaries.
 - **Offline images:** `--root PATH` scans a container rootfs or mounted disk
-  image without running anything from it.
+  image without running anything from it, and reports only what the image
+  holds, never the scanning machine.
 - **Fleet rollup:** `--aggregate DIR` combines saved JSON reports, and
   `--observations FILE` joins what network-side tools saw endpoints negotiate.
 
