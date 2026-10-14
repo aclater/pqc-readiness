@@ -7,6 +7,7 @@ against the publisher's `sha256sums` file before extraction.
 | --- | --- | --- |
 | `openwrt-24.10.8/usr/lib/opkg/status`, `openwrt-24.10.8/usr/lib/os-release` | `openwrt-24.10.8-x86-64-rootfs.tar.gz`, <https://downloads.openwrt.org/releases/24.10.8/targets/x86/64/> | `openwrt-24.10.8.opkg-list-installed.txt`: the image's own `opkg list-installed`, run inside a container imported from the same tarball (`podman import`, network off) |
 | `openwrt-25.12.5/lib/apk/db/installed`, `openwrt-25.12.5/usr/lib/os-release` | `openwrt-25.12.5-x86-64-rootfs.tar.gz`, <https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/> (OpenWrt moved from opkg to apk in 25.12) | `openwrt-25.12.5.apk-info-v.txt`: the image's own `apk info -v`, same method (apk's cache warnings removed) |
+| `openwrt-24.10.8/etc/openwrt_release` (#258) | `openwrt-24.10.8-x86-64-rootfs.tar.gz` (as above) | the image's own file, copied verbatim; read when a tree has no `os-release` |
 | `yocto-6.0.3-core-image-full-cmdline/etc/buildinfo`, `…/var/lib/rpm/rpmdb.sqlite.gz` (#227) | `core-image-full-cmdline-qemux86-64.rootfs-20260819091134.tar.zst`, <https://downloads.yoctoproject.org/releases/yocto/yocto-6.0.3/machines/qemu/qemux86-64/> | the image's `.manifest` (names and versions) and each header's own SOURCERPM tag |
 
 Files are copied verbatim, except the Yocto rpm database: a copy of the

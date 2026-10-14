@@ -935,9 +935,11 @@ Each algorithm record (in `policies`, `key_files`, `policy_algorithms`, `default
 | `id` | string | `ID` from `/etc/os-release` (`unknown` when absent). |
 | `version_id` | string | `VERSION_ID`. |
 | `version_codename` | string \| null | `VERSION_CODENAME`; `null` when unset. |
-| `pretty_name` | string | `PRETTY_NAME`. |
-| `family` | string | Derived distro family (from `ID`, then `ID_LIKE`): `rhel`, `debian`, `suse`, `arch`, `alpine`, `openwrt`, `macos` or `unknown`. Yocto and Buildroot images usually resolve to `unknown` (Yocto images often ship no `os-release`); their package database, if any, is found by probing. |
-| `package_manager` | string \| null | Package tool for the family (`rpm`, `dpkg-query`, `pacman`, `apk`, or `apk` / `opkg` on OpenWrt), the first one on `PATH`. |
+| `pretty_name` | string \| null | `PRETTY_NAME`.  Under `--root`, `null` when the tree has no release file at all (see `reason`); it is never filled from the scanning machine's kernel. |
+| `family` | string | Derived distro family (from `ID`, then `ID_LIKE`): `rhel`, `debian`, `suse`, `arch`, `alpine`, `openwrt`, `macos` or `unknown`. Yocto and Buildroot images usually resolve to `unknown`; their package database, if any, is found by probing. |
+| `package_manager` | string \| null | The family's package-manager command (`dnf` / `microdnf` / `yum`, `apt-get` / `apt`, `zypper`, `pacman`, `apk`, `opkg`): the first one on `PATH`, or under `--root` the first one the tree itself ships in `/usr/bin`, `/bin`, `/usr/sbin` or `/sbin`. |
+| `source` | string | Present only when the identity came from a distro release file other than `os-release`: `/etc/openwrt_release` (OpenWrt) or `/etc/buildinfo` (Yocto `image-buildinfo`: `id` is `DISTRO`, e.g. `poky`, and `version_id` is `DISTRO_VERSION`). |
+| `reason` | string | Present only under `--root` when the tree has no `os-release`, `openwrt_release`, `buildinfo` or legacy release file, so its OS is not identified. |
 
 ### `pqc_sizes`
 
