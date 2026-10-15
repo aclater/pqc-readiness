@@ -118,15 +118,23 @@ every change to a probe is also run on booted cloud images before it merges.
 - **Published results.** A full scan of the current release across the matrix
   is kept as [example output](examples/os-matrix-2026-10.md).
 
-A typical before/after run on three distributions:
+A typical before/after run:
 
 ```bash
 cd ~/git/distro-matrix
 scripts/run-matrix.sh --scanner new.pyz --scanner-args '--json --scan-services' \
   --compare-scanner old.pyz --schema schemas/pqc-readiness-report.schema.json \
-  --ground-truth ground-truth/pqc-readiness.tsv --only rocky9,ubuntu2604,debian12 \
-  --parallel auto
+  --ground-truth ground-truth/pqc-readiness.tsv --prepare prepare/pqc-readiness.tsv \
+  --only rocky8,rocky9,ubuntu2604,debian12,leap156 --parallel auto
 ```
+
+`--prepare prepare/pqc-readiness.tsv` installs Python 3.11 on EL8 and
+openSUSE Leap 15.6 first, the same step the README tells users to take,
+since their Python 3.6 can't run the scanner. It adds 3-5 minutes on those
+guests and does nothing on the others. Drop `--only` to run every cached
+image; distro-matrix's
+[verification of 2026-10-15](https://github.com/aclater/distro-matrix/blob/main/docs/verification/2026-10-15.md)
+ran all 18 in under 5 minutes.
 
 The FIPS-mode check (booted hosts with `fips=1`, RHEL against a rebuild) is
 `scripts/fips-divergence.sh` in the same repository.
