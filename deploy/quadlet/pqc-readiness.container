@@ -29,7 +29,7 @@ Documentation=https://github.com/aclater/pqc-readiness
 # EL8 — the runtime semantics are identical: same script, same
 # flags, same JSON schema, same UID 1001, same /var/lib/pqc-readiness
 # output volume layout.
-Image=ghcr.io/aclater/pqc-readiness:2.3.0
+Image=ghcr.io/aclater/pqc-readiness:2.4.0
 ContainerName=pqc-readiness
 PodmanArgs=--pid=host
 

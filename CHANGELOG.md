@@ -20,6 +20,24 @@ changes it.
 
 ## Unreleased
 
+## 2.4.0 - 2026-10-15: IPsec facts from the host, schema 1.8
+
+Version **2.4.0**. `ipsec_pqc` gained nested fields, so the schema goes to
+**1.8** (additive only). The fleet aggregator only merges reports with the
+same `schema_version`, so re-scan before mixing old and new reports.
+
+### Upgrade notes
+
+- **Container and offline scans now see the host's IPsec stack** (#265).
+  Under `--host-mount` (every DaemonSet and quadlet deployment) and
+  `--root`, `ipsec_pqc` reported no strongSwan or Libreswan even on hosts
+  running one, because the scanner images ship neither tool. Expect
+  `ipsec_pqc.available` to turn true on those hosts, with the host's
+  version and ML-KEM capability, and the deployment-gap IPsec row to change
+  from "not present" accordingly.
+
+### Fixes
+
 - **Under `--host-mount` and `--root`, IPsec facts describe the host**
   (#265). `ipsec_pqc` used to run the scanner image's `swanctl` / `ipsec`,
   which images don't ship, so a node running strongSwan or Libreswan was
@@ -39,6 +57,13 @@ changes it.
   so distinct host certificates could merge and one certificate reached by
   an absolute and a relative link was counted twice. It now uses the path
   resolved inside the host mount, as `--root` already did.
+
+### Documentation
+
+- `docs/testing.md` and `CLAUDE.md` name the distro-matrix runner as the
+  booted-VM validation harness, with a before/after example that prepares
+  Python on EL8 and Leap 15 guests (#271, #274), and documentation now ships
+  with every change, not only features.
 
 ## 2.3.0 - 2026-10-14: host-accurate results, embedded systems and joinable outputs, schema 1.7
 

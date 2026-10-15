@@ -57,22 +57,16 @@ ships a hybrid ML-DSA-87+Ed448 key.
 
 ## Latest release
 
-**v2.3.0** (2026-10-14, JSON schema 1.7) added:
+**v2.4.0** (2026-10-15, JSON schema 1.8):
 
-- **per-service TLS configuration**: each daemon's own TLS settings decide
-  its verdict, and rule `pqc-021` flags endpoints pinned to classical groups;
-- **embedded and minimal systems**: OpenWrt, Yocto and Buildroot
-  inventories, SBOMs and library versions, even without a package database;
-- **host-accurate container scans**: OpenSSL and OpenSSH facts from the
-  node, not the scanner image, and findings named by pod and namespace;
-- **offline sshd analysis** from the image's config and binaries;
-- **Kubernetes, RKE2, K3s and Rancher** manifests, validated on a live
-  cluster, and CBOMs and SBOMs that share canonical package identifiers.
+- **IPsec facts from the host**: container (`--host-mount`) and offline
+  (`--root`) scans read the host's strongSwan or Libreswan package and
+  binaries, so nodes running IPsec are no longer reported as having none,
+  and ML-KEM capability follows the host's version, plugins and OpenSSL;
+- **trust-store certificates counted once each** in container scans.
 
-**Upgrading:** package identifiers now encode `+` as `%2B`, container scans
-can read CNSA 2.0 `partial` where they said `compliant`, and schema 1.7
-reports don't merge with 1.6 ones, so re-scan. Full release notes:
-[CHANGELOG.md](CHANGELOG.md).
+**Upgrading:** schema 1.8 reports don't merge with 1.7 ones, so re-scan.
+Full release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 
