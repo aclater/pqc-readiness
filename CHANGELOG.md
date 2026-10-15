@@ -33,6 +33,12 @@ changes it.
   New nested fields: `ipsec_pqc.version_source`, `package`, `binaries`,
   `plugins` and `cli_probe`; live strongSwan scans now report `version`
   from `swanctl --version`.
+- **Trust-store certificates are counted once each under `--host-mount`**
+  (#270). Duplicate detection followed absolute links (Debian's
+  `/etc/ssl/certs/*.pem`) through the scanner container's own filesystem,
+  so distinct host certificates could merge and one certificate reached by
+  an absolute and a relative link was counted twice. It now uses the path
+  resolved inside the host mount, as `--root` already did.
 
 ## 2.3.0 - 2026-10-14: host-accurate results, embedded systems and joinable outputs, schema 1.7
 
