@@ -25,6 +25,7 @@ import pytest
 import shutil
 
 import pqc_readiness as pr
+from pqc_readiness.detect import certs
 
 FIXTURES = Path(__file__).parent / "fixtures" / "trust_store"
 
@@ -544,3 +545,62 @@ def test_fixture_hashes_are_stable() -> None:
         for d in pr.detect.certs._certs_in_file(FIXTURES / "mixed-bundle.pem")
     }
     assert standalone == bundle
+
+
+# ---------------------------------------------------------------------------
+# #270: under --host-mount the de-duplication key is the in-tree path, not
+# cert.resolve(), which follows absolute links through the scanner
+# container's own filesystem.
+# ---------------------------------------------------------------------------
+
+
+def _host_mount(monkeypatch: pytest.MonkeyPatch, prefix: Path) -> None:
+    monkeypatch.setattr(certs._platform, "HOST_PREFIX", str(prefix))
+    monkeypatch.setattr(certs._platform, "OFFLINE_ROOT", "")
+
+
+def test_host_mount_distinct_certs_behind_absolute_links_dont_collide(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two host certificates reached through absolute links (Debian's
+    /etc/ssl/certs/*.pem layout).  In the scanner's own filesystem both
+    link targets happen to point at one file; cert.resolve() collapsed the
+    two host certificates into one."""
+    scanner = tmp_path / "scannerfs"
+    scanner.mkdir()
+    (scanner / "same.crt").write_text("scanner's file")
+    t1, t2 = scanner / "t1.crt", scanner / "t2.crt"
+    t1.symlink_to(scanner / "same.crt")
+    t2.symlink_to(scanner / "same.crt")
+    prefix = tmp_path / "host"
+    certs_dir = prefix / "etc/ssl/certs"
+    certs_dir.mkdir(parents=True)
+    for target in (t1, t2):
+        inside = prefix / str(target).lstrip("/")
+        inside.parent.mkdir(parents=True, exist_ok=True)
+        inside.write_text(f"host cert {target.name}")
+    (certs_dir / "a.pem").symlink_to(t1)
+    (certs_dir / "b.pem").symlink_to(t2)
+    _host_mount(monkeypatch, prefix)
+    found = certs._trust_store_candidates([str(certs_dir)])
+    assert len(found) == 2
+    assert {p.read_text() for p in found} == {"host cert t1.crt", "host cert t2.crt"}
+
+
+def test_host_mount_absolute_and_relative_links_to_one_cert_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One host certificate reached by an absolute and a relative link was
+    counted twice: cert.resolve() sent the absolute one outside the prefix."""
+    prefix = tmp_path / "host"
+    target = prefix / "usr/share/ca-certificates/one.crt"
+    target.parent.mkdir(parents=True)
+    target.write_text("host cert")
+    certs_dir = prefix / "etc/ssl/certs"
+    certs_dir.mkdir(parents=True)
+    (certs_dir / "abs.pem").symlink_to("/usr/share/ca-certificates/one.crt")
+    (certs_dir / "rel.pem").symlink_to("../../../usr/share/ca-certificates/one.crt")
+    _host_mount(monkeypatch, prefix)
+    found = certs._trust_store_candidates([str(certs_dir)])
+    assert len(found) == 1
+    assert found[0].read_text() == "host cert"

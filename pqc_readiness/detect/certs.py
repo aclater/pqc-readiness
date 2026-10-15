@@ -470,12 +470,17 @@ def _trust_store_candidates(target_dirs: list[str]) -> list[Path]:
         if not _platform.safe_is_dir(p):
             continue
         for cert in _cert_files(p):
-            # Under --root, links resolve inside the tree: Debian's
-            # /etc/ssl/certs/*.pem are absolute links that the OS would
-            # follow onto the scanning machine's files (#258).
+            # Under --root and --host-mount, links resolve inside the
+            # prefix: Debian's /etc/ssl/certs/*.pem are absolute links that
+            # the OS would follow onto the scanning machine's or scanner
+            # container's files (#258, #270).  The de-duplication key is
+            # that in-prefix path too, or distinct host certificates could
+            # collide and one certificate reached two ways count twice.
+            # Without a prefix in_tree() returns the path as is, so the
+            # key is the resolved path.
             real = _platform.in_tree(cert)
             try:
-                key = str(real if _platform.OFFLINE_ROOT else cert.resolve())
+                key = str(real if _platform.HOST_PREFIX else cert.resolve())
             except OSError as e:
                 log.debug("scan_trust_store: cannot resolve %s: %s", cert, e)
                 continue
