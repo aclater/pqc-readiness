@@ -604,3 +604,25 @@ def test_host_mount_absolute_and_relative_links_to_one_cert_merge(
     found = certs._trust_store_candidates([str(certs_dir)])
     assert len(found) == 1
     assert found[0].read_text() == "host cert"
+
+
+def test_offline_root_absolute_and_relative_links_to_one_cert_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--root goes through the same key: set_offline_root() also sets
+    HOST_PREFIX, so the in-tree path is the key in both modes (#258, #270)."""
+    root = tmp_path / "tree"
+    target = root / "usr/share/ca-certificates/one.crt"
+    target.parent.mkdir(parents=True)
+    target.write_text("tree cert")
+    certs_dir = root / "etc/ssl/certs"
+    certs_dir.mkdir(parents=True)
+    (certs_dir / "abs.pem").symlink_to("/usr/share/ca-certificates/one.crt")
+    (certs_dir / "rel.pem").symlink_to("../../../usr/share/ca-certificates/one.crt")
+    monkeypatch.setattr(certs._platform, "HOST_PREFIX", "")
+    monkeypatch.setattr(certs._platform, "OFFLINE_ROOT", "")
+    certs._platform.set_offline_root(str(root))
+    assert certs._platform.HOST_PREFIX == str(root)
+    found = certs._trust_store_candidates([str(certs_dir)])
+    assert len(found) == 1
+    assert found[0].read_text() == "tree cert"
