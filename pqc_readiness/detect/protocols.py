@@ -234,15 +234,68 @@ def _libreswan_pqc(version: str | None) -> bool:
     return (int(m.group(1)), int(m.group(2))) >= LIBRESWAN_PQC_MIN_VERSION
 
 
-def detect_ipsec_pqc(family: str = "unknown") -> dict[str, Any]:
+_SCANNER_IPSEC_REASON = (
+    "under {mode} the swanctl / ipsec on PATH are the scanner's own, not the "
+    "host's; implementation and version are read from the host's package "
+    "and binaries"
+)
+
+
+def _cli_describes_host() -> bool:
+    """True when tools on PATH describe the scanned host: a bare-metal or
+    VM scan.  Under --host-mount they are the scanner image's own."""
+    return not (_platform.HOST_PREFIX and not _platform.OFFLINE_ROOT)
+
+
+def ipsec_from_files(
+    os_release: dict[str, Any] | None, scanner_cli: str | None
+) -> dict[str, Any]:
+    """IPsec capability when `swanctl` / `ipsec` can't describe the host:
+    under --host-mount or --root (#265), or on a host with the daemon but
+    no CLI.  Implementation, version and PQC capability come from the
+    host's package and binaries (see ipsec_host).  `scanner_cli` names the
+    scan mode when the tools on PATH belong to the scanner, None when the
+    host simply has no CLI."""
+    # Imported here: ipsec_host imports this module.
+    from ..detect import ipsec_host as _ipsec_host
+
+    ev = _ipsec_host.ipsec_evidence(os_release or {})
+    if ev is None:
+        return {
+            "available": False,
+            "reason": "no strongSwan or Libreswan package or binary found on the host",
+        }
+    out: dict[str, Any] = {"available": True, **ev}
+    if scanner_cli:
+        out["cli_probe"] = {
+            "available": False,
+            "reason": _SCANNER_IPSEC_REASON.format(mode=scanner_cli),
+        }
+    return out
+
+
+def detect_ipsec_pqc(
+    family: str = "unknown", os_release: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """IPsec PQC capability and configuration.
 
     Capability: strongSwan exposes algorithms via `swanctl --list-algs`;
     Libreswan has no equivalent, so its version decides (ML-KEM from
-    5.4).  Configuration (#154): `configured` classifies every IKE and
-    child-SA proposal in swanctl.conf / ipsec.conf (and their includes),
-    whether or not an IPsec daemon is installed."""
-    out = _detect_ipsec_capability(family)
+    5.4).  Under --host-mount, or when neither CLI is installed, the
+    host's package and binaries decide instead (#265).  Configuration
+    (#154): `configured` classifies every IKE and child-SA proposal in
+    swanctl.conf / ipsec.conf (and their includes), whether or not an
+    IPsec daemon is installed."""
+    osr = os_release if os_release is not None else dict(family=family)
+    has_cli = bool(shutil.which("swanctl") or shutil.which("ipsec"))
+    if not _cli_describes_host():
+        out = ipsec_from_files(osr, "--host-mount" if has_cli else None)
+    else:
+        out = _detect_ipsec_capability(family)
+        if not out.get("available") and not has_cli:
+            found = ipsec_from_files(osr, None)
+            if found.get("available"):
+                out = found
     configured = _ike.scan_ike_proposals()
     offering = configured["summary"]["connections_offering_pqc"]
     if out.get("available") and not out.get("pqc") and offering:
@@ -279,10 +332,14 @@ def _detect_ipsec_capability(family: str) -> dict[str, Any]:
                 sw_out,
                 re.IGNORECASE,
             )
+            _, ver_out = _platform._run(["swanctl", "--version"], timeout=5)
+            m = re.search(r"strongSwan swanctl (\S+)", ver_out)
             out.update(
                 {
                     "available": True,
                     "implementation": "strongswan",
+                    "version": m.group(1) if m else None,
+                    "version_source": "cli" if m else None,
                     "pqc": bool(pqc_match),
                     "evidence": pqc_match.group(0) if pqc_match else None,
                 }
@@ -297,6 +354,7 @@ def _detect_ipsec_capability(family: str) -> dict[str, Any]:
                     "available": True,
                     "implementation": "libreswan",
                     "version": parse_libreswan_version(ip_out),
+                    "version_source": "cli",
                     "pqc": _libreswan_pqc(parse_libreswan_version(ip_out)),
                     "note": "Libreswan supports ML-KEM-768 from upstream 5.4 "
                     "(RFC 9370 additional key exchanges); earlier "
