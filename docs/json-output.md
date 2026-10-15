@@ -248,13 +248,18 @@ Each list item describes one detected device or HSM client configuration:
 
 | Key | Type | Meaning |
 | --- | --- | --- |
-| `available` | bool | A strongSwan (`swanctl`) or Libreswan (`ipsec`) installation answered. |
+| `available` | bool | A strongSwan or Libreswan installation was found: its CLI answered (`swanctl`, `ipsec`), or, under `--host-mount`, `--root` or with no CLI on the host, its package or binaries exist (#265). |
 | `implementation` | string | `strongswan` or `libreswan`. |
-| `pqc` | bool | strongSwan: `swanctl --list-algs` lists ML-KEM / Kyber. Libreswan: version ≥ 5.4, the upstream release that added ML-KEM-768 (RFC 9370 additional key exchanges); distribution builds may backport. |
-| `evidence` | string \| null | strongSwan only: the matching algorithm token. |
-| `version` | string \| null | Libreswan only: version from `ipsec --version`. |
-| `note` | string | Libreswan only: the version basis of `pqc`. |
-| `reason` | string | Why `swanctl --list-algs` failed (kept even if Libreswan then answered), or that neither tool is on PATH. |
+| `pqc` | bool \| null | strongSwan via the CLI: `swanctl --list-algs` lists ML-KEM / Kyber. strongSwan from files: version ≥ 6.0 with the `ml` plugin, or with the `openssl` plugin on a host OpenSSL ≥ 3.5 (where booted hosts list ML-KEM from). Libreswan: version ≥ 5.4, the upstream release that added ML-KEM-768 (RFC 9370 additional key exchanges); distribution builds may backport. `null` when the version can't be determined from files. |
+| `evidence` | string \| null | strongSwan: the matching algorithm token (CLI), or the version and plugin basis of `pqc` (files). |
+| `version` | string \| null | Implementation version: `ipsec --version` or `swanctl --version` (CLI), else the host's package (strongSwan) or the version its `pluto` binary embeds (Libreswan), which is what `ipsec --version` prints there. |
+| `version_source` | string \| null | Where `version` came from: `cli`, `package` or `binary` (#265). Under `--host-mount` and `--root` it is never `cli`, since the tools on PATH belong to the scanner. |
+| `package` | object \| null | Files only: the host's package `{name, version}` (raw version, for SBOM joins), or `null` when there is none. |
+| `binaries` | list[string] | Files only: host paths of the daemon and CLI binaries found. |
+| `plugins` | list[string] | Files, strongSwan only: which of the `ml` and `openssl` plugins (the ML-KEM providers) are installed. |
+| `cli_probe` | object | Under `--host-mount` and `--root`: `{available: false, reason}`, why the tools on PATH were not used. |
+| `note` | string | Libreswan via the CLI: the version basis of `pqc`. |
+| `reason` | string | Why `swanctl --list-algs` failed (kept even if Libreswan then answered), that neither tool is on PATH, or that no package or binary was found on the host. |
 | `configured` | object | What the IPsec configuration asks IKEv2 to negotiate (#154), read whether or not a daemon is installed. See below. |
 
 `configured` classifies every IKE and child-SA proposal in strongSwan `swanctl.conf` (`/etc/swanctl/` or `/etc/strongswan/swanctl/`, with `include`s) and `ipsec.conf` (`/etc/ipsec.conf`, `/etc/strongswan/ipsec.conf`, with Libreswan `include /etc/ipsec.d/*.conf`). Both dialects are understood: strongSwan `-` separated keywords with `keX_<method>` additional key exchanges (`keX_none` = optional), and Libreswan `;` separated `ke=` / `addkeN=` with `+` alternatives.
@@ -1092,7 +1097,7 @@ processes or binaries on `PATH`) is reported. `verdict` is
 | `mode` | string | Always `offline_root`. |
 | `root` | string | Absolute path of the scanned tree. |
 | `not_applicable` | list[string] | Report fields that cannot be answered from a tree. Object-valued ones hold the `{available: false, not_applicable: true, reason}` marker; scalar and list ones keep their empty defaults and are listed here so consumers don't read them as "probed, nothing found". |
-| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (configured proposals, no capability), `nss` (version from the tree's rpm database when present) and `ssh_pqc` (version from the tree's OpenSSH package, kex names from its binary; #256). Values are human-readable explanations. |
+| `partial` | object | Sections that are partly answered: `openssl` (packaged version and `openssl.cnf`, no capability probes), `ipsec_pqc` (implementation, version and capability from the tree's package and binaries, configured proposals; #265), `nss` (version from the tree's rpm database when present) and `ssh_pqc` (version from the tree's OpenSSH package, kex names from its binary; #256). Values are human-readable explanations. |
 | `reason` | string | One-sentence summary; also used as `verdict_reason`. |
 
 `--root` cannot be combined with `--host-mount`, `--bench`, `--bench-tls`,

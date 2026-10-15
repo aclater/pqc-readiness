@@ -221,10 +221,19 @@ def offline_ssh(os_release: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-def offline_ipsec() -> dict[str, Any]:
-    """IPsec: the configured proposals are files in the tree; capability
-    comes from running swanctl / ipsec, which is not applicable."""
-    out = not_applicable(_BINARY_REASON.format(tool="`swanctl` / `ipsec --version`"))
+def offline_ipsec(os_release: dict[str, Any] | None = None) -> dict[str, Any]:
+    """IPsec: the configured proposals are files in the tree, and the
+    implementation, version and capability come from the tree's package
+    and binaries (#265); swanctl / ipsec on PATH would describe the
+    scanning machine."""
+    found = _protocols.ipsec_from_files(os_release, "--root")
+    if found.get("available"):
+        out = found
+    else:
+        out = not_applicable(
+            _BINARY_REASON.format(tool="`swanctl` / `ipsec --version`")
+            + "; no strongSwan or Libreswan package or binary was found in the tree"
+        )
     out["configured"] = _ike.scan_ike_proposals()
     return out
 
@@ -243,7 +252,7 @@ def scan_mode_record(root: str) -> dict[str, Any]:
         "not_applicable": list(NOT_APPLICABLE_FIELDS),
         "partial": {
             "openssl": "capability probes not applicable; package version and openssl.cnf read from the tree",
-            "ipsec_pqc": "capability not applicable; configured proposals read from the tree",
+            "ipsec_pqc": "implementation, version and capability from the tree's package and binaries; configured proposals read from the tree",
             "nss": "version from the tree's rpm database when present",
             "ssh_pqc": "version from the tree's OpenSSH package, kex names from its binary",
         },
@@ -335,7 +344,7 @@ def collect_offline_report(args: argparse.Namespace) -> _report.Report:
         openssl=openssl,
         tpm_pqc=dict(host_state),
         ssh_pqc=offline_ssh(os_release),
-        ipsec_pqc=offline_ipsec(),
+        ipsec_pqc=offline_ipsec(os_release),
         nss=offline_nss()
         if family in ("rhel", "suse")
         else not_applicable(_BINARY_REASON.format(tool="`certutil --version`")),

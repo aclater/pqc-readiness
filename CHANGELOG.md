@@ -20,6 +20,20 @@ changes it.
 
 ## Unreleased
 
+- **Under `--host-mount` and `--root`, IPsec facts describe the host**
+  (#265). `ipsec_pqc` used to run the scanner image's `swanctl` / `ipsec`,
+  which images don't ship, so a node running strongSwan or Libreswan was
+  reported as having no IPsec stack; offline scans reported only the
+  configured proposals. The implementation, version and ML-KEM capability
+  now come from the host's package and binaries, with the same treatment
+  for live hosts that have the daemon but no CLI. strongSwan counts as
+  ML-KEM-capable from 6.0 with the `ml` plugin, or with the `openssl`
+  plugin on OpenSSL 3.5+ (Fedora 44 and Ubuntu 26.04 list ML-KEM from the
+  `openssl` plugin); Libreswan from 5.4, its version read from `pluto`.
+  New nested fields: `ipsec_pqc.version_source`, `package`, `binaries`,
+  `plugins` and `cli_probe`; live strongSwan scans now report `version`
+  from `swanctl --version`.
+
 ## 2.3.0 - 2026-10-14: host-accurate results, embedded systems and joinable outputs, schema 1.7
 
 Version **2.3.0**. All JSON changes are additive, so the schema goes to

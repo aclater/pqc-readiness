@@ -29,6 +29,9 @@ def host(monkeypatch):
         root = FIX / name
         monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(root))
         monkeypatch.setattr(pr._platform, "_run", _no_subprocess)
+        # A live host whose config files are sandboxed under the prefix:
+        # the CLI (mocked per test) describes it, as on bare metal.
+        monkeypatch.setattr(protocols, "_cli_describes_host", lambda: True)
         return root
 
     return _use
@@ -254,6 +257,7 @@ def test_detect_ipsec_pqc_attaches_configured(host, monkeypatch) -> None:
     ],
 )
 def test_libreswan_pqc_by_version(monkeypatch, tmp_path, version, pqc) -> None:
+    monkeypatch.setattr(protocols, "_cli_describes_host", lambda: True)
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
     monkeypatch.setattr(
         protocols.shutil,
@@ -297,6 +301,7 @@ def test_strongswan_ml_kem_algs_detected(monkeypatch, tmp_path) -> None:
     """Regression: `\\bML[-_ ]?KEM\\b` never matched `ML_KEM_768` (the "_"
     after KEM is a word character), so PQC-capable strongSwan was
     reported as pqc=false on a real Fedora 44 host."""
+    monkeypatch.setattr(protocols, "_cli_describes_host", lambda: True)
     monkeypatch.setattr(pr._platform, "HOST_PREFIX", str(tmp_path))
     monkeypatch.setattr(
         protocols.shutil,
