@@ -43,7 +43,7 @@ What makes it easy to deploy and trust:
 
 ## What it finds
 
-A scan of 20 stock Linux images with v2.2.0 (the full results are in
+A scan of 20 stock Linux images with v2.4.0 (the full results are in
 [docs/examples/os-matrix-2026-10.md](docs/examples/os-matrix-2026-10.md)):
 
 | Distributions | Out of the box |
